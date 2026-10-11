@@ -1000,8 +1000,19 @@ int main(int argc, char **argv)
 	}
 
 	/* canonical 44-byte header, mirroring the input's parameters */
+	/*
+	 * RIFF's size fields are 32-bit.  A result past 4 GiB must fail
+	 * loudly here: truncating data_bytes to uint32 wraps the header
+	 * around an "empty" file while the full PCM follows it — silent
+	 * corruption, exit 0.
+	 */
+	uint64_t pcm_bytes = (uint64_t)out_frames * w.channels * 2;
+	if (pcm_bytes > (uint64_t)UINT32_MAX - 36)
+		die(EXIT_USAGE, "brownnote: output is %llu bytes of PCM, "
+		    "past the WAV format's 4 GiB limit",
+		    (unsigned long long)pcm_bytes);
 	unsigned char hdr[44];
-	uint32_t data_bytes = (uint32_t)(out_frames * w.channels * 2);
+	uint32_t data_bytes = (uint32_t)pcm_bytes;
 	memcpy(hdr, "RIFF", 4);
 	wr32(hdr + 4, 36 + data_bytes);
 	memcpy(hdr + 8, "WAVE", 4);

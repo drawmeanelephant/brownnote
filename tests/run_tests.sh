@@ -552,6 +552,60 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (q) 4 GiB wrap: output past RIFF's 32-bit size fields must fail
+#     loudly, not wrap the header around an empty file (#7).
+#     Gated: peaks ~13 GB RAM and tens of seconds.
+# ------------------------------------------------------------------
+if [ "${BROWNNOTE_HEAVY:-0}" = "1" ] && [ "$have_python" = 1 ]; then
+	# stereo 48 kHz, so s16 output is exactly half the bench's float32
+	python3 - "$TMP" <<'PYEOF'
+import struct, sys, os
+fmt = b'fmt ' + struct.pack('<I', 16) + struct.pack('<HHIIHH', 1, 2, 48000, 48000*4, 4, 16)
+pcm = struct.pack('<hh', 1000, -1000)
+open(os.path.join(sys.argv[1], 'tiny48s.wav'), 'wb').write(
+    b'RIFF' + struct.pack('<I', 36 + len(pcm)) + b'WAVE' + fmt
+    + b'data' + struct.pack('<I', len(pcm)) + pcm)
+PYEOF
+	printf '#!/bin/sh\nexec dd if=/dev/zero bs=1048576 count=%s 2>/dev/null\n' \
+		4096 > "$TMP/gen4g.sh"
+	chmod +x "$TMP/gen4g.sh"
+	# 4 GiB of float32 stereo is 2 GiB of s16 — legal, header exact
+	"$BIN" --bench "$TMP/gen4g.sh" < "$TMP/tiny48s.wav" 2>/dev/null |
+		head -c 44 > "$TMP/limit4g.hdr"
+	verdict=$(python3 - "$TMP/limit4g.hdr" <<'PYEOF'
+import sys
+b = open(sys.argv[1], 'rb').read(44)
+if len(b) != 44:
+    print("bad: short header"); raise SystemExit
+riff = int.from_bytes(b[4:8], 'little')
+data = int.from_bytes(b[40:44], 'little')
+if data == 2147483648 and riff == 2147483648 + 36:
+    print("ok: 2 GiB result (legal) header is exact")
+else:
+    print(f"bad: riff={riff} data={data}")
+PYEOF
+)
+	case "$verdict" in
+		ok:*) ok "(q) 4 GiB wrap: $verdict" ;;
+		*)   bad "(q) 4 GiB wrap: $verdict" ;;
+	esac
+	printf '#!/bin/sh\nexec dd if=/dev/zero bs=1048576 count=%s 2>/dev/null\n' \
+		8192 > "$TMP/gen8g.sh"
+	chmod +x "$TMP/gen8g.sh"
+	# 8 GiB of float32 stereo is 4 GiB of s16 — past the limit
+	"$BIN" --bench "$TMP/gen8g.sh" < "$TMP/tiny48s.wav" > /dev/null \
+		2> "$TMP/over4g.err"
+	rc=$?
+	if [ $rc -eq 2 ] && grep -q "4 GiB" "$TMP/over4g.err"; then
+		ok "(q) 4 GiB wrap: oversized result exits 2, no wrapped header"
+	else
+		bad "(q) 4 GiB wrap: rc=$rc (silent wrap?), stderr: $(head -1 "$TMP/over4g.err")"
+	fi
+else
+	skip "(q) 4 GiB wrap: set BROWNNOTE_HEAVY=1 (~13 GB RAM, tens of seconds)"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then

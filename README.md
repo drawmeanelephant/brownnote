@@ -68,7 +68,9 @@ brownnote peeks at stdin and picks a mode:
   channel count. Mono output takes the left channel of the processed
   stereo signal. Sample conversion is `v/32768` in and
   `lroundf(clamp(v,-1,1)*32767)` out — asymmetric on purpose, the
-  common convention, bounded by one LSB either way.
+  common convention, bounded by one LSB either way. Results larger
+  than the WAV format's 4 GiB limit fail with exit 2 rather than
+  wrapping the header's 32-bit size fields.
 
 The output mode always mirrors the input mode.
 
