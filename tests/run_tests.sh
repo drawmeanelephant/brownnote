@@ -124,7 +124,9 @@ fi
 # ------------------------------------------------------------------
 # (d) unknown effect: nonzero exit, bench's own message on stderr
 # ------------------------------------------------------------------
-if [ "$have_python" = 1 ]; then
+if [ "$have_bench" = 0 ]; then
+	skip "(d) unknown effect: bench not built ($BENCH)"
+elif [ "$have_python" = 1 ]; then
 	"$BIN" --effect nosucheffectxyz < "$TMP/raw.f32" > /dev/null \
 		2> "$TMP/unknown.err"
 	rc=$?
