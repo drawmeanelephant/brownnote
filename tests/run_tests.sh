@@ -396,6 +396,45 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (m) one-frame 192 kHz WAV: resamples to zero bench frames, which
+#     must still close the bench's stdin, not deadlock (#3)
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ]; then
+	python3 - "$TMP" <<'PYEOF'
+import struct, sys, os
+fmt = b'fmt ' + struct.pack('<I', 16) + struct.pack('<HHIIHH', 1, 2, 192000, 192000*4, 4, 16)
+pcm = struct.pack('<hh', 1000, -1000)
+wav = (b'RIFF' + struct.pack('<I', 36 + len(pcm)) + b'WAVE' + fmt
+       + b'data' + struct.pack('<I', len(pcm)) + pcm)
+open(os.path.join(sys.argv[1], 'one.wav'), 'wb').write(wav)
+PYEOF
+	"$BIN" --bench /bin/cat < "$TMP/one.wav" > "$TMP/one_out.wav" \
+		2>/dev/null &
+	one_pid=$!
+	watchdog=0
+	for i in $(seq 1 50); do
+		kill -0 $one_pid 2>/dev/null || break
+		sleep 0.1
+		watchdog=$i
+	done
+	if kill -0 $one_pid 2>/dev/null; then
+		kill -9 $one_pid 2>/dev/null
+		wait $one_pid 2>/dev/null
+		bad "(m) 1-frame 192 kHz WAV: hung ($((watchdog + 1))s, killed)"
+	else
+		wait $one_pid 2>/dev/null
+		rc=$?
+		if [ $rc -eq 0 ] && [ "$(wc -c < "$TMP/one_out.wav" | tr -d ' ')" = "44" ]; then
+			ok "(m) 1-frame 192 kHz WAV: exit 0, empty 44-byte result"
+		else
+			bad "(m) 1-frame 192 kHz WAV: rc=$rc, $(wc -c < "$TMP/one_out.wav" | tr -d ' ') bytes out"
+		fi
+	fi
+else
+	skip "(m) 1-frame 192 kHz WAV: python3 absent"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then
