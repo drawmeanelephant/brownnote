@@ -334,6 +334,26 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (k) argv overflow: max flags on every slot at once must not corrupt
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ]; then
+	args=""
+	for i in $(seq 1 256); do args="$args --effect fuzz"; done
+	for i in $(seq 1 256); do args="$args --pot \"Rat Sketch:Distortion=60\""; done
+	for i in $(seq 1 256); do args="$args --mix \"Boost=60\""; done
+	eval "timeout 10 \"$BIN\" --bench /bin/cat $args < /dev/null" \
+		> /dev/null 2> "$TMP/ovf.err"
+	rc=$?
+	if [ $rc -eq 0 ] || [ $rc -eq 1 ]; then
+		ok "(k) argv overflow: 768 flags, exit $rc, no crash"
+	else
+		bad "(k) argv overflow: exit $rc (abort/segv?)"
+	fi
+else
+	skip "(k) argv overflow: python3 absent"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then

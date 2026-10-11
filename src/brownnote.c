@@ -648,6 +648,14 @@ static size_t resample_frames(const float *in, size_t in_frames,
 
 #define MAX_ARGS 256
 
+/*
+ * Worst case bench argv: path + 2 slots for each of routes/pots/mixes
+ * (flag + value), each individually capped at MAX_ARGS, plus NULL.
+ * Sizing this wrong is how a shell script of 768 flags becomes a heap
+ * abort, so it is spelled out and asserted below.
+ */
+#define BARGV_MAX (1 + 6 * MAX_ARGS + 8)
+
 int main(int argc, char **argv)
 {
 	const char *bench_flag = NULL;
@@ -749,7 +757,7 @@ int main(int argc, char **argv)
 	bool wav_mode = (got == 4 && !memcmp(head, "RIFF", 4));
 
 	/* Assemble the bench command line. */
-	char *bargv[MAX_ARGS * 2 + 8];
+	char *bargv[BARGV_MAX];
 	int bn = 0;
 	bargv[bn++] = (char *)bench;
 	for (int i = 0; i < n_routes; i++) {
@@ -764,6 +772,13 @@ int main(int argc, char **argv)
 		bargv[bn++] = (char *)"--mix";
 		bargv[bn++] = (char *)mixes[i];
 	}
+	/*
+	 * The three caps above each allow MAX_ARGS, so bn can reach
+	 * 1 + 6*MAX_ARGS; BARGV_MAX is sized for exactly that, and this
+	 * assert keeps a future edit from quietly unlinking the two.
+	 */
+	if (bn >= BARGV_MAX)
+		die(EXIT_FAILURE, "brownnote: bench argv overflow (bug)");
 	bargv[bn] = NULL;
 
 	struct pump pm;
