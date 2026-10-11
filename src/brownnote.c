@@ -592,7 +592,7 @@ static bool parse_wav(const unsigned char *p, size_t len, struct wav_info *w)
 		return false;
 	}
 	size_t pos = 12;
-	bool have_fmt = false;
+	bool have_fmt = false, have_data = false;
 	uint16_t format = 0, bits = 0;
 
 	while (pos + 8 <= len) {
@@ -610,12 +610,20 @@ static bool parse_wav(const unsigned char *p, size_t len, struct wav_info *w)
 			have_fmt = true;
 		} else if (!memcmp(p + pos, "data", 4)) {
 			w->data_off = pos + 8;
-			w->data_len = csz ? csz : len - w->data_off;
+			/*
+			 * A declared size of 0 is an empty chunk — every
+			 * chunk after it is metadata, not audio.  Only a
+			 * size that runs past the end of the file (the
+			 * 0xFFFFFFFF of streaming writers) is the
+			 * to-EOF fallback, by way of the clamp above.
+			 */
+			w->data_len = csz;
+			have_data = true;
 		}
 		pos += 8 + csz + (csz & 1);	/* chunks are word-aligned */
 	}
 
-	if (!have_fmt || !w->data_len) {
+	if (!have_fmt || !have_data) {
 		fprintf(stderr, "brownnote: WAV is missing fmt or data\n");
 		return false;
 	}
