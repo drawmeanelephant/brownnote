@@ -1058,12 +1058,22 @@ int main(int argc, char **argv)
 	memcpy(hdr + 36, "data", 4);
 	wr32(hdr + 40, data_bytes);
 
+	/*
+	 * The bench's output sat in a memory sink, so a closed
+	 * downstream only surfaces here — report it like raw mode does
+	 * (exit 141, with the errno), not as a generic short write.
+	 */
+	errno = 0;
 	if (fwrite(hdr, 1, 44, stdout) != 44 ||
 	    fwrite(pcm, 2, out_frames * w.channels, stdout) !=
-		    out_frames * w.channels)
-		die(EXIT_FAILURE, "brownnote: short write on stdout");
-	if (fflush(stdout))
-		die(EXIT_FAILURE, "brownnote: %s", strerror(errno));
+		    out_frames * w.channels ||
+	    fflush(stdout) != 0) {
+		if (errno == EPIPE)
+			die(128 + SIGPIPE, "brownnote: write stdout: %s",
+			    strerror(errno));
+		die(EXIT_FAILURE, "brownnote: write stdout: %s",
+		    errno ? strerror(errno) : "short write");
+	}
 
 	return 0;
 }

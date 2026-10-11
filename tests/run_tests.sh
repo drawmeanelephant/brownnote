@@ -671,6 +671,23 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (u) WAV mode, downstream closes: exit 141 like raw mode, with the
+#     errno, not a generic exit-1 "short write" (#11)
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ]; then
+	"$BIN" < "$TMP/in.wav" 2> "$TMP/wavepipe.err" | head -c 10 \
+		> /dev/null
+	rc=${PIPESTATUS[0]}
+	if [ $rc -eq 141 ] && grep -q "Broken pipe" "$TMP/wavepipe.err"; then
+		ok "(u) WAV-mode EPIPE: exit 141, errno in the message"
+	else
+		bad "(u) WAV-mode EPIPE: rc=$rc (want 141), stderr: $(tail -1 "$TMP/wavepipe.err")"
+	fi
+else
+	skip "(u) WAV-mode EPIPE: python3 absent"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then
