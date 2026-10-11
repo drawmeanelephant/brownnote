@@ -435,6 +435,36 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (n) broken stderr relay: a bench that floods stderr while the
+#     reader of brownnote's stderr is gone must not wedge the
+#     pipeline (#4)
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ]; then
+	printf '#!/bin/sh\nhead -c 200000 /dev/zero >&2\ncat\n' \
+		> "$TMP/chatty.sh"
+	chmod +x "$TMP/chatty.sh"
+	# brownnote's stderr goes to a reader that leaves after 10 bytes
+	( "$BIN" --bench "$TMP/chatty.sh" < "$TMP/raw.f32" \
+		2>&1 >/dev/null | head -c 10 > /dev/null ) &
+	relay_pid=$!
+	for i in $(seq 1 100); do
+		kill -0 $relay_pid 2>/dev/null || break
+		sleep 0.1
+	done
+	if kill -0 $relay_pid 2>/dev/null; then
+		kill -9 $relay_pid 2>/dev/null
+		wait $relay_pid 2>/dev/null
+		pkill -9 -f "$TMP/chatty.sh" 2>/dev/null
+		bad "(n) broken stderr relay: pipeline hung, killed"
+	else
+		wait $relay_pid 2>/dev/null
+		ok "(n) broken stderr relay: pipeline finished, no wedge"
+	fi
+else
+	skip "(n) broken stderr relay: python3 absent"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then
