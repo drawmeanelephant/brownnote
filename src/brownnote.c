@@ -676,6 +676,32 @@ static size_t resample_frames(const float *in, size_t in_frames,
 #define MAX_ARGS 256
 
 /*
+ * Read from stdin, waiting for data to actually arrive.  A
+ * poll()-driven parent legally hands brownnote a non-blocking stdin,
+ * where read() fails with EAGAIN merely because the bytes have not
+ * been written yet — that is not EOF, and treating it as one
+ * misdetects the mode (a late WAV pumped through as raw float32) or
+ * truncates the WAV body.  On EAGAIN, wait for readability like a
+ * blocking fd would; EINTR retries; anything else is a real error.
+ */
+static ssize_t read_input(void *buf, size_t n)
+{
+	for (;;) {
+		ssize_t r = read(0, buf, n);
+		if (r >= 0)
+			return r;
+		if (errno == EINTR)
+			continue;
+		if (errno == EAGAIN || errno == EWOULDBLOCK) {
+			struct pollfd p = { .fd = 0, .events = POLLIN };
+			poll(&p, 1, -1);
+			continue;
+		}
+		return -1;
+	}
+}
+
+/*
  * Worst case bench argv: path + 2 slots for each of routes/pots/mixes
  * (flag + value), each individually capped at MAX_ARGS, plus NULL.
  * Sizing this wrong is how a shell script of 768 flags becomes a heap
@@ -774,10 +800,11 @@ int main(int argc, char **argv)
 	unsigned char head[4];
 	size_t got = 0;
 	while (got < 4) {
-		ssize_t n = read(0, head + got, 4 - got);
-		if (n < 0 && errno == EINTR)
-			continue;
-		if (n <= 0)
+		ssize_t n = read_input(head + got, 4 - got);
+		if (n < 0)
+			die(EXIT_FAILURE, "brownnote: read stdin: %s",
+			    strerror(errno));
+		if (n == 0)
 			break;
 		got += n;
 	}
@@ -838,10 +865,11 @@ int main(int argc, char **argv)
 	mb_put(&file, head, 4);
 	for (;;) {
 		unsigned char buf[65536];
-		ssize_t n = read(0, buf, sizeof(buf));
-		if (n < 0 && errno == EINTR)
-			continue;
-		if (n <= 0)
+		ssize_t n = read_input(buf, sizeof(buf));
+		if (n < 0)
+			die(EXIT_FAILURE, "brownnote: read stdin: %s",
+			    strerror(errno));
+		if (n == 0)
 			break;
 		mb_put(&file, buf, n);
 	}
