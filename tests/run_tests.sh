@@ -337,11 +337,11 @@ fi
 # (k) argv overflow: max flags on every slot at once must not corrupt
 # ------------------------------------------------------------------
 if [ "$have_python" = 1 ]; then
-	args=""
-	for i in $(seq 1 256); do args="$args --effect fuzz"; done
-	for i in $(seq 1 256); do args="$args --pot \"Rat Sketch:Distortion=60\""; done
-	for i in $(seq 1 256); do args="$args --mix \"Boost=60\""; done
-	eval "timeout 10 \"$BIN\" --bench /bin/cat $args < /dev/null" \
+	set --
+	for i in $(seq 1 256); do set -- "$@" --effect fuzz; done
+	for i in $(seq 1 256); do set -- "$@" --pot 'Rat Sketch:Distortion=60'; done
+	for i in $(seq 1 256); do set -- "$@" --mix 'Boost=60'; done
+	timeout 10 "$BIN" --bench /bin/cat "$@" < /dev/null \
 		> /dev/null 2> "$TMP/ovf.err"
 	rc=$?
 	if [ $rc -eq 0 ] || [ $rc -eq 1 ]; then
