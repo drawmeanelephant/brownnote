@@ -276,29 +276,48 @@ struct pump {
 #define QUEUE_LIMIT (256 * 1024)	/* back off reading stdin past this */
 
 /*
- * Copy whatever is ready from one fd to another.  Returns the byte
- * count, 0 on EOF / would-block, or -1 on a write error (EPIPE
- * included), leaving errno for the caller to interpret.
+ * Read the bench's stderr and relay it to our fd 2.  If that write
+ * fails — the reader of our stderr went away (`2>&1 | head`), or fd 2
+ * is closed — stop relaying but keep draining and discard: a bench
+ * blocked writing stderr because brownnote stopped listening backs up
+ * into a pipeline-wide wedge (it stops reading stdin, the queue fills,
+ * poll waits on stdout that never comes), and preventing that wedge is
+ * brownnote's job, not the bench's.
+ *
+ * Returns true when the bench's stderr is finished: EOF, or a read
+ * error that will not recover.
  */
-static ssize_t xfer(int from, int to)
+static bool drain_err(int from)
 {
-	unsigned char buf[65536];
-	ssize_t n = read(from, buf, sizeof(buf));
-	if (n < 0)
-		return (errno == EAGAIN || errno == EINTR) ? 0 : -1;
-	if (n == 0)
-		return 0;
-	size_t off = 0;
-	while (off < (size_t)n) {
-		ssize_t w = write(to, buf + off, n - off);
-		if (w < 0) {
+	bool broken = false;
+
+	for (;;) {
+		unsigned char buf[65536];
+		ssize_t n = read(from, buf, sizeof(buf));
+		if (n < 0) {
 			if (errno == EINTR)
 				continue;
-			return -1;
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				return false;	/* nothing right now */
+			return true;
 		}
-		off += w;
+		if (n == 0)
+			return true;
+
+		size_t off = 0;
+		while (off < (size_t)n) {
+			if (broken)
+				break;
+			ssize_t w = write(2, buf + off, n - off);
+			if (w < 0) {
+				if (errno == EINTR)
+					continue;
+				broken = true;	/* discard from here on */
+				break;
+			}
+			off += w;
+		}
 	}
-	return n;
 }
 
 static int pump_run(struct pump *pm, pid_t pid)
@@ -385,9 +404,8 @@ static int pump_run(struct pump *pm, pid_t pid)
 			}
 		}
 		if (pi_err >= 0 && (pfd[pi_err].revents & (POLLIN | POLLHUP))) {
-			if (xfer(pm->bench_err, 2) <= 0 && errno != EINTR)
+			if (drain_err(pm->bench_err))
 				err_open = false;
-			errno = 0;
 		}
 		if (pi_in >= 0 && (pfd[pi_in].revents & POLLOUT)) {
 			size_t have = pm->queue.len - pm->queue_pos;
@@ -434,7 +452,7 @@ static int pump_run(struct pump *pm, pid_t pid)
 		struct pollfd p = { .fd = pm->bench_err, .events = POLLIN };
 		if (pm->bench_err < 0 || poll(&p, 1, 250) != 1)
 			break;
-		if (xfer(pm->bench_err, 2) <= 0)
+		if (drain_err(pm->bench_err))
 			break;
 	}
 
