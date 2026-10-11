@@ -407,8 +407,22 @@ static int pump_run(struct pump *pm, pid_t pid)
 					if (w < 0) {
 						if (errno == EINTR)
 							continue;
-						/* downstream is gone */
-						die(128 + SIGPIPE,
+						/*
+						 * EPIPE alone means the
+						 * program downstream went
+						 * away — exit 141, the
+						 * shell convention.
+						 * Anything else (ENOSPC,
+						 * EFBIG, EIO) is our own
+						 * write failing and must
+						 * not masquerade as
+						 * SIGPIPE.
+						 */
+						if (errno == EPIPE)
+							die(128 + SIGPIPE,
+							    "brownnote: write stdout: %s",
+							    strerror(errno));
+						die(EXIT_FAILURE,
 						    "brownnote: write stdout: %s",
 						    strerror(errno));
 					}
