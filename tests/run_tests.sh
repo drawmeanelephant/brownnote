@@ -636,6 +636,24 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (s) a bench path that cannot be executed says so, instead of a
+#     silent exit 127 (#9)
+# ------------------------------------------------------------------
+"$BIN" --bench /nonexistent-brownnote-test < /dev/null > /dev/null \
+	2> "$TMP/exec1.err"
+rc1=$?
+BROWNNOTE_BENCH=/nonexistent-brownnote-test "$BIN" < /dev/null \
+	> /dev/null 2> "$TMP/exec2.err"
+rc2=$?
+if [ $rc1 -eq 127 ] && [ $rc2 -eq 127 ] && \
+   grep -q "cannot exec /nonexistent-brownnote-test" "$TMP/exec1.err" && \
+   grep -q "cannot exec /nonexistent-brownnote-test" "$TMP/exec2.err"; then
+	ok "(s) exec failure: exit 127 with the path and reason on stderr"
+else
+	bad "(s) exec failure: rc1=$rc1 rc2=$rc2, stderr1: $(head -1 "$TMP/exec1.err")"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then

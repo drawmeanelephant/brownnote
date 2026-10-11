@@ -528,6 +528,13 @@ static int run_bench(char **argv, struct pump *pm)
 		close(out_pipe[0]); close(out_pipe[1]);
 		close(err_pipe[0]); close(err_pipe[1]);
 		execv(argv[0], argv);
+		/*
+		 * fd 2 is the err pipe here, so this reaches the user
+		 * through the pump's stderr relay: a typo'd --bench or
+		 * BROWNNOTE_BENCH used to die as a silent 127.
+		 */
+		fprintf(stderr, "brownnote: cannot exec %s: %s\n",
+			argv[0], strerror(errno));
 		_exit(127);
 	}
 
@@ -835,6 +842,8 @@ int main(int argc, char **argv)
 		pid_t pid = fork();
 		if (pid == 0) {
 			execl(bench, bench, "--list", (char *)NULL);
+			fprintf(stderr, "brownnote: cannot exec %s: %s\n",
+				bench, strerror(errno));
 			_exit(127);
 		}
 		int status;
