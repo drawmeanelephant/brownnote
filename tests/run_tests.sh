@@ -367,6 +367,35 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (l) WAV with fmt but no data chunk: rejected deterministically,
+#     never parsed against an uninitialized wav_info (#2)
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ]; then
+	python3 - "$TMP" <<'PYEOF'
+import struct, sys, os
+def chunk(cid, body):
+    out = cid + struct.pack('<I', len(body)) + body
+    if len(body) & 1: out += b'\0'
+    return out
+fmt = chunk(b'fmt ', struct.pack('<HHIIHH', 1, 1, 44100, 88200, 2, 16))
+blob = (b'RIFF' + struct.pack('<I', 4 + len(fmt) + 8 + 8) + b'WAVE'
+        + fmt + chunk(b'LIST', b'INFOjunk'))
+open(os.path.join(sys.argv[1], 'nodata.wav'), 'wb').write(blob)
+PYEOF
+	"$BIN" --bench /bin/cat < "$TMP/nodata.wav" > /dev/null \
+		2> "$TMP/nodata.err"
+	rc=$?
+	if [ $rc -eq 2 ] && grep -q "missing fmt or data" "$TMP/nodata.err"; then
+		ok "(l) no-data-chunk WAV: exit 2, deterministic rejection"
+	else
+		bad "(l) no-data-chunk WAV: rc=$rc (crash or garbage parse?), stderr:"
+		sed 's/^/      /' "$TMP/nodata.err" | head -3
+	fi
+else
+	skip "(l) no-data-chunk WAV: python3 absent"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then

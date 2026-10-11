@@ -819,7 +819,15 @@ int main(int argc, char **argv)
 		mb_put(&file, buf, n);
 	}
 
+	/*
+	 * parse_wav only writes data_off/data_len when it actually walks
+	 * a data chunk, and its missing-data guard reads data_len either
+	 * way — so w must start at zero, or a WAV with a fmt but no data
+	 * chunk is judged on stack garbage: wild-pointer reads, giant
+	 * mallocs, nondeterministic verdicts.
+	 */
 	struct wav_info w;
+	memset(&w, 0, sizeof(w));
 	if (!parse_wav(file.p, file.len, &w))
 		return EXIT_USAGE;
 
