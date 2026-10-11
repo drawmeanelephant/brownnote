@@ -341,13 +341,24 @@ if [ "$have_python" = 1 ]; then
 	for i in $(seq 1 256); do set -- "$@" --effect fuzz; done
 	for i in $(seq 1 256); do set -- "$@" --pot 'Rat Sketch:Distortion=60'; done
 	for i in $(seq 1 256); do set -- "$@" --mix 'Boost=60'; done
-	timeout 10 "$BIN" --bench /bin/cat "$@" < /dev/null \
-		> /dev/null 2> "$TMP/ovf.err"
-	rc=$?
-	if [ $rc -eq 0 ] || [ $rc -eq 1 ]; then
-		ok "(k) argv overflow: 768 flags, exit $rc, no crash"
+	"$BIN" --bench /bin/cat "$@" < /dev/null > /dev/null 2> "$TMP/ovf.err" &
+	ovf_pid=$!
+	ovf_rc=0
+	for i in $(seq 1 100); do
+		kill -0 $ovf_pid 2>/dev/null || break
+		sleep 0.1
+	done
+	if kill -0 $ovf_pid 2>/dev/null; then
+		kill -9 $ovf_pid 2>/dev/null
+		wait $ovf_pid 2>/dev/null
+		ovf_rc=999
 	else
-		bad "(k) argv overflow: exit $rc (abort/segv?)"
+		wait $ovf_pid 2>/dev/null || ovf_rc=$?
+	fi
+	if [ $ovf_rc -eq 0 ] || [ $ovf_rc -eq 1 ]; then
+		ok "(k) argv overflow: 768 flags, exit $ovf_rc, no crash"
+	else
+		bad "(k) argv overflow: exit $ovf_rc (hang/abort/segv?)"
 	fi
 else
 	skip "(k) argv overflow: python3 absent"
