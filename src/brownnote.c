@@ -310,6 +310,22 @@ static int pump_run(struct pump *pm, pid_t pid)
 		int n = 0;
 		int pi_in = -1, pi_our_stdin = -1, pi_out = -1, pi_err = -1;
 
+		/*
+		 * Close the bench's stdin once everything is written and
+		 * no more input is coming; that is what tells the bench
+		 * to finish and flush.  Before poll, not after: with an
+		 * empty queue and no input fd (a one-frame 192 kHz WAV
+		 * resamples to zero bench frames, so the queue is empty
+		 * and in_fd is -1) no poll event could ever fire the
+		 * check, and bench and pump would wait on each other
+		 * forever.
+		 */
+		if (pm->bench_in >= 0 && pm->in_eof &&
+		    pm->queue_pos == pm->queue.len) {
+			close(pm->bench_in);
+			pm->bench_in = -1;
+		}
+
 		if (out_open) {
 			pfd[n].fd = pm->bench_out;
 			pfd[n].events = POLLIN;
@@ -410,17 +426,6 @@ static int pump_run(struct pump *pm, pid_t pid)
 			} else {
 				mb_put(&pm->queue, buf, rd);
 			}
-		}
-
-		/*
-		 * Close the bench's stdin once everything is written and
-		 * no more input is coming; that is what tells the bench
-		 * to finish and flush.
-		 */
-		if (pm->bench_in >= 0 && pm->in_eof &&
-		    pm->queue_pos == pm->queue.len) {
-			close(pm->bench_in);
-			pm->bench_in = -1;
 		}
 	}
 
@@ -613,7 +618,11 @@ static size_t resample_frames(const float *in, size_t in_frames,
 	}
 	size_t out_frames = (size_t)llround(
 		(double)in_frames * (double)out_rate / (double)in_rate);
-	float *out = malloc(out_frames * channels * sizeof(float));
+	/*
+	 * out_frames can legitimately be 0 — one 192 kHz frame is less
+	 * than half a 48 kHz frame — and malloc(0) may return NULL.
+	 */
+	float *out = malloc(out_frames * channels * sizeof(float) + 1);
 	if (!out)
 		die(EXIT_FAILURE, "brownnote: out of memory");
 
@@ -866,7 +875,8 @@ int main(int argc, char **argv)
 	struct membuf sink = { 0 };
 	mb_reserve(&pm.queue, st_frames * 2 * sizeof(float));
 	pm.queue.len = st_frames * 2 * sizeof(float);
-	memcpy(pm.queue.p, stereo, pm.queue.len);
+	if (pm.queue.len)	/* empty queue: pm.queue.p is NULL */
+		memcpy(pm.queue.p, stereo, pm.queue.len);
 	pm.sink = &sink;
 	free(stereo);
 
