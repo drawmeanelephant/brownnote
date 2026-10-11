@@ -606,6 +606,36 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (r) data chunk of declared size 0: empty, not "runs to EOF" —
+#     trailing metadata chunks must not come out as audio (#8)
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ]; then
+	python3 - "$TMP" <<'PYEOF'
+import struct, sys, os
+def chunk(cid, body):
+    out = cid + struct.pack('<I', len(body)) + body
+    if len(body) & 1: out += b'\0'
+    return out
+fmt = chunk(b'fmt ', struct.pack('<HHIIHH', 1, 1, 44100, 88200, 2, 16))
+wav = (b'RIFF' + struct.pack('<I', 4 + len(fmt) + 8 + 28) + b'WAVE' + fmt
+       + b'data' + struct.pack('<I', 0)
+       + chunk(b'LIST', b'INFO' + chunk(b'INAM', b'12345678')))
+open(os.path.join(sys.argv[1], 'data0_list.wav'), 'wb').write(wav)
+PYEOF
+	"$BIN" --bench /bin/cat < "$TMP/data0_list.wav" > "$TMP/data0_out.wav" \
+		2>/dev/null
+	rc=$?
+	outsize=$(wc -c < "$TMP/data0_out.wav" | tr -d ' ')
+	if [ $rc -eq 0 ] && [ "$outsize" = "44" ]; then
+		ok "(r) size-0 data chunk: empty result, metadata not played"
+	else
+		bad "(r) size-0 data chunk: rc=$rc, $outsize bytes out (metadata as audio?)"
+	fi
+else
+	skip "(r) size-0 data chunk: python3 absent"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then
