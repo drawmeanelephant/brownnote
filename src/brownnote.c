@@ -373,16 +373,29 @@ static int pump_run(struct pump *pm, pid_t pid)
 			die(EXIT_FAILURE, "brownnote: poll: %s", strerror(errno));
 		}
 
-		if (pi_out >= 0 && (pfd[pi_out].revents & (POLLIN | POLLHUP))) {
+		/*
+		 * Every polled fd is handled on POLLERR/POLLNVAL too, by
+		 * running its natural operation and letting the result
+		 * decide.  macOS poll() reports POLLNVAL for character
+		 * devices like /dev/null — immediately, on every call —
+		 * so an event the loop does not act on comes right back
+		 * and the pump busy-spins at 100% CPU forever.
+		 */
+		if (pi_out >= 0 &&
+		    (pfd[pi_out].revents &
+		     (POLLIN | POLLHUP | POLLERR | POLLNVAL))) {
 			unsigned char buf[65536];
-			ssize_t rd = read(pm->bench_out, buf, sizeof(buf));
-			if (rd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK ||
-			       errno == EINTR))
+			ssize_t rd;
+			do {
+				rd = read(pm->bench_out, buf, sizeof(buf));
+			} while (rd < 0 && errno == EINTR);
+			if (rd < 0 && (errno == EAGAIN ||
+				       errno == EWOULDBLOCK))
 				rd = 0;
 			if (rd < 0)
 				die(EXIT_FAILURE, "brownnote: read bench: %s",
 				    strerror(errno));
-			if (rd <= 0) {
+			if (rd == 0) {
 				out_open = false;
 			} else if (pm->sink) {
 				mb_put(pm->sink, buf, rd);
@@ -403,11 +416,14 @@ static int pump_run(struct pump *pm, pid_t pid)
 				}
 			}
 		}
-		if (pi_err >= 0 && (pfd[pi_err].revents & (POLLIN | POLLHUP))) {
+		if (pi_err >= 0 &&
+		    (pfd[pi_err].revents &
+		     (POLLIN | POLLHUP | POLLERR | POLLNVAL))) {
 			if (drain_err(pm->bench_err))
 				err_open = false;
 		}
-		if (pi_in >= 0 && (pfd[pi_in].revents & POLLOUT)) {
+		if (pi_in >= 0 &&
+		    (pfd[pi_in].revents & (POLLOUT | POLLERR | POLLNVAL))) {
 			size_t have = pm->queue.len - pm->queue_pos;
 			if (have > 65536)
 				have = 65536;	/* bounded, never sit on a full pipe */
@@ -431,13 +447,36 @@ static int pump_run(struct pump *pm, pid_t pid)
 			}
 		}
 		if (pi_our_stdin >= 0 &&
-		    (pfd[pi_our_stdin].revents & (POLLIN | POLLHUP))) {
+		    (pfd[pi_our_stdin].revents &
+		     (POLLIN | POLLHUP | POLLERR | POLLNVAL))) {
 			unsigned char buf[65536];
-			ssize_t rd = read(pm->in_fd, buf, sizeof(buf));
-			if (rd < 0 && errno != EINTR)
+			bool unpollable =
+				(pfd[pi_our_stdin].revents & POLLNVAL) != 0;
+			ssize_t rd;
+			do {
+				rd = read(pm->in_fd, buf, sizeof(buf));
+			} while (rd < 0 && errno == EINTR);
+			if (rd < 0 && (errno == EAGAIN ||
+				       errno == EWOULDBLOCK)) {
+				/*
+				 * Nothing there after all.  On a fd poll
+				 * can describe, that is an ordinary
+				 * spurious wakeup: wait for the next
+				 * one.  On an unpollable fd (macOS
+				 * character devices), poll returns at
+				 * once every time, so an empty read is
+				 * how EOF looks — anything else spins
+				 * forever between poll and read.
+				 */
+				if (unpollable)
+					rd = 0;
+				else
+					continue;
+			}
+			if (rd < 0)
 				die(EXIT_FAILURE, "brownnote: read stdin: %s",
 				    strerror(errno));
-			if (rd <= 0) {
+			if (rd == 0) {
 				pm->in_eof = true;
 				close(pm->in_fd);
 				pm->in_fd = -1;

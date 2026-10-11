@@ -527,6 +527,31 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (p) character-device stdin (/dev/null): poll says POLLNVAL on
+#     macOS, which must resolve to EOF, not a 100%-CPU busy-spin (#6)
+# ------------------------------------------------------------------
+"$BIN" --bench /bin/cat < /dev/null > /dev/null 2>/dev/null &
+devnull_pid=$!
+for i in $(seq 1 30); do
+	kill -0 $devnull_pid 2>/dev/null || break
+	sleep 0.1
+done
+if kill -0 $devnull_pid 2>/dev/null; then
+	kill -9 $devnull_pid 2>/dev/null
+	wait $devnull_pid 2>/dev/null
+	pkill -9 -f "$BIN --bench /bin/cat" 2>/dev/null
+	bad "(p) /dev/null stdin: busy-spun past 3s, killed"
+else
+	wait $devnull_pid 2>/dev/null
+	rc=$?
+	if [ $rc -eq 0 ]; then
+		ok "(p) /dev/null stdin: exit 0, no spin"
+	else
+		bad "(p) /dev/null stdin: rc=$rc"
+	fi
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then
