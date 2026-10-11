@@ -465,6 +465,68 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (o) non-blocking stdin: a late or partial delivery is not EOF;
+#     mode detection and the WAV body must wait for data (#5)
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ]; then
+	verdict=$(python3 - "$BIN" <<'PYEOF'
+import math, os, struct, subprocess, sys, time, wave
+
+bin_ = sys.argv[1]
+path = os.environ.get('TMPDIR', '/tmp') + '/nb_test.wav'
+w = wave.open(path, 'wb')
+w.setnchannels(1); w.setsampwidth(2); w.setframerate(44100)
+w.writeframes(b''.join(struct.pack('<h', int(9000 * math.sin(2 * math.pi * 440 * i / 44100.0)))
+                       for i in range(4410)))
+w.close()
+wav = open(path, 'rb').read()
+os.unlink(path)
+
+def spawn():
+    r, wr = os.pipe()
+    os.set_blocking(r, False)          # a poll()-driven parent's stdin
+    p = subprocess.Popen([bin_, '--bench', '/bin/cat'], stdin=r,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    os.close(r)
+    return p, wr
+
+def checked(p, wr):
+    out, err = p.communicate(timeout=20)
+    if p.returncode != 0:
+        raise SystemExit(f"bad: rc={p.returncode} err={err[:80]!r}")
+    return out
+
+ref = subprocess.run([bin_, '--bench', '/bin/cat'], input=wav,
+                     capture_output=True, timeout=20)
+if ref.returncode != 0:
+    raise SystemExit(f"bad: reference rc={ref.returncode}")
+
+p, wr = spawn()
+time.sleep(0.4)                        # nothing there at peek time
+os.write(wr, wav); os.close(wr)
+late = checked(p, wr)
+
+p, wr = spawn()
+time.sleep(0.4)
+os.write(wr, wav[:20])                 # a truncated RIFF header first
+time.sleep(0.2)
+os.write(wr, wav[20:]); os.close(wr)
+partial = checked(p, wr)
+
+if late != ref.stdout or partial != ref.stdout:
+    raise SystemExit("bad: non-blocking output differs from blocking")
+print("ok: late and partial deliveries match the blocking run")
+PYEOF
+)
+	case "$verdict" in
+		ok:*) ok "(o) non-blocking stdin: $verdict" ;;
+		*)   bad "(o) non-blocking stdin: $verdict" ;;
+	esac
+else
+	skip "(o) non-blocking stdin: python3 absent"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then
