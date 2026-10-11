@@ -654,6 +654,23 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (t) stdout write errors that are not EPIPE — disk full, file size
+#     limit — exit 1, not the documented 141 "downstream closed" (#10)
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ]; then
+	( trap '' XFSZ; ulimit -f 2; exec "$BIN" --bench /bin/cat \
+		< "$TMP/raw.f32" > "$TMP/limited.bin" ) 2> "$TMP/efbig.err"
+	rc=$?
+	if [ $rc -eq 1 ] && grep -q "write stdout" "$TMP/efbig.err"; then
+		ok "(t) EFBIG on stdout: exit 1, not a fake 141"
+	else
+		bad "(t) EFBIG on stdout: rc=$rc (141 = still masquerading as SIGPIPE), stderr: $(head -1 "$TMP/efbig.err")"
+	fi
+else
+	skip "(t) EFBIG on stdout: python3 absent"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then
