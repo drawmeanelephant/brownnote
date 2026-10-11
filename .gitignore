@@ -1,0 +1,5 @@
+vendor/
+.refs/
+build/
+*.o
+.DS_Store
