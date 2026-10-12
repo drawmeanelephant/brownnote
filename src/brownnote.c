@@ -48,6 +48,7 @@
 #include <strings.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifdef __APPLE__
@@ -192,15 +193,35 @@ static void mb_put(struct membuf *b, const void *src, size_t n)
 static pid_t bench_pid = -1;
 
 /*
- * On SIGINT/SIGTERM, pass it to the bench and leave.  The handler is
- * async-signal-safe in practice: kill, waitpid and _exit only.
+ * On SIGINT/SIGTERM, pass it to the bench and leave with the shell
+ * convention.  The bench gets a couple of seconds to act on the
+ * signal — a shell-script bench defers SIGINT while it waits on its
+ * own foreground children, so a plain blocking waitpid would hang for
+ * as long as those run — then SIGKILL, which nothing defers.  The
+ * handler is async-signal-safe in practice: kill, waitpid, nanosleep
+ * and _exit only.
  */
 static void on_signal(int sig)
 {
 	if (bench_pid > 0) {
+		bool gone = false;
+
 		kill(bench_pid, sig);
-		while (waitpid(bench_pid, NULL, 0) < 0 && errno == EINTR)
-			;
+		for (int i = 0; i < 40 && !gone; i++) {	/* ~2 s of grace */
+			pid_t r = waitpid(bench_pid, NULL, WNOHANG);
+			if (r == bench_pid || (r < 0 && errno == ECHILD))
+				gone = true;
+			else {
+				struct timespec tick = { .tv_nsec = 50000000 };
+				nanosleep(&tick, NULL);
+			}
+		}
+		if (!gone) {
+			kill(bench_pid, SIGKILL);
+			while (waitpid(bench_pid, NULL, 0) < 0 &&
+			       errno == EINTR)
+				;
+		}
 	}
 	_exit(128 + sig);
 }
@@ -536,8 +557,17 @@ static int run_bench(char **argv, struct pump *pm)
 
 	if (pid == 0) {
 		if (dup2(in_pipe[0], 0) < 0 || dup2(out_pipe[1], 1) < 0 ||
-		    dup2(err_pipe[1], 2) < 0)
+		    dup2(err_pipe[1], 2) < 0) {
+			/*
+			 * Nearly unreachable (needs fds 0..2 closed at
+			 * fork); say what happened anyway rather than a
+			 * silent 127 — if fd 2 was the one that failed,
+			 * this reaches the user's real stderr directly.
+			 */
+			fprintf(stderr, "brownnote: dup2: %s\n",
+				strerror(errno));
 			_exit(127);
+		}
 		close(in_pipe[0]); close(in_pipe[1]);
 		close(out_pipe[0]); close(out_pipe[1]);
 		close(err_pipe[0]); close(err_pipe[1]);
