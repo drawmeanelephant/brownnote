@@ -60,7 +60,12 @@ brownnote peeks at stdin and picks a mode:
 
 - **raw** — float32 little-endian stereo frames at 48 kHz, the bench's
   own wire format, in one end and out the other. This is the native
-  mode of the pedal's audio core.
+  mode of the pedal's audio core. The bench reads and writes native
+  `float`, so the little-endian layout holds on little-endian hosts
+  only; on a big-endian host brownnote refuses raw mode (exit 2)
+  rather than emit a stream no little-endian consumer can read. WAV
+  mode converts explicitly on both sides of the bench and works on
+  either byte order.
 - **WAV** — a RIFF/WAVE file (PCM s16le, mono or stereo, any rate
   8–192 kHz). brownnote converts to float32 stereo 48 kHz for the
   bench (Catmull-Rom resampling — transport plumbing, not an effect),
@@ -132,7 +137,11 @@ make test
 BENCH=vendor/GuitarPedal/Validation/bench/bench tests/run_tests.sh
 ```
 
-The suite covers: build; raw-mode plumbing identity against `/bin/cat`
+`make test` also builds and runs the unit tests for the WAV parser,
+the resampler and the sample conversions (`make unit` runs just those).
+
+The suite covers: build; unit tests for the RIFF parser, resampler and
+s16 conversions; raw-mode plumbing identity against `/bin/cat`
 (byte-identical); fuzz through the real bench (output changes, sane
 RMS); unknown-effect error propagation (the bench's candidate list, and
 its exit code); chaining; SIGPIPE against a closed downstream reader;
