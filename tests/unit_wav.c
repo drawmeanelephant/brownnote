@@ -312,6 +312,15 @@ static void test_conversions(void)
 /* Resampling.                                                         */
 /* ------------------------------------------------------------------ */
 
+static double rms(const float *v, size_t n)
+{
+	double s = 0.0;
+
+	for (size_t i = 0; i < n; i++)
+		s += (double)v[i] * v[i];
+	return n ? sqrt(s / (double)n) : 0.0;
+}
+
 static void test_resample_identity(void)
 {
 	float in[8] = { 0, 0.25f, 0.5f, 0.75f, 1.0f, 0.5f, 0.25f, 0 };
@@ -370,6 +379,61 @@ static void test_resample_interleave(void)
 	free(out);
 }
 
+/*
+ * #32: decimation must not fold out-of-band energy into the
+ * passband.  A 30 kHz tone is above the 48 kHz output Nyquist
+ * (24 kHz) and would alias to 18 kHz at full amplitude without the
+ * low-pass; a 10 kHz tone is the in-band control that must survive.
+ */
+static void test_antialias(void)
+{
+	enum { N = 4800 };	/* 25 ms at 192 kHz */
+	float *in = malloc(N * sizeof(float));
+	float *out = NULL;
+	size_t n;
+
+	for (size_t i = 0; i < N; i++)
+		in[i] = 0.4f * sinf(2.0f * (float)M_PI * 30000.0f *
+				   (float)i / 192000.0f);
+	n = resample_frames(in, N, 1, 192000, 48000, &out);
+	CHECK(n == N / 4);
+	CHECK(out != NULL);
+	CHECK(rms(out, n) < 0.1 * rms(in, N));	/* alias suppressed */
+	free(out);
+
+	for (size_t i = 0; i < N; i++)
+		in[i] = 0.4f * sinf(2.0f * (float)M_PI * 10000.0f *
+				   (float)i / 192000.0f);
+	out = NULL;
+	n = resample_frames(in, N, 1, 192000, 48000, &out);
+	CHECK(n == N / 4);
+	CHECK(out != NULL);
+	CHECK(rms(out, n) > 0.9 * rms(in, N));	/* passband preserved */
+	CHECK(rms(out, n) < 1.1 * rms(in, N));
+	free(out);
+
+	/* DC gain is exactly 1 in the interior: a constant survives
+	 * decimation.  (The filter's zero-padded edges ramp in and out
+	 * over AA_TAPS/2 input frames — expected, so the check skips
+	 * them.) */
+	for (size_t i = 0; i < N; i++)
+		in[i] = 0.25f;
+	out = NULL;
+	n = resample_frames(in, N, 1, 192000, 48000, &out);
+	CHECK(n == N / 4);
+	float maxdev = 0.0f;
+
+	for (size_t j = 16; j + 16 < n; j++) {
+		float d = fabsf(out[j] - 0.25f);
+
+		if (d > maxdev)
+			maxdev = d;
+	}
+	CHECK(maxdev < 1e-4f);
+	free(out);
+	free(in);
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -383,6 +447,7 @@ int main(void)
 	test_resample_identity();
 	test_resample_counts_and_nodes();
 	test_resample_interleave();
+	test_antialias();
 
 	if (failures) {
 		printf("unit_wav: FAILED %d/%d checks\n", failures, checks);

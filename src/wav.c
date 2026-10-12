@@ -128,9 +128,73 @@ int16_t f_to_s16(float v)
 }
 
 /*
+ * Anti-aliasing for decimation.  The cubic interpolator is a fine
+ * upsampler, but used to drop rate it merely samples the input at
+ * the output rate, folding everything above the output Nyquist back
+ * into the passband: a 30 kHz tone in a 192 kHz file comes out of a
+ * 48 kHz decimation as 18 kHz, at full amplitude.  So before
+ * decimating, the input runs through a Hann-windowed sinc low-pass
+ * at 90% of the output Nyquist.  Transport plumbing, same as the
+ * resampler itself — good enough to keep aliasing inaudible, not a
+ * DSP statement.
+ */
+#define AA_TAPS 65			/* odd, so the filter is centred */
+
+static double sinc(double x)
+{
+	return x == 0.0 ? 1.0 : sin(M_PI * x) / (M_PI * x);
+}
+
+/*
+ * Low-pass each channel of in (interleaved, in_frames frames) at
+ * cutoff cycles/sample, into a fresh buffer of the same shape.
+ * Edges are zero-padded; the filter is centred, so its group delay
+ * is (AA_TAPS-1)/2 input frames — irrelevant at file-conversion
+ * latencies.  Returns NULL on allocation failure.
+ */
+static float *lowpass(const float *in, size_t in_frames, unsigned channels,
+		      double cutoff)
+{
+	double h[AA_TAPS], sum = 0.0;
+	float *out;
+
+	for (int n = 0; n < AA_TAPS; n++) {
+		double x = n - (AA_TAPS - 1) / 2.0;
+		double w = 0.5 - 0.5 * cos(2.0 * M_PI * n / (AA_TAPS - 1));
+
+		h[n] = 2.0 * cutoff * sinc(2.0 * cutoff * x) * w;
+		sum += h[n];
+	}
+	for (int n = 0; n < AA_TAPS; n++)
+		h[n] /= sum;
+
+	out = malloc((in_frames ? in_frames : 1) * channels * sizeof(float));
+	if (!out)
+		return NULL;
+	for (size_t i = 0; i < in_frames; i++) {
+		for (unsigned c = 0; c < channels; c++) {
+			double acc = 0.0;
+
+			for (int n = 0; n < AA_TAPS; n++) {
+				long j = (long)i - (n - (AA_TAPS - 1) / 2);
+
+				if (j >= 0 && (size_t)j < in_frames)
+					acc += h[n] *
+						in[(size_t)j * channels + c];
+			}
+			out[i * channels + c] = (float)acc;
+		}
+	}
+	return out;
+}
+
+/*
  * Catmull-Rom cubic resampling, per channel, over interleaved frames.
  * Transport plumbing to meet the bench's 48 kHz — not an effect; it
- * is the same interpolation any file converter does.
+ * is the same interpolation any file converter does.  Decimation
+ * (in_rate > out_rate) low-passes first (see above), so energy above
+ * the output Nyquist does not fold back into the passband;
+ * upsampling needs no filter — interpolation cannot alias.
  */
 size_t resample_frames(const float *in, size_t in_frames,
 		       unsigned channels,
@@ -141,6 +205,20 @@ size_t resample_frames(const float *in, size_t in_frames,
 		*out_p = NULL;
 		return in_frames;	/* caller keeps the input buffer */
 	}
+
+	const float *src = in;
+	float *filtered = NULL;
+
+	if (in_rate > out_rate) {
+		filtered = lowpass(in, in_frames, channels,
+				   0.45 * (double)out_rate / (double)in_rate);
+		if (!filtered) {
+			*out_p = NULL;
+			return (size_t)-1;
+		}
+		src = filtered;
+	}
+
 	size_t out_frames = (size_t)llround(
 		(double)in_frames * (double)out_rate / (double)in_rate);
 	/*
@@ -149,6 +227,7 @@ size_t resample_frames(const float *in, size_t in_frames,
 	 */
 	float *out = malloc(out_frames * channels * sizeof(float) + 1);
 	if (!out) {
+		free(filtered);
 		*out_p = NULL;
 		return (size_t)-1;
 	}
@@ -162,10 +241,10 @@ size_t resample_frames(const float *in, size_t in_frames,
 		size_t i3 = (i + 2 < in_frames) ? i + 2 : in_frames - 1;
 
 		for (unsigned c = 0; c < channels; c++) {
-			double x0 = in[i0 * channels + c];
-			double x1 = in[i * channels + c];
-			double x2 = in[i2 * channels + c];
-			double x3 = in[i3 * channels + c];
+			double x0 = src[i0 * channels + c];
+			double x1 = src[i * channels + c];
+			double x2 = src[i2 * channels + c];
+			double x3 = src[i3 * channels + c];
 			double a0 = -0.5 * x0 + 1.5 * x1 - 1.5 * x2 + 0.5 * x3;
 			double a1 = x0 - 2.5 * x1 + 2.0 * x2 - 0.5 * x3;
 			double a2 = -0.5 * x0 + 0.5 * x2;
@@ -174,6 +253,7 @@ size_t resample_frames(const float *in, size_t in_frames,
 				(float)(((a0 * t + a1) * t + a2) * t + a3);
 		}
 	}
+	free(filtered);
 	*out_p = out;
 	return out_frames;
 }

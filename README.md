@@ -68,9 +68,10 @@ brownnote peeks at stdin and picks a mode:
   either byte order.
 - **WAV** — a RIFF/WAVE file (PCM s16le, mono or stereo, any rate
   8–192 kHz). brownnote converts to float32 stereo 48 kHz for the
-  bench (Catmull-Rom resampling — transport plumbing, not an effect),
-  runs the effects, and writes a WAV back with the *input's* rate and
-  channel count. Mono output takes the left channel of the processed
+  bench (Catmull-Rom resampling, low-pass filtered when the rate
+  drops so out-of-band energy cannot alias — transport plumbing,
+  not an effect), runs the effects, and writes a WAV back with the
+  *input's* rate and channel count. Mono output takes the left channel of the processed
   stereo signal. Sample conversion is `v/32768` in and
   `lroundf(clamp(v,-1,1)*32767)` out — asymmetric on purpose, the
   common convention, bounded by one LSB either way. Results larger
