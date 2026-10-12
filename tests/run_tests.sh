@@ -4,9 +4,8 @@
 # as a test helper for fixtures and measurement; every use is guarded.
 #
 # Real-bench tests need the GuitarPedal bench (see README); without it
-# they SKIP (and the suite still passes), which is what CI relies on
-# never having built it.  Plumbing tests run against /bin/cat and so
-# need nothing but brownnote itself.
+# they SKIP and the suite still passes.  Plumbing tests run against
+# /bin/cat and so need nothing but brownnote itself.
 #
 set -u
 cd "$(dirname "$0")/.." || exit
@@ -678,7 +677,7 @@ fi
 # (u) WAV mode, downstream closes: exit 141 like raw mode, with the
 #     errno, not a generic exit-1 "short write" (#11)
 # ------------------------------------------------------------------
-if [ "$have_python" = 1 ]; then
+if [ "$have_bench" = 1 ] && [ "$have_python" = 1 ]; then
 	"$BIN" < "$TMP/in.wav" 2> "$TMP/wavepipe.err" | head -c 10 \
 		> /dev/null
 	rc=${PIPESTATUS[0]}
@@ -687,6 +686,8 @@ if [ "$have_python" = 1 ]; then
 	else
 		bad "(u) WAV-mode EPIPE: rc=$rc (want 141), stderr: $(tail -1 "$TMP/wavepipe.err")"
 	fi
+elif [ "$have_bench" = 0 ]; then
+	skip "(u) WAV-mode EPIPE: bench not built ($BENCH)"
 else
 	skip "(u) WAV-mode EPIPE: python3 absent"
 fi
