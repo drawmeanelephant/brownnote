@@ -688,6 +688,41 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (v) targeted SIGINT with a shell-script bench: the shell defers
+#     SIGINT while waiting on its own children, so the handler must
+#     not block on it — grace period, then SIGKILL (#23)
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ]; then
+	printf '#!/bin/sh\nsleep 30\n' > "$TMP/slowsh.sh"
+	chmod +x "$TMP/slowsh.sh"
+	"$BIN" --bench "$TMP/slowsh.sh" < "$TMP/raw.f32" > /dev/null \
+		2>/dev/null &
+	sig_pid=$!
+	sleep 0.5			# let it spawn the bench
+	kill -INT $sig_pid 2>/dev/null
+	for i in $(seq 1 50); do	# 5 s bound
+		kill -0 $sig_pid 2>/dev/null || break
+		sleep 0.1
+	done
+	if kill -0 $sig_pid 2>/dev/null; then
+		kill -9 $sig_pid 2>/dev/null
+		wait $sig_pid 2>/dev/null
+		pkill -9 -f "$TMP/slowsh.sh" 2>/dev/null
+		bad "(v) SIGINT with shell bench: handler blocked, killed"
+	else
+		wait $sig_pid 2>/dev/null
+		rc=$?
+		if [ $rc -eq 130 ]; then
+			ok "(v) SIGINT with shell bench: exit 130, no block"
+		else
+			bad "(v) SIGINT with shell bench: rc=$rc (want 130)"
+		fi
+	fi
+else
+	skip "(v) SIGINT with shell bench: python3 absent"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then
