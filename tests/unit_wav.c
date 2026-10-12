@@ -412,10 +412,9 @@ static void test_antialias(void)
 	CHECK(rms(out, n) < 1.1 * rms(in, N));
 	free(out);
 
-	/* DC gain is exactly 1 in the interior: a constant survives
-	 * decimation.  (The filter's zero-padded edges ramp in and out
-	 * over AA_TAPS/2 input frames — expected, so the check skips
-	 * them.) */
+	/* DC gain is exactly 1 everywhere: a constant survives
+	 * decimation, edges included — the filter clamps to the edge
+	 * sample, so there is no fade-in/out to skip. */
 	for (size_t i = 0; i < N; i++)
 		in[i] = 0.25f;
 	out = NULL;
@@ -423,7 +422,7 @@ static void test_antialias(void)
 	CHECK(n == N / 4);
 	float maxdev = 0.0f;
 
-	for (size_t j = 16; j + 16 < n; j++) {
+	for (size_t j = 0; j < n; j++) {
 		float d = fabsf(out[j] - 0.25f);
 
 		if (d > maxdev)

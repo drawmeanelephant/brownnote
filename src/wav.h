@@ -45,8 +45,8 @@ int16_t f_to_s16(float v);
  * Transport plumbing to meet the bench's 48 kHz — not an effect; it
  * is the same interpolation any file converter does.  Decimation
  * (in_rate > out_rate) runs the input through an anti-aliasing
- * low-pass first, so energy above the output Nyquist does not fold
- * back into the passband.
+ * low-pass first, so energy above the output Nyquist is strongly
+ * attenuated rather than folded back into the passband.
  *
  * Returns the output frame count and sets *out_p to a fresh buffer,
  * or returns in_frames with *out_p = NULL when no resampling is

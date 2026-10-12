@@ -148,9 +148,16 @@ static double sinc(double x)
 /*
  * Low-pass each channel of in (interleaved, in_frames frames) at
  * cutoff cycles/sample, into a fresh buffer of the same shape.
- * Edges are zero-padded; the filter is centred, so its group delay
- * is (AA_TAPS-1)/2 input frames — irrelevant at file-conversion
- * latencies.  Returns NULL on allocation failure.
+ * The kernel is centred, so the filter is zero-phase and adds no
+ * delay; taps that reach past an edge clamp to the edge sample,
+ * which keeps a constant signal flat right up to the first and
+ * last frame instead of fading in and out.  Returns NULL on
+ * allocation failure.
+ *
+ * With the fixed 65 taps the stopband is only ~-24 dB near the
+ * output Nyquist and the passband droops up to ~3.4 dB at 19 kHz
+ * on the 48 kHz -> 44.1 kHz trip — inaudible-alias territory, not
+ * a DSP statement.  Scaling the taps with the ratio is #35.
  */
 static float *lowpass(const float *in, size_t in_frames, unsigned channels,
 		      double cutoff)
@@ -178,9 +185,11 @@ static float *lowpass(const float *in, size_t in_frames, unsigned channels,
 			for (int n = 0; n < AA_TAPS; n++) {
 				long j = (long)i - (n - (AA_TAPS - 1) / 2);
 
-				if (j >= 0 && (size_t)j < in_frames)
-					acc += h[n] *
-						in[(size_t)j * channels + c];
+				if (j < 0)
+					j = 0;	/* clamp to the edge sample */
+				if (j >= (long)in_frames)
+					j = (long)in_frames - 1;
+				acc += h[n] * in[(size_t)j * channels + c];
 			}
 			out[i * channels + c] = (float)acc;
 		}
@@ -193,8 +202,9 @@ static float *lowpass(const float *in, size_t in_frames, unsigned channels,
  * Transport plumbing to meet the bench's 48 kHz — not an effect; it
  * is the same interpolation any file converter does.  Decimation
  * (in_rate > out_rate) low-passes first (see above), so energy above
- * the output Nyquist does not fold back into the passband;
- * upsampling needs no filter — interpolation cannot alias.
+ * the output Nyquist is strongly attenuated rather than folded
+ * back into the passband; upsampling needs no filter —
+ * interpolation cannot alias.
  */
 size_t resample_frames(const float *in, size_t in_frames,
 		       unsigned channels,
