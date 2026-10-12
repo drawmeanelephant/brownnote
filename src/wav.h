@@ -17,11 +17,15 @@ struct wav_info {
 	size_t data_off, data_len;
 };
 
-/* Little-endian readers/writers for RIFF fields and the output header. */
-uint32_t rd32(const unsigned char *p);
-uint16_t rd16(const unsigned char *p);
-void wr32(unsigned char *p, uint32_t v);
-void wr16(unsigned char *p, uint16_t v);
+/*
+ * Little-endian readers/writers for RIFF fields and the output
+ * header.  The wav_ prefix keeps these generic names from
+ * clashing with anything else linked in (fuzz harnesses).
+ */
+uint32_t wav_rd32(const unsigned char *p);
+uint16_t wav_rd16(const unsigned char *p);
+void wav_wr32(unsigned char *p, uint32_t v);
+void wav_wr16(unsigned char *p, uint16_t v);
 
 /*
  * Parse RIFF/WAVE: PCM s16le, mono or stereo, any rate 8-192 kHz.

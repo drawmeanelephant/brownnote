@@ -19,23 +19,23 @@
 /* WAV: the file format fart-app writes and zcn checks.               */
 /* ------------------------------------------------------------------ */
 
-uint32_t rd32(const unsigned char *p)
+uint32_t wav_rd32(const unsigned char *p)
 {
 	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
 	       ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-uint16_t rd16(const unsigned char *p)
+uint16_t wav_rd16(const unsigned char *p)
 {
 	return (uint16_t)(p[0] | (p[1] << 8));
 }
 
-void wr32(unsigned char *p, uint32_t v)
+void wav_wr32(unsigned char *p, uint32_t v)
 {
 	p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24;
 }
 
-void wr16(unsigned char *p, uint16_t v)
+void wav_wr16(unsigned char *p, uint16_t v)
 {
 	p[0] = v; p[1] = v >> 8;
 }
@@ -56,17 +56,17 @@ bool parse_wav(const unsigned char *p, size_t len, struct wav_info *w)
 	uint16_t format = 0, bits = 0;
 
 	while (pos + 8 <= len) {
-		uint32_t csz = rd32(p + pos + 4);
+		uint32_t csz = wav_rd32(p + pos + 4);
 
 		if (pos + 8 + csz > len)
 			csz = (uint32_t)(len - pos - 8);
 		const unsigned char *body = p + pos + 8;
 
 		if (!memcmp(p + pos, "fmt ", 4) && csz >= 16) {
-			format = rd16(body);
-			w->channels = rd16(body + 2);
-			w->rate = rd32(body + 4);
-			bits = rd16(body + 14);
+			format = wav_rd16(body);
+			w->channels = wav_rd16(body + 2);
+			w->rate = wav_rd32(body + 4);
+			bits = wav_rd16(body + 14);
 			have_fmt = true;
 		} else if (!memcmp(p + pos, "data", 4)) {
 			w->data_off = pos + 8;

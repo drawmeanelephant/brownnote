@@ -601,7 +601,6 @@ static int run_bench(char **argv, struct pump *pm)
 	return pump_run(pm, pid);
 }
 
-
 /* ------------------------------------------------------------------ */
 /* main.                                                               */
 /* ------------------------------------------------------------------ */
@@ -856,7 +855,7 @@ int main(int argc, char **argv)
 		die(EXIT_FAILURE, "brownnote: out of memory");
 	for (size_t i = 0; i < in_frames * w.channels; i++)
 		frames[i] = s16_to_f(
-			(int16_t)rd16(file.p + w.data_off + 2 * i));
+			(int16_t)wav_rd16(file.p + w.data_off + 2 * i));
 
 	/* to the bench's 48 kHz ... */
 	float *res = NULL;
@@ -942,18 +941,18 @@ int main(int argc, char **argv)
 	unsigned char hdr[44];
 	uint32_t data_bytes = (uint32_t)pcm_bytes;
 	memcpy(hdr, "RIFF", 4);
-	wr32(hdr + 4, 36 + data_bytes);
+	wav_wr32(hdr + 4, 36 + data_bytes);
 	memcpy(hdr + 8, "WAVE", 4);
 	memcpy(hdr + 12, "fmt ", 4);
-	wr32(hdr + 16, 16);
-	wr16(hdr + 20, 1);
-	wr16(hdr + 22, (uint16_t)w.channels);
-	wr32(hdr + 24, w.rate);
-	wr32(hdr + 28, w.rate * w.channels * 2);
-	wr16(hdr + 32, (uint16_t)(w.channels * 2));
-	wr16(hdr + 34, 16);
+	wav_wr32(hdr + 16, 16);
+	wav_wr16(hdr + 20, 1);
+	wav_wr16(hdr + 22, (uint16_t)w.channels);
+	wav_wr32(hdr + 24, w.rate);
+	wav_wr32(hdr + 28, w.rate * w.channels * 2);
+	wav_wr16(hdr + 32, (uint16_t)(w.channels * 2));
+	wav_wr16(hdr + 34, 16);
 	memcpy(hdr + 36, "data", 4);
-	wr32(hdr + 40, data_bytes);
+	wav_wr32(hdr + 40, data_bytes);
 
 	/*
 	 * The bench's output sat in a memory sink, so a closed

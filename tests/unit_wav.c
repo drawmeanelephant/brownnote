@@ -59,7 +59,7 @@ static void put32(struct blob *b, uint32_t v)
 {
 	unsigned char t[4];
 
-	wr32(t, v);
+	wav_wr32(t, v);
 	put(b, t, 4);
 }
 
@@ -78,12 +78,12 @@ static void fmt_chunk(struct blob *b, uint16_t format, uint16_t channels,
 {
 	unsigned char f[16];
 
-	wr16(f + 0, format);
-	wr16(f + 2, channels);
-	wr32(f + 4, rate);
-	wr32(f + 8, rate * channels * 2);	/* byte rate, unchecked */
-	wr16(f + 12, (uint16_t)(channels * 2));	/* block align, unchecked */
-	wr16(f + 14, bits);
+	wav_wr16(f + 0, format);
+	wav_wr16(f + 2, channels);
+	wav_wr32(f + 4, rate);
+	wav_wr32(f + 8, rate * channels * 2);	/* byte rate, unchecked */
+	wav_wr16(f + 12, (uint16_t)(channels * 2));	/* block align, unchecked */
+	wav_wr16(f + 14, bits);
 	chunk(b, "fmt ", f, sizeof(f));
 }
 
@@ -100,7 +100,7 @@ static void wav_begin(struct blob *b, uint16_t format, uint16_t channels,
 
 static void wav_end(struct blob *b)
 {
-	wr32(b->p + 4, (uint32_t)(b->len - 8));
+	wav_wr32(b->p + 4, (uint32_t)(b->len - 8));
 }
 
 /* ------------------------------------------------------------------ */
@@ -121,8 +121,8 @@ static void test_parse_valid(void)
 	CHECK(w.rate == 48000);
 	CHECK(w.data_off == 44);
 	CHECK(w.data_len == sizeof(pcm));
-	CHECK(rd16(b.p + w.data_off) == 1000);
-	CHECK((int16_t)rd16(b.p + w.data_off + 6) == -2000);
+	CHECK(wav_rd16(b.p + w.data_off) == 1000);
+	CHECK((int16_t)wav_rd16(b.p + w.data_off + 6) == -2000);
 	free(b.p);
 }
 
