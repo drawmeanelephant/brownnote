@@ -4,9 +4,8 @@
 # as a test helper for fixtures and measurement; every use is guarded.
 #
 # Real-bench tests need the GuitarPedal bench (see README); without it
-# they SKIP (and the suite still passes), which is what CI relies on
-# never having built it.  Plumbing tests run against /bin/cat and so
-# need nothing but brownnote itself.
+# they SKIP and the suite still passes.  Plumbing tests run against
+# /bin/cat and so need nothing but brownnote itself.
 #
 set -u
 cd "$(dirname "$0")/.." || exit
@@ -678,7 +677,7 @@ fi
 # (u) WAV mode, downstream closes: exit 141 like raw mode, with the
 #     errno, not a generic exit-1 "short write" (#11)
 # ------------------------------------------------------------------
-if [ "$have_python" = 1 ]; then
+if [ "$have_bench" = 1 ] && [ "$have_python" = 1 ]; then
 	"$BIN" < "$TMP/in.wav" 2> "$TMP/wavepipe.err" | head -c 10 \
 		> /dev/null
 	rc=${PIPESTATUS[0]}
@@ -687,6 +686,8 @@ if [ "$have_python" = 1 ]; then
 	else
 		bad "(u) WAV-mode EPIPE: rc=$rc (want 141), stderr: $(tail -1 "$TMP/wavepipe.err")"
 	fi
+elif [ "$have_bench" = 0 ]; then
+	skip "(u) WAV-mode EPIPE: bench not built ($BENCH)"
 else
 	skip "(u) WAV-mode EPIPE: python3 absent"
 fi
@@ -724,6 +725,73 @@ if [ "$have_python" = 1 ]; then
 	fi
 else
 	skip "(v) SIGINT with shell bench: python3 absent"
+fi
+
+# ------------------------------------------------------------------
+# (w) downsample anti-aliasing: a tone above the output Nyquist must
+#     be filtered out, not folded back into the passband (#32)
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ]; then
+	verdict=$(python3 - "$BIN" <<'PYEOF'
+import array, math, os, struct, subprocess, sys, tempfile, wave
+
+bin_ = sys.argv[1]
+SR = 192000					# input rate
+N = SR // 2					# 0.5 s
+# 30 kHz aliases to 18 kHz when dropped to the bench's 48 kHz;
+# 10 kHz is the in-band control that must survive the trip.
+frames = bytearray()
+for i in range(N):
+    t = i / SR
+    v = 0.4 * math.sin(2 * math.pi * 30000 * t) \
+      + 0.4 * math.sin(2 * math.pi * 10000 * t)
+    frames += struct.pack('<h', int(v * 32767))
+fd, path = tempfile.mkstemp(suffix='.wav')
+os.close(fd)
+w = wave.open(path, 'wb')
+w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
+w.writeframes(bytes(frames)); w.close()
+
+with open(path, 'rb') as f:
+    r = subprocess.run([bin_, '--bench', '/bin/cat'], stdin=f,
+                       capture_output=True, timeout=120)
+os.unlink(path)
+if r.returncode != 0:
+    raise SystemExit(f"bad: rc={r.returncode} err={r.stderr[:80]!r}")
+
+b = r.stdout
+if len(b) < 44 or b[0:4] != b'RIFF':
+    raise SystemExit("bad: output is not a WAV")
+a = array.array('h')
+a.frombytes(b[44:44 + struct.unpack('<I', b[40:44])[0]])
+vals = [x / 32768.0 for x in a]
+
+def amp(f):
+    # Goertzel amplitude of frequency f in vals
+    k = 2.0 * math.cos(2 * math.pi * f / SR)
+    s1 = s2 = 0.0
+    for x in vals:
+        s0 = x + k * s1 - s2
+        s2, s1 = s1, s0
+    return 2.0 * math.sqrt(max(s1 * s1 + s2 * s2 - k * s1 * s2, 0.0)) \
+        / len(vals)
+
+a30, a18, a10 = amp(30000), amp(18000), amp(10000)
+if a10 < 0.30:
+    raise SystemExit(f"bad: in-band 10 kHz control lost (amp {a10:.4f})")
+if a18 > 0.05:
+    raise SystemExit(f"bad: 30 kHz folded to 18 kHz at amp {a18:.4f}")
+if a30 > 0.05:
+    raise SystemExit(f"bad: 30 kHz passed through at amp {a30:.4f}")
+print(f"ok: 10 kHz control {a10:.4f}, alias {a18:.4f}, 30 kHz {a30:.4f}")
+PYEOF
+)
+	case "$verdict" in
+	ok:*) ok "(w) anti-aliasing: $verdict" ;;
+	*)   bad "(w) anti-aliasing: $verdict" ;;
+	esac
+else
+	skip "(w) anti-aliasing: python3 absent"
 fi
 
 # ------------------------------------------------------------------

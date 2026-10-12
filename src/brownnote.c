@@ -36,7 +36,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <math.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -50,6 +49,8 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "wav.h"
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>	/* _NSGetExecutablePath */
@@ -601,173 +602,6 @@ static int run_bench(char **argv, struct pump *pm)
 }
 
 /* ------------------------------------------------------------------ */
-/* WAV: the file format fart-app writes and zcn checks.               */
-/* ------------------------------------------------------------------ */
-
-struct wav_info {
-	unsigned channels;
-	unsigned rate;
-	size_t data_off, data_len;
-};
-
-static uint32_t rd32(const unsigned char *p)
-{
-	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-	       ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
-static uint16_t rd16(const unsigned char *p)
-{
-	return (uint16_t)(p[0] | (p[1] << 8));
-}
-
-static void wr32(unsigned char *p, uint32_t v)
-{
-	p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24;
-}
-
-static void wr16(unsigned char *p, uint16_t v)
-{
-	p[0] = v; p[1] = v >> 8;
-}
-
-/*
- * Parse RIFF/WAVE: PCM s16le, mono or stereo, any rate 8-192 kHz.
- * Chunks are walked properly, so LIST and friends pass by; a chunk
- * whose size runs past the end of the file is clamped.
- */
-static bool parse_wav(const unsigned char *p, size_t len, struct wav_info *w)
-{
-	if (len < 44 || memcmp(p, "RIFF", 4) || memcmp(p + 8, "WAVE", 4)) {
-		fprintf(stderr, "brownnote: not a RIFF/WAVE file\n");
-		return false;
-	}
-	size_t pos = 12;
-	bool have_fmt = false, have_data = false;
-	uint16_t format = 0, bits = 0;
-
-	while (pos + 8 <= len) {
-		uint32_t csz = rd32(p + pos + 4);
-
-		if (pos + 8 + csz > len)
-			csz = (uint32_t)(len - pos - 8);
-		const unsigned char *body = p + pos + 8;
-
-		if (!memcmp(p + pos, "fmt ", 4) && csz >= 16) {
-			format = rd16(body);
-			w->channels = rd16(body + 2);
-			w->rate = rd32(body + 4);
-			bits = rd16(body + 14);
-			have_fmt = true;
-		} else if (!memcmp(p + pos, "data", 4)) {
-			w->data_off = pos + 8;
-			/*
-			 * A declared size of 0 is an empty chunk — every
-			 * chunk after it is metadata, not audio.  Only a
-			 * size that runs past the end of the file (the
-			 * 0xFFFFFFFF of streaming writers) is the
-			 * to-EOF fallback, by way of the clamp above.
-			 */
-			w->data_len = csz;
-			have_data = true;
-		}
-		pos += 8 + csz + (csz & 1);	/* chunks are word-aligned */
-	}
-
-	if (!have_fmt || !have_data) {
-		fprintf(stderr, "brownnote: WAV is missing fmt or data\n");
-		return false;
-	}
-	if (format != 1 || bits != 16) {
-		fprintf(stderr, "brownnote: WAV must be PCM s16le "
-			"(got format %u, %u bits)\n", format, bits);
-		return false;
-	}
-	if (w->channels < 1 || w->channels > 2) {
-		fprintf(stderr, "brownnote: WAV must be mono or stereo "
-			"(got %u channels)\n", w->channels);
-		return false;
-	}
-	if (w->rate < 8000 || w->rate > 192000) {
-		fprintf(stderr, "brownnote: WAV rate %u out of range "
-			"(8000..192000)\n", w->rate);
-		return false;
-	}
-	if (w->data_len % (2 * w->channels)) {
-		fprintf(stderr, "brownnote: WAV data length not frame-aligned\n");
-		return false;
-	}
-	return true;
-}
-
-/* ------------------------------------------------------------------ */
-/* Sample conversion and resampling.                                   */
-/* ------------------------------------------------------------------ */
-
-/*
- * s16 -> float: v/32768, so full scale lands a hair under 1.0.
- * float -> s16: lroundf(clamp(v)*32767).  Asymmetric on purpose —
- * the common convention — and commented here so nobody "fixes" it:
- * round-tripping is not identity, it is bounded by one LSB.
- */
-static float s16_to_f(int16_t v) { return (float)v / 32768.0f; }
-static int16_t f_to_s16(float v)
-{
-	if (v >= 1.0f) return 32767;
-	if (v <= -1.0f) return -32767;
-	return (int16_t)lroundf(v * 32767.0f);
-}
-
-/*
- * Catmull-Rom cubic resampling, per channel, over interleaved frames.
- * Transport plumbing to meet the bench's 48 kHz — not an effect; it
- * is the same interpolation any file converter does.
- */
-static size_t resample_frames(const float *in, size_t in_frames,
-			      unsigned channels,
-			      unsigned in_rate, unsigned out_rate,
-			      float **out_p)
-{
-	if (in_rate == out_rate || in_frames == 0) {
-		*out_p = NULL;
-		return in_frames;	/* caller keeps the input buffer */
-	}
-	size_t out_frames = (size_t)llround(
-		(double)in_frames * (double)out_rate / (double)in_rate);
-	/*
-	 * out_frames can legitimately be 0 — one 192 kHz frame is less
-	 * than half a 48 kHz frame — and malloc(0) may return NULL.
-	 */
-	float *out = malloc(out_frames * channels * sizeof(float) + 1);
-	if (!out)
-		die(EXIT_FAILURE, "brownnote: out of memory");
-
-	for (size_t j = 0; j < out_frames; j++) {
-		double p = (double)j * (double)in_rate / (double)out_rate;
-		size_t i = (size_t)p;
-		double t = p - (double)i;
-		size_t i0 = i ? i - 1 : 0;
-		size_t i2 = (i + 1 < in_frames) ? i + 1 : in_frames - 1;
-		size_t i3 = (i + 2 < in_frames) ? i + 2 : in_frames - 1;
-
-		for (unsigned c = 0; c < channels; c++) {
-			double x0 = in[i0 * channels + c];
-			double x1 = in[i * channels + c];
-			double x2 = in[i2 * channels + c];
-			double x3 = in[i3 * channels + c];
-			double a0 = -0.5 * x0 + 1.5 * x1 - 1.5 * x2 + 0.5 * x3;
-			double a1 = x0 - 2.5 * x1 + 2.0 * x2 - 0.5 * x3;
-			double a2 = -0.5 * x0 + 0.5 * x2;
-			double a3 = x1;
-			out[j * channels + c] =
-				(float)(((a0 * t + a1) * t + a2) * t + a3);
-		}
-	}
-	*out_p = out;
-	return out_frames;
-}
-
-/* ------------------------------------------------------------------ */
 /* main.                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -797,6 +631,26 @@ static ssize_t read_input(void *buf, size_t n)
 		}
 		return -1;
 	}
+}
+
+/*
+ * The bench's wire format is native-endian float32: it reads and
+ * writes plain float, with no byte swapping.  Raw mode's documented
+ * layout (little-endian) therefore only holds on a little-endian
+ * host, and a big-endian host's raw stream would be garbage to every
+ * little-endian consumer.  Refuse raw mode there rather than emit a
+ * stream that silently violates the documented format.  WAV mode
+ * converts explicitly on both sides of the bench and is
+ * endian-independent.
+ */
+static bool host_is_little_endian(void)
+{
+	const union {
+		uint16_t u;
+		unsigned char b[2];
+	} probe = { .u = 1 };
+
+	return probe.b[0] == 1;
 }
 
 /*
@@ -944,8 +798,16 @@ int main(int argc, char **argv)
 	if (!wav_mode) {
 		/*
 		 * Raw mode: stream stdin -> bench -> stdout.  The four
-		 * peeked bytes lead the queue.
+		 * peeked bytes lead the queue.  The bench's wire format
+		 * is native-endian float32, so on a big-endian host the
+		 * stream would not be the documented little-endian one
+		 * — refuse rather than emit garbage.
 		 */
+		if (!host_is_little_endian())
+			die(EXIT_USAGE, "brownnote: raw mode needs a "
+			    "little-endian host (the bench's wire format "
+			    "is native-endian float32); WAV mode is "
+			    "unaffected");
 		if (got)
 			mb_put(&pm.queue, head, got);
 		pm.in_fd = 0;
@@ -993,12 +855,14 @@ int main(int argc, char **argv)
 		die(EXIT_FAILURE, "brownnote: out of memory");
 	for (size_t i = 0; i < in_frames * w.channels; i++)
 		frames[i] = s16_to_f(
-			(int16_t)rd16(file.p + w.data_off + 2 * i));
+			(int16_t)wav_rd16(file.p + w.data_off + 2 * i));
 
 	/* to the bench's 48 kHz ... */
 	float *res = NULL;
 	size_t frames48 = resample_frames(frames, in_frames, w.channels,
 					  w.rate, 48000, &res);
+	if (frames48 == (size_t)-1)
+		die(EXIT_FAILURE, "brownnote: out of memory");
 	const float *at48 = res ? res : frames;
 
 	/* ... and to stereo */
@@ -1040,6 +904,8 @@ int main(int argc, char **argv)
 	float *back = NULL;
 	size_t out_frames = resample_frames(outp, out48, 2, 48000,
 					    w.rate, &back);
+	if (out_frames == (size_t)-1)
+		die(EXIT_FAILURE, "brownnote: out of memory");
 	const float *at_in = back ? back : outp;
 
 	/*
@@ -1075,18 +941,18 @@ int main(int argc, char **argv)
 	unsigned char hdr[44];
 	uint32_t data_bytes = (uint32_t)pcm_bytes;
 	memcpy(hdr, "RIFF", 4);
-	wr32(hdr + 4, 36 + data_bytes);
+	wav_wr32(hdr + 4, 36 + data_bytes);
 	memcpy(hdr + 8, "WAVE", 4);
 	memcpy(hdr + 12, "fmt ", 4);
-	wr32(hdr + 16, 16);
-	wr16(hdr + 20, 1);
-	wr16(hdr + 22, (uint16_t)w.channels);
-	wr32(hdr + 24, w.rate);
-	wr32(hdr + 28, w.rate * w.channels * 2);
-	wr16(hdr + 32, (uint16_t)(w.channels * 2));
-	wr16(hdr + 34, 16);
+	wav_wr32(hdr + 16, 16);
+	wav_wr16(hdr + 20, 1);
+	wav_wr16(hdr + 22, (uint16_t)w.channels);
+	wav_wr32(hdr + 24, w.rate);
+	wav_wr32(hdr + 28, w.rate * w.channels * 2);
+	wav_wr16(hdr + 32, (uint16_t)(w.channels * 2));
+	wav_wr16(hdr + 34, 16);
 	memcpy(hdr + 36, "data", 4);
-	wr32(hdr + 40, data_bytes);
+	wav_wr32(hdr + 40, data_bytes);
 
 	/*
 	 * The bench's output sat in a memory sink, so a closed

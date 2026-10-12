@@ -60,12 +60,20 @@ brownnote peeks at stdin and picks a mode:
 
 - **raw** — float32 little-endian stereo frames at 48 kHz, the bench's
   own wire format, in one end and out the other. This is the native
-  mode of the pedal's audio core.
+  mode of the pedal's audio core. The bench reads and writes native
+  `float`, so the little-endian layout holds on little-endian hosts
+  only; on a big-endian host brownnote refuses raw mode (exit 2)
+  rather than emit a stream no little-endian consumer can read. WAV
+  mode converts explicitly on both sides of the bench and works on
+  either byte order.
 - **WAV** — a RIFF/WAVE file (PCM s16le, mono or stereo, any rate
   8–192 kHz). brownnote converts to float32 stereo 48 kHz for the
-  bench (Catmull-Rom resampling — transport plumbing, not an effect),
-  runs the effects, and writes a WAV back with the *input's* rate and
-  channel count. Mono output takes the left channel of the processed
+  bench (Catmull-Rom resampling, low-pass filtered on every rate
+  drop — the way in for rates above 48 kHz, the way back for
+  rates below it — so out-of-band energy is strongly attenuated
+  rather than folded back; transport plumbing, not an effect),
+  runs the effects, and writes a WAV back with the *input's*
+  rate and channel count. Mono output takes the left channel of the processed
   stereo signal. Sample conversion is `v/32768` in and
   `lroundf(clamp(v,-1,1)*32767)` out — asymmetric on purpose, the
   common convention, bounded by one LSB either way. Results larger
@@ -122,7 +130,9 @@ and a client that feeds it.
 through fuzz (Rat Sketch), delay (Tape Echo), chorus (Flanger), and the
 three-effect chain, plus a demonstration track with all five in
 sequence. `demo_brownnote.wav` / `.m4a` — a fart goes in, a distorted,
-delayed, chorused fart comes out.
+delayed, chorused fart comes out. These were rendered before the
+resampler's anti-aliasing filter (#32): re-rendering them today
+would produce slightly different output.
 
 ## Testing
 
@@ -131,6 +141,11 @@ make test
 # or, explicitly:
 BENCH=vendor/GuitarPedal/Validation/bench/bench tests/run_tests.sh
 ```
+
+`make test` builds and runs the unit tests for the WAV parser, the
+resampler and the sample conversions, then the suite below
+(`make unit` runs just the unit tests; `tests/run_tests.sh` alone
+is the suite, without them).
 
 The suite covers: build; raw-mode plumbing identity against `/bin/cat`
 (byte-identical); fuzz through the real bench (output changes, sane

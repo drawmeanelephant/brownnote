@@ -37,4 +37,4 @@ jobs:
         run: make
 
       - name: Test
-        run: BENCH=vendor/GuitarPedal/Validation/bench/bench tests/run_tests.sh
+        run: make test
