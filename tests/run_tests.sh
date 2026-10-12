@@ -9,7 +9,7 @@
 # need nothing but brownnote itself.
 #
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
 
 BIN=build/brownnote
 BENCH="${BENCH:-vendor/GuitarPedal/Validation/bench/bench}"
@@ -45,7 +45,7 @@ fi
 # fixtures
 # ------------------------------------------------------------------
 if [ "$have_python" = 1 ]; then
-	python3 - "$TMP" <<'PYEOF'
+	if python3 - "$TMP" <<'PYEOF'
 import struct, sys, wave, math, os
 d = sys.argv[1]
 
@@ -70,15 +70,21 @@ for i in range(44100):
     pcm += struct.pack('<h', v)
 w.writeframes(bytes(pcm)); w.close()
 PYEOF
-	[ $? -eq 0 ] || { bad "fixtures"; echo "SUMMARY: FAILED"; exit 1; }
+	then
+		:
+	else
+		bad "fixtures"
+		echo "SUMMARY: FAILED"
+		exit 1
+	fi
 fi
 
 # ------------------------------------------------------------------
 # (b) plumbing identity: raw through /bin/cat is byte-identical
 # ------------------------------------------------------------------
 if [ "$have_python" = 1 ]; then
-	"$BIN" --bench /bin/cat < "$TMP/raw.f32" > "$TMP/echo.f32" 2>/dev/null
-	if [ $? -eq 0 ] && cmp -s "$TMP/raw.f32" "$TMP/echo.f32"; then
+	if "$BIN" --bench /bin/cat < "$TMP/raw.f32" > "$TMP/echo.f32" 2>/dev/null &&
+		cmp -s "$TMP/raw.f32" "$TMP/echo.f32"; then
 		ok "(b) raw plumbing: /bin/cat round trip is byte-identical"
 	else
 		bad "(b) raw plumbing: /bin/cat round trip differs"
@@ -313,12 +319,10 @@ fi
 # (j) the real chain: kujamba -> brownnote -> zcn check-wav
 # ------------------------------------------------------------------
 if [ -x "$KUJAMBA" ] && [ -x "$ZCN" ] && [ "$have_bench" = 1 ]; then
-	"$KUJAMBA" render --phrase "kujamba karibu" --seed 42 \
-		--out "$TMP/t_in.wav" >/dev/null 2>&1
-	if [ $? -eq 0 ]; then
-		"$BIN" --effect fuzz < "$TMP/t_in.wav" > "$TMP/t_out.wav" \
-			2>/dev/null
-		if [ $? -eq 0 ]; then
+	if "$KUJAMBA" render --phrase "kujamba karibu" --seed 42 \
+		--out "$TMP/t_in.wav" >/dev/null 2>&1; then
+		if "$BIN" --effect fuzz < "$TMP/t_in.wav" > "$TMP/t_out.wav" \
+			2>/dev/null; then
 			if "$ZCN" check-wav "$TMP/t_out.wav" --min-rms 0.01 \
 				>/dev/null 2>&1; then
 				ok "(j) round trip: kujamba -> brownnote fuzz -> zcn check-wav"
@@ -678,7 +682,7 @@ if [ "$have_python" = 1 ]; then
 	"$BIN" < "$TMP/in.wav" 2> "$TMP/wavepipe.err" | head -c 10 \
 		> /dev/null
 	rc=${PIPESTATUS[0]}
-	if [ $rc -eq 141 ] && grep -q "Broken pipe" "$TMP/wavepipe.err"; then
+	if [ "$rc" -eq 141 ] && grep -q "Broken pipe" "$TMP/wavepipe.err"; then
 		ok "(u) WAV-mode EPIPE: exit 141, errno in the message"
 	else
 		bad "(u) WAV-mode EPIPE: rc=$rc (want 141), stderr: $(tail -1 "$TMP/wavepipe.err")"
