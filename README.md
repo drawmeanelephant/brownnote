@@ -121,6 +121,10 @@ The output mode always mirrors the input mode.
 Exact bench names always win over aliases. `--list` shows the bench's
 truth: every routable effect and every pot with its range.
 
+The table is generated from `aliases[]` in `src/brownnote.c` by
+`scripts/gen_alias_table.sh` — the suite diffs the two, and checks
+every target still appears in the bench's `--list`.
+
 ## The pipeline, concretely
 
 fart-app renders WAV files and zcn consumes them, so with those two
@@ -168,6 +172,8 @@ its exit code); chaining; SIGPIPE against a closed downstream reader;
 WAV passthrough (header and level preserved); WAV fuzz; `--list`;
 the streaming WAV header (placeholder sizes on a pipe, backfilled on a
 file); a 30 MB WAV streamed through a pipe under a small address space;
+alias-table drift (README vs `aliases[]`, and every target vs the
+bench's `--list`);
 and, when the Zig tools happen to be around, the full
 kujamba → brownnote → zcn round trip. Real-bench and round-trip tests
 skip cleanly (and the suite still passes) when their binaries are
