@@ -557,7 +557,8 @@ fi
 # ------------------------------------------------------------------
 # (q) 4 GiB wrap: output past RIFF's 32-bit size fields must fail
 #     loudly, not wrap the header around an empty file (#7).
-#     Gated: peaks ~13 GB RAM and tens of seconds.
+#     Gated: ~12 GiB streams through the pipes, tens of seconds —
+#     streaming made the RAM side cheap, the I/O is still real.
 # ------------------------------------------------------------------
 if [ "${BROWNNOTE_HEAVY:-0}" = "1" ] && [ "$have_python" = 1 ]; then
 	# stereo 48 kHz, so s16 output is exactly half the bench's float32
@@ -572,26 +573,15 @@ PYEOF
 	printf '#!/bin/sh\nexec dd if=/dev/zero bs=1048576 count=%s 2>/dev/null\n' \
 		4096 > "$TMP/gen4g.sh"
 	chmod +x "$TMP/gen4g.sh"
-	# 4 GiB of float32 stereo is 2 GiB of s16 — legal, header exact
-	"$BIN" --bench "$TMP/gen4g.sh" < "$TMP/tiny48s.wav" 2>/dev/null |
-		head -c 44 > "$TMP/limit4g.hdr"
-	verdict=$(python3 - "$TMP/limit4g.hdr" <<'PYEOF'
-import sys
-b = open(sys.argv[1], 'rb').read(44)
-if len(b) != 44:
-    print("bad: short header"); raise SystemExit
-riff = int.from_bytes(b[4:8], 'little')
-data = int.from_bytes(b[40:44], 'little')
-if data == 2147483648 and riff == 2147483648 + 36:
-    print("ok: 2 GiB result (legal) header is exact")
-else:
-    print(f"bad: riff={riff} data={data}")
-PYEOF
-)
-	case "$verdict" in
-		ok:*) ok "(q) 4 GiB wrap: $verdict" ;;
-		*)   bad "(q) 4 GiB wrap: $verdict" ;;
-	esac
+	# 4 GiB of float32 stereo is 2 GiB of s16 — legal, must not die
+	"$BIN" --bench "$TMP/gen4g.sh" < "$TMP/tiny48s.wav" > /dev/null \
+		2> "$TMP/under4g.err"
+	rc=$?
+	if [ $rc -eq 0 ]; then
+		ok "(q) 4 GiB wrap: legal 2 GiB result streams through"
+	else
+		bad "(q) 4 GiB wrap: legal result rc=$rc, stderr: $(head -1 "$TMP/under4g.err")"
+	fi
 	printf '#!/bin/sh\nexec dd if=/dev/zero bs=1048576 count=%s 2>/dev/null\n' \
 		8192 > "$TMP/gen8g.sh"
 	chmod +x "$TMP/gen8g.sh"
@@ -605,7 +595,7 @@ PYEOF
 		bad "(q) 4 GiB wrap: rc=$rc (silent wrap?), stderr: $(head -1 "$TMP/over4g.err")"
 	fi
 else
-	skip "(q) 4 GiB wrap: set BROWNNOTE_HEAVY=1 (~13 GB RAM, tens of seconds)"
+	skip "(q) 4 GiB wrap: set BROWNNOTE_HEAVY=1 (~12 GiB of I/O, tens of seconds)"
 fi
 
 # ------------------------------------------------------------------
@@ -792,6 +782,100 @@ PYEOF
 	esac
 else
 	skip "(w) anti-aliasing: python3 absent"
+fi
+
+# ------------------------------------------------------------------
+# (x) streaming output header: a pipe keeps the 0xFFFFFFFF streaming
+#     sizes; a regular file gets them backfilled at the end, so a
+#     seekable result is byte-exact (#28)
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ]; then
+	"$BIN" --bench /bin/cat < "$TMP/in.wav" 2>/dev/null |
+		head -c 44 > "$TMP/pipe.hdr"
+	"$BIN" --bench /bin/cat < "$TMP/in.wav" > "$TMP/file.wav" \
+		2>/dev/null
+	verdict=$(python3 - "$TMP/pipe.hdr" "$TMP/file.wav" <<'PYEOF'
+import os, sys
+hdr = open(sys.argv[1], 'rb').read()
+path = sys.argv[2]
+b = open(path, 'rb').read(44)
+size = os.path.getsize(path)
+if len(hdr) != 44:
+    raise SystemExit("bad: short piped header")
+riff = int.from_bytes(hdr[4:8], 'little')
+data = int.from_bytes(hdr[40:44], 'little')
+if riff != 0xFFFFFFFF or data != 0xFFFFFFFF:
+    raise SystemExit(
+        f"bad: piped sizes riff={riff:#x} data={data:#x}")
+if len(b) != 44:
+    raise SystemExit("bad: short file header")
+riff = int.from_bytes(b[4:8], 'little')
+data = int.from_bytes(b[40:44], 'little')
+if riff != size - 8 or data != size - 44:
+    raise SystemExit(
+        f"bad: backfill riff={riff} data={data} for a {size}-byte file")
+if b[0:4] != b'RIFF' or b[8:12] != b'WAVE':
+    raise SystemExit("bad: not a RIFF/WAVE")
+print("ok")
+PYEOF
+)
+	if [ "$verdict" = "ok" ]; then
+		ok "(x) WAV header: pipe keeps FFFFFFFF sizes, file backfilled exact"
+	else
+		bad "(x) WAV header: $verdict"
+	fi
+else
+	skip "(x) WAV header: python3 absent"
+fi
+
+# ------------------------------------------------------------------
+# (y) a big WAV through a pipe: the input streams in blocks, so a
+#     file much larger than memory must come through unchanged.  A
+#     64 MiB address space makes whole-file buffering impossible
+#     where the limit is enforced (probed first: macOS ignores it,
+#     sanitizer builds need more room) (#28)
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ]; then
+	python3 - "$TMP/big.wav" <<'PYEOF'
+import math, struct, sys
+SR, SECS = 192000, 20			# stereo 192 kHz s16: 30 MB
+blk = bytearray()
+for i in range(SR):
+    v = int(6000 * math.sin(2 * math.pi * 440 * i / SR))
+    blk += struct.pack('<hh', v, v)
+with open(sys.argv[1], 'wb') as f:
+    f.write(b'RIFF' + struct.pack('<I', 36 + len(blk) * SECS) + b'WAVE')
+    f.write(b'fmt ' + struct.pack('<IHHIIHH', 16, 1, 2, SR, SR * 4, 4, 16))
+    f.write(b'data' + struct.pack('<I', len(blk) * SECS))
+    for _ in range(SECS):
+        f.write(blk)
+PYEOF
+	"$BIN" --bench /bin/cat < "$TMP/big.wav" \
+		> "$TMP/big_file.wav" 2>/dev/null
+	rc1=$?
+	cat "$TMP/big.wav" | "$BIN" --bench /bin/cat \
+		> "$TMP/big_pipe.wav" 2>/dev/null
+	rc2=$?
+	bounded=-1
+	if ( ulimit -v 65536 2>/dev/null || true
+	     "$BIN" --bench /bin/cat < /dev/null > /dev/null 2>&1 ); then
+		if ( ulimit -v 65536 2>/dev/null || true
+		     "$BIN" --bench /bin/cat < "$TMP/big.wav" \
+			> "$TMP/big_lim.wav" 2>/dev/null ) &&
+		    cmp -s "$TMP/big_file.wav" "$TMP/big_lim.wav"; then
+			bounded=1
+		else
+			bounded=0
+		fi
+	fi
+	if [ $rc1 -eq 0 ] && [ $rc2 -eq 0 ] && [ $bounded -ne 0 ] && \
+	   cmp -s "$TMP/big_file.wav" "$TMP/big_pipe.wav"; then
+		ok "(y) large WAV: 30 MB streams in blocks, pipe == file"
+	else
+		bad "(y) large WAV: rc=$rc1/$rc2 bounded=$bounded or mismatched output"
+	fi
+else
+	skip "(y) large WAV: python3 absent"
 fi
 
 # ------------------------------------------------------------------

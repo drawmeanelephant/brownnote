@@ -276,6 +276,111 @@ static void test_parse_rejections(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* wav_parse: the streaming chunk walker.  Feeding the same file in    */
+/* different blockings must land in the same state with the same       */
+/* fields; the parser stops consuming at the data chunk's start so     */
+/* the caller owns the audio budget from there.                        */
+/* ------------------------------------------------------------------ */
+
+/* Feed p[0..n) in blocks of blk; the last feed returns where audio
+ * begins (== the data chunk's body offset). */
+static size_t feed_blocked(struct wav_parse *ps, const unsigned char *p,
+			   size_t n, size_t blk)
+{
+	size_t used = 0;
+
+	while (used < n && ps->state != WAV_PS_DATA &&
+	       ps->state != WAV_PS_ERR)
+		used += wav_parse_feed(ps, p + used, n - used < blk ?
+				       n - used : blk);
+	return used;
+}
+
+static void test_parse_streaming(void)
+{
+	struct blob b;
+	struct wav_parse ps;
+	int16_t pcm[4] = { 1000, -1000, 2000, -2000 };
+	const char junk[] = "INFOj";	/* odd body: 5 bytes + pad */
+	size_t used;
+	static const size_t blocks[] = { 1, 3, 7, 4096 };
+
+	/* a plain file, every blocking: same end state and fields */
+	wav_begin(&b, 1, 2, 48000, 16);
+	chunk(&b, "LIST", junk, sizeof(junk) - 1);
+	chunk(&b, "data", pcm, sizeof(pcm));
+	wav_end(&b);
+	for (size_t i = 0; i < sizeof(blocks) / sizeof(blocks[0]); i++) {
+		wav_parse_init(&ps);
+		used = feed_blocked(&ps, b.p, b.len, blocks[i]);
+		CHECK(ps.state == WAV_PS_DATA);
+		CHECK(ps.have_fmt);
+		CHECK(ps.format == 1 && ps.bits == 16);
+		CHECK(ps.w.channels == 2 && ps.w.rate == 48000);
+		CHECK(ps.data_decl == sizeof(pcm));
+		CHECK(used == ps.data_off);	/* caller's audio begins */
+		CHECK(ps.data_off == 12 + 24 + (8 + 5 + 1) + 8);
+	}
+	free(b.p);
+
+	/* a fmt chunk with extra payload skips its tail, not the data */
+	wav_begin(&b, 1, 1, 44100, 16);
+	put_id(&b, "data");
+	put32(&b, sizeof(pcm));
+	put(&b, pcm, sizeof(pcm));
+	wav_end(&b);
+	wav_parse_init(&ps);
+	feed_blocked(&ps, b.p, b.len, 5);
+	CHECK(ps.state == WAV_PS_DATA && ps.w.channels == 1);
+	free(b.p);
+
+	/* data before fmt: state DATA with have_fmt false — the caller
+	 * rejects it (the batch parser keeps walking and would find
+	 * the fmt; the streaming one cannot go back) */
+	memset(&b, 0, sizeof(b));
+	put_id(&b, "RIFF");
+	put32(&b, 0);
+	put_id(&b, "WAVE");
+	chunk(&b, "data", pcm, sizeof(pcm));
+	fmt_chunk(&b, 1, 1, 44100, 16);
+	wav_end(&b);
+	wav_parse_init(&ps);
+	feed_blocked(&ps, b.p, b.len, 4096);
+	CHECK(ps.state == WAV_PS_DATA && !ps.have_fmt);
+	free(b.p);
+
+	/* a second data chunk is never reached: first wins, the rest
+	 * is metadata (the batch parser takes the last — documented
+	 * divergence, and only for malformed files) */
+	wav_begin(&b, 1, 1, 44100, 16);
+	chunk(&b, "data", pcm, sizeof(pcm));
+	chunk(&b, "data", pcm, sizeof(pcm));
+	wav_end(&b);
+	wav_parse_init(&ps);
+	used = feed_blocked(&ps, b.p, b.len, 4096);
+	CHECK(ps.state == WAV_PS_DATA);
+	CHECK(ps.data_off == 44 && used == 44);
+	free(b.p);
+
+	/* EOF before 44 bytes: "not a RIFF/WAVE", same as the batch */
+	wav_parse_init(&ps);
+	feed_blocked(&ps, b.p = (unsigned char *)"RIFF\x00\x00", 6, 6);
+	CHECK(ps.state != WAV_PS_ERR);	/* mid-header is not an error yet */
+	CHECK(!wav_parse_eof(&ps));
+	CHECK(ps.err && !strcmp(ps.err, "not a RIFF/WAVE file"));
+
+	/* EOF with fmt but no data: "missing fmt or data" */
+	wav_begin(&b, 1, 1, 44100, 16);
+	chunk(&b, "LIST", "INFO-pad-pad-pad-pad-pad", 24);
+	wav_end(&b);
+	wav_parse_init(&ps);
+	feed_blocked(&ps, b.p, b.len, 4096);
+	CHECK(!wav_parse_eof(&ps));
+	CHECK(ps.err && !strcmp(ps.err, "WAV is missing fmt or data"));
+	free(b.p);
+}
+
+/* ------------------------------------------------------------------ */
 /* Sample conversion.                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -527,6 +632,122 @@ static void test_antialias_ratios(void)
 	}
 }
 
+/*
+ * #28: the streaming resampler must reproduce resample_frames()
+ * exactly — same count, same values — at any block size, so that
+ * WAV mode can stream instead of buffering the whole signal.
+ */
+struct collect {
+	float *v;
+	size_t n;		/* frames */
+	size_t cap;		/* floats */
+	unsigned ch;
+};
+
+static void collect_emit(void *ctx, const float *f, size_t n)
+{
+	struct collect *c = ctx;
+
+	if ((c->n + n) * c->ch > c->cap) {
+		size_t cap = c->cap ? c->cap : 256;
+
+		while (cap < (c->n + n) * c->ch)
+			cap *= 2;
+		c->v = realloc(c->v, cap * sizeof(float));
+		if (!c->v) {
+			fprintf(stderr, "unit_wav: out of memory\n");
+			exit(1);
+		}
+		c->cap = cap;
+	}
+	memcpy(c->v + c->n * c->ch, f, n * c->ch * sizeof(float));
+	c->n += n;
+}
+
+static void test_resample_streaming(void)
+{
+	static const unsigned rates[][2] = {
+		{ 192000, 48000 },	/* integer-ratio decimation */
+		{ 48000, 44100 },	/* fractional decimation */
+		{ 48000, 8000 },	/* deep decimation */
+		{ 44100, 48000 },	/* upsampling */
+		{ 8000, 48000 },
+		{ 48000, 48000 },	/* passthrough */
+	};
+	static const size_t blocks[] = { 1, 7, 4096, 1 << 20 };
+	enum { N = 5000, CH = 2 };
+	float in[N * CH];
+
+	/* a deterministic mix: two tones plus a slowly drifting DC */
+	for (size_t i = 0; i < N; i++) {
+		double t = (double)i;
+
+		in[2 * i] = (float)(0.4 * sin(2.0 * M_PI * 0.017 * t) +
+				    0.1 * sin(2.0 * M_PI * 0.31 * t) +
+				    0.0001 * t);
+		in[2 * i + 1] = (float)(0.3 * sin(2.0 * M_PI * 0.043 * t) -
+					0.05);
+	}
+
+	for (size_t r = 0; r < sizeof(rates) / sizeof(rates[0]); r++) {
+		unsigned ir = rates[r][0], orr = rates[r][1];
+		float *ref_p = NULL;
+		size_t ref_n = resample_frames(in, N, CH, ir, orr, &ref_p);
+		const float *ref = ref_p ? ref_p : in;
+
+		CHECK(ref_n != (size_t)-1);
+
+		for (size_t b = 0; b < sizeof(blocks) / sizeof(blocks[0]);
+		     b++) {
+			size_t blk = blocks[b] < N ? blocks[b] : N;
+			struct collect c = { .ch = CH };
+			struct wav_resample *rs =
+				wav_resample_new(CH, ir, orr,
+						 collect_emit, &c);
+
+			CHECK(rs != NULL);
+			if (!rs)
+				continue;
+			for (size_t off = 0; off < N; off += blk) {
+				size_t n = N - off < blk ? N - off : blk;
+				CHECK(wav_resample_push(rs,
+							in + off * CH, n));
+			}
+			wav_resample_finish(rs);
+			CHECK(c.n == ref_n);
+			if (c.n == ref_n)
+				CHECK(memcmp(c.v, ref,
+					     c.n * CH * sizeof(float)) == 0);
+			free(c.v);
+			wav_resample_free(rs);
+		}
+		free(ref_p);
+	}
+
+	/* tiny inputs: one 192 kHz frame resamples to zero 48 kHz
+	 * frames, and an empty stream finishes empty */
+	{
+		struct collect c = { .ch = 2 };
+		struct wav_resample *rs =
+			wav_resample_new(2, 192000, 48000, collect_emit, &c);
+		float one[2] = { 0.5f, -0.5f };
+
+		CHECK(rs != NULL);
+		CHECK(wav_resample_push(rs, one, 1));
+		wav_resample_finish(rs);
+		CHECK(c.n == 0);
+		wav_resample_free(rs);
+
+		memset(&c, 0, sizeof(c));
+		c.ch = 1;
+		rs = wav_resample_new(1, 44100, 48000, collect_emit, &c);
+		CHECK(rs != NULL);
+		wav_resample_finish(rs);
+		CHECK(c.n == 0);
+		wav_resample_free(rs);
+	}
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -536,12 +757,14 @@ int main(void)
 	test_parse_clamps_oversized_data();
 	test_parse_size_zero_data();
 	test_parse_rejections();
+	test_parse_streaming();
 	test_conversions();
 	test_resample_identity();
 	test_resample_counts_and_nodes();
 	test_resample_interleave();
 	test_antialias();
 	test_antialias_ratios();
+	test_resample_streaming();
 
 	if (failures) {
 		printf("unit_wav: FAILED %d/%d checks\n", failures, checks);
