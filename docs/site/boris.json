@@ -1,0 +1,23 @@
+{
+  "format": "boris-publication-profile",
+  "schema_version": 1,
+  "input": "content",
+  "site": {
+    "title": "brownnote",
+    "description": "Serious documentation for an unserious signal chain.",
+    "url": "https://drawmeanelephant.github.io/brownnote"
+  },
+  "publication": {
+    "target": "github-pages",
+    "base_url": "https://drawmeanelephant.github.io/brownnote",
+    "origin": "https://drawmeanelephant.github.io",
+    "base_path": "/brownnote"
+  },
+  "targets": [{
+    "name": "public",
+    "output": "dist",
+    "public": true,
+    "theme": "themes/brownnote",
+    "sitemap": {"path": "sitemap.xml"}
+  }]
+}
