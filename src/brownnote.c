@@ -123,6 +123,12 @@ static void usage(FILE *out)
  * substring, with candidate lists on ambiguity) does the rest.  No
  * alias key collides with a different bench name, so exact bench
  * names always reach the bench as typed.
+ *
+ * This table is the single source of truth for aliases: the README's
+ * alias table is generated from it by scripts/gen_alias_table.sh
+ * (the suite diffs the two), and the suite checks every target still
+ * appears in the bench's --list.  Keep one row per alias and keep
+ * same-effect rows adjacent — the generator folds adjacent runs.
  */
 static const struct alias {
 	const char *alias;

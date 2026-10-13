@@ -880,6 +880,44 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (z) the README alias table is generated from aliases[] in
+#     src/brownnote.c — regenerate and diff so docs cannot drift (#27)
+# ------------------------------------------------------------------
+if [ -x scripts/gen_alias_table.sh ]; then
+	scripts/gen_alias_table.sh src/brownnote.c > "$TMP/alias_table.md"
+	sed -n '/^### Effect aliases/,/^Exact bench names/p' README.md |
+		grep '^|' > "$TMP/readme_table.md" || true
+	if cmp -s "$TMP/alias_table.md" "$TMP/readme_table.md"; then
+		ok "(z) alias table: README matches aliases[]"
+	else
+		bad "(z) alias table: README drifted (regenerate with scripts/gen_alias_table.sh):"
+		diff "$TMP/readme_table.md" "$TMP/alias_table.md" | head -8
+	fi
+else
+	skip "(z) alias table: scripts/gen_alias_table.sh missing"
+fi
+
+# ------------------------------------------------------------------
+# (aa) every alias target in aliases[] must still name a routable
+#      bench effect — a GuitarPedal rename fails here, not silently
+#      at the next --effect invocation (#27)
+# ------------------------------------------------------------------
+if [ "$have_bench" = 1 ]; then
+	"$BIN" --bench "$BENCH" --list > "$TMP/list.out" 2>&1
+	missing=$(awk -F'"' '/^\t\{ "[^"]+",\t*"[^"]+" \},/ { print $4 }' \
+		src/brownnote.c | sort -u | while IFS= read -r eff; do
+			grep -qF "$eff" "$TMP/list.out" || echo "$eff"
+		done)
+	if [ -z "$missing" ]; then
+		ok "(aa) alias targets: every name still in the bench's --list"
+	else
+		bad "(aa) alias targets missing from --list: $missing"
+	fi
+else
+	skip "(aa) alias targets: bench not built ($BENCH)"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then
