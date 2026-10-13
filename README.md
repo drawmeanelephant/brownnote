@@ -1,5 +1,10 @@
 # brownnote
 
+**[Read the field manual](https://drawmeanelephant.github.io/brownnote/)** ·
+[Start here](docs/site/content/getting-started.md) ·
+[Flags](docs/site/content/reference/cli.md) ·
+[Docs workflow](docs/README.md)
+
 Middleware between [fart-app](https://github.com/drawmeanelephant/fart-app)
 and Linus Torvalds' [GuitarPedal](https://github.com/torvalds/GuitarPedal)
 effects, feeding into [zcn](https://github.com/drawmeanelephant/zcn)/NINJAM:
