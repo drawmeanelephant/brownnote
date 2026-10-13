@@ -853,6 +853,7 @@ PYEOF
 	"$BIN" --bench /bin/cat < "$TMP/big.wav" \
 		> "$TMP/big_file.wav" 2>/dev/null
 	rc1=$?
+	# shellcheck disable=SC2002  # stdin being a pipe is the point
 	cat "$TMP/big.wav" | "$BIN" --bench /bin/cat \
 		> "$TMP/big_pipe.wav" 2>/dev/null
 	rc2=$?
