@@ -42,3 +42,42 @@ jobs:
           # a few hundred KiB of heap at most, tens of seconds
           BROWNNOTE_HEAVY: "1"
         run: make test
+
+  sanitize:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # exported so the suite's inner `make` keeps the flags; -O2 is
+      # covered by the test job, this one is ASan+UBSan
+      CFLAGS: >-
+        -O1 -g -Wall -Wextra -std=gnu11 -D_DEFAULT_SOURCE
+        -fsanitize=address,undefined
+        -fno-sanitize-recover=undefined
+        -fno-omit-frame-pointer
+      UBSAN_OPTIONS: print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Disable LeakSanitizer (unsupported on macOS)
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            echo "ASAN_OPTIONS=detect_leaks=0" >> "$GITHUB_ENV"
+          fi
+
+      - name: Clone GuitarPedal
+        run: git clone --depth 1 https://github.com/torvalds/GuitarPedal vendor/GuitarPedal
+
+      - name: Build the bench
+        run: make -C vendor/GuitarPedal/Validation bench
+
+      - name: Build, unit-test and suite-test under sanitizers
+        run: make test
+
+      - name: Fuzz corpus and mutations under sanitizers
+        run: make fuzz
