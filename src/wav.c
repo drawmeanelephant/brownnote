@@ -132,13 +132,28 @@ int16_t f_to_s16(float v)
  * upsampler, but used to drop rate it merely samples the input at
  * the output rate, folding everything above the output Nyquist back
  * into the passband: a 30 kHz tone in a 192 kHz file comes out of a
- * 48 kHz decimation as 18 kHz, at full amplitude.  So before
- * decimating, the input runs through a Hann-windowed sinc low-pass
- * at 90% of the output Nyquist.  Transport plumbing, same as the
- * resampler itself — good enough to keep aliasing inaudible, not a
- * DSP statement.
+ * 48 kHz decimation as 18 kHz, at full amplitude.  And even with a
+ * prefilter in front of it, the cubic itself rolls off steeply near
+ * the input Nyquist (-2.8 dB at 19 kHz from 48 kHz), which no
+ * filter can buy back.
+ *
+ * So decimation interpolates with a Kaiser-windowed sinc evaluated
+ * at each output sample's fractional input position — a polyphase
+ * resampler written without phase tables.  The kernel is stretched
+ * by the ratio, so the same convolution anti-aliases and
+ * interpolates: cutoff at 95% of the output Nyquist, ~-60 dB of
+ * stopband where aliases would land, and a passband flat to a
+ * fraction of a dB.  Each output is normalized by its own tap sum
+ * and taps that reach past an edge clamp to the edge sample, which
+ * keeps a constant signal flat right up to the first and last
+ * frame.  Transport plumbing, same as the resampler itself — the
+ * minimum that keeps the round trip honest, not a DSP statement.
  */
-#define AA_TAPS 65			/* odd, so the filter is centred */
+#define AA_BETA		8.6	/* Kaiser: ~-70 dB nominal stopband */
+#define AA_CUTOFF	0.475	/* of out_rate, in input samples */
+#define AA_MIN_TAPS	65	/* odd, so the kernel is centred */
+#define AA_MAX_TAPS	2049
+#define AA_BASE_TAPS	65	/* taps scale with in_rate/out_rate */
 
 static double sinc(double x)
 {
@@ -146,64 +161,110 @@ static double sinc(double x)
 }
 
 /*
- * Low-pass each channel of in (interleaved, in_frames frames) at
- * cutoff cycles/sample, into a fresh buffer of the same shape.
- * The kernel is centred, so the filter is zero-phase and adds no
- * delay; taps that reach past an edge clamp to the edge sample,
- * which keeps a constant signal flat right up to the first and
- * last frame instead of fading in and out.  Returns NULL on
- * allocation failure.
- *
- * With the fixed 65 taps the stopband is only ~-24 dB near the
- * output Nyquist and the passband droops up to ~3.4 dB at 19 kHz
- * on the 48 kHz -> 44.1 kHz trip — inaudible-alias territory, not
- * a DSP statement.  Scaling the taps with the ratio is #35.
+ * Modified Bessel function I0 by series expansion.  Converges fast
+ * for the |x| <= AA_BETA range a Kaiser window needs.
  */
-static float *lowpass(const float *in, size_t in_frames, unsigned channels,
-		      double cutoff)
+static double bessel_i0(double x)
 {
-	double h[AA_TAPS], sum = 0.0;
-	float *out;
+	double y = (x / 2.0) * (x / 2.0), sum = 1.0, t = 1.0;
 
-	for (int n = 0; n < AA_TAPS; n++) {
-		double x = n - (AA_TAPS - 1) / 2.0;
-		double w = 0.5 - 0.5 * cos(2.0 * M_PI * n / (AA_TAPS - 1));
-
-		h[n] = 2.0 * cutoff * sinc(2.0 * cutoff * x) * w;
-		sum += h[n];
+	for (int k = 1; k < 50; k++) {
+		t *= y / ((double)k * k);
+		sum += t;
+		if (t < 1e-12 * sum)
+			break;
 	}
-	for (int n = 0; n < AA_TAPS; n++)
-		h[n] /= sum;
+	return sum;
+}
 
-	out = malloc((in_frames ? in_frames : 1) * channels * sizeof(float));
-	if (!out)
-		return NULL;
-	for (size_t i = 0; i < in_frames; i++) {
+/* Kaiser-windowed sinc: 2*fc*sinc(2*fc*u)*w(u), u in input samples. */
+static double aa_kernel(double u, double half, double fc)
+{
+	double x = u / half;
+	double w;
+
+	if (x < -1.0 || x > 1.0)
+		return 0.0;
+	w = bessel_i0(AA_BETA * sqrt(1.0 - x * x)) / bessel_i0(AA_BETA);
+	return 2.0 * fc * sinc(2.0 * fc * u) * w;
+}
+
+static size_t aa_taps(unsigned in_rate, unsigned out_rate)
+{
+	double t = AA_BASE_TAPS * (double)in_rate / (double)out_rate;
+	size_t taps;
+
+	if (t < AA_MIN_TAPS)
+		t = AA_MIN_TAPS;
+	if (t > AA_MAX_TAPS)
+		t = AA_MAX_TAPS;
+	taps = (size_t)llround(t);
+	return (taps & 1) ? taps : taps + 1;
+}
+
+/*
+ * Decimate interleaved frames by bandlimited interpolation: output
+ * frame j sits at input position j*in_rate/out_rate, and is the
+ * kernel-weighted sum of the taps around it.  Identical to a
+ * polyphase bank with one phase per distinct fractional offset;
+ * for integer ratios (192k->48k, 48k->8k) the offset never changes
+ * and the kernel is evaluated once.  Writes into out, which the
+ * caller sized for out_frames*channels.
+ */
+static void decimate(const float *in, size_t in_frames, unsigned channels,
+		     unsigned in_rate, unsigned out_rate,
+		     size_t out_frames, float *out)
+{
+	const size_t taps = aa_taps(in_rate, out_rate);
+	const double half = (taps - 1) / 2.0;
+	const double fc = AA_CUTOFF * (double)out_rate / (double)in_rate;
+	double h[AA_MAX_TAPS];
+	double h_frac = -1.0;	/* frac the cached kernel was built for */
+
+	for (size_t j = 0; j < out_frames; j++) {
+		double p = (double)j * (double)in_rate / (double)out_rate;
+		double frac = p - floor(p);
+		long centre = (long)floor(p);
+		double norm = 0.0;
+
+		if (frac != h_frac) {
+			for (size_t n = 0; n < taps; n++) {
+				double u = (double)((long)n -
+					(long)(taps - 1) / 2) - frac;
+				h[n] = aa_kernel(u, half, fc);
+				norm += h[n];
+			}
+			h_frac = frac;
+		} else {
+			for (size_t n = 0; n < taps; n++)
+				norm += h[n];
+		}
+
 		for (unsigned c = 0; c < channels; c++) {
 			double acc = 0.0;
 
-			for (int n = 0; n < AA_TAPS; n++) {
-				long j = (long)i - (n - (AA_TAPS - 1) / 2);
+			for (size_t n = 0; n < taps; n++) {
+				long i = centre - (long)(taps - 1) / 2 +
+					 (long)n;
 
-				if (j < 0)
-					j = 0;	/* clamp to the edge sample */
-				if (j >= (long)in_frames)
-					j = (long)in_frames - 1;
-				acc += h[n] * in[(size_t)j * channels + c];
+				if (i < 0)
+					i = 0;	/* clamp to the edge sample */
+				if (i >= (long)in_frames)
+					i = (long)in_frames - 1;
+				acc += h[n] * in[(size_t)i * channels + c];
 			}
-			out[i * channels + c] = (float)acc;
+			out[j * channels + c] = (float)(acc / norm);
 		}
 	}
-	return out;
 }
 
 /*
  * Catmull-Rom cubic resampling, per channel, over interleaved frames.
  * Transport plumbing to meet the bench's 48 kHz — not an effect; it
  * is the same interpolation any file converter does.  Decimation
- * (in_rate > out_rate) low-passes first (see above), so energy above
- * the output Nyquist is strongly attenuated rather than folded
- * back into the passband; upsampling needs no filter —
+ * (in_rate > out_rate) runs the bandlimited interpolator above, so
+ * energy above the output Nyquist is strongly attenuated rather
+ * than folded back into the passband; upsampling needs no filter —
  * interpolation cannot alias.
  */
 size_t resample_frames(const float *in, size_t in_frames,
@@ -216,19 +277,6 @@ size_t resample_frames(const float *in, size_t in_frames,
 		return in_frames;	/* caller keeps the input buffer */
 	}
 
-	const float *src = in;
-	float *filtered = NULL;
-
-	if (in_rate > out_rate) {
-		filtered = lowpass(in, in_frames, channels,
-				   0.45 * (double)out_rate / (double)in_rate);
-		if (!filtered) {
-			*out_p = NULL;
-			return (size_t)-1;
-		}
-		src = filtered;
-	}
-
 	size_t out_frames = (size_t)llround(
 		(double)in_frames * (double)out_rate / (double)in_rate);
 	/*
@@ -237,9 +285,15 @@ size_t resample_frames(const float *in, size_t in_frames,
 	 */
 	float *out = malloc(out_frames * channels * sizeof(float) + 1);
 	if (!out) {
-		free(filtered);
 		*out_p = NULL;
 		return (size_t)-1;
+	}
+
+	if (in_rate > out_rate) {
+		decimate(in, in_frames, channels, in_rate, out_rate,
+			 out_frames, out);
+		*out_p = out;
+		return out_frames;
 	}
 
 	for (size_t j = 0; j < out_frames; j++) {
@@ -251,10 +305,10 @@ size_t resample_frames(const float *in, size_t in_frames,
 		size_t i3 = (i + 2 < in_frames) ? i + 2 : in_frames - 1;
 
 		for (unsigned c = 0; c < channels; c++) {
-			double x0 = src[i0 * channels + c];
-			double x1 = src[i * channels + c];
-			double x2 = src[i2 * channels + c];
-			double x3 = src[i3 * channels + c];
+			double x0 = in[i0 * channels + c];
+			double x1 = in[i * channels + c];
+			double x2 = in[i2 * channels + c];
+			double x3 = in[i3 * channels + c];
 			double a0 = -0.5 * x0 + 1.5 * x1 - 1.5 * x2 + 0.5 * x3;
 			double a1 = x0 - 2.5 * x1 + 2.0 * x2 - 0.5 * x3;
 			double a2 = -0.5 * x0 + 0.5 * x2;
@@ -263,7 +317,6 @@ size_t resample_frames(const float *in, size_t in_frames,
 				(float)(((a0 * t + a1) * t + a2) * t + a3);
 		}
 	}
-	free(filtered);
 	*out_p = out;
 	return out_frames;
 }
