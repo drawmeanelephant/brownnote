@@ -62,4 +62,91 @@ size_t resample_frames(const float *in, size_t in_frames,
 		       unsigned in_rate, unsigned out_rate,
 		       float **out_p);
 
+/* ------------------------------------------------------------------ */
+/* Streaming resampler.                                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The same resampler, streamed: input frames are pushed in blocks of
+ * any size and output frames arrive through the emit callback.
+ * Produces exactly resample_frames' output — same count, same
+ * values — so a stream and a batch of the same signal are
+ * interchangeable.  Decimation carries half the kernel's tap count
+ * of lookahead; the cubic carries two frames; equal rates pass
+ * straight through.
+ */
+struct wav_resample;
+
+typedef void (*wav_emit_fn)(void *ctx, const float *frames, size_t n);
+
+/* Returns NULL on allocation failure. */
+struct wav_resample *wav_resample_new(unsigned channels,
+				      unsigned in_rate, unsigned out_rate,
+				      wav_emit_fn emit, void *emit_ctx);
+
+/* Feed input frames; output comes back through the emit callback.
+ * Returns false on allocation failure. */
+bool wav_resample_push(struct wav_resample *rs,
+		       const float *in, size_t in_frames);
+
+/* End of input: emits the edge-clamped tail, if any. */
+void wav_resample_finish(struct wav_resample *rs);
+
+void wav_resample_free(struct wav_resample *rs);
+
+/* ------------------------------------------------------------------ */
+/* Streaming RIFF/WAVE chunk walker.                                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * parse_wav() needs the whole file in memory.  This is the same
+ * chunk walk as a fixed-size state machine: feed the file's bytes
+ * as they arrive and it reports when the data chunk's body is
+ * reached — everything after is PCM, up to the declared size or
+ * EOF, whichever comes first (the same clamp parse_wav applies).
+ * Two pathological inputs resolve differently from parse_wav:
+ * the first data chunk wins (parse_wav's last-wins needs the whole
+ * file), and fmt must precede data.
+ */
+enum wav_ps {
+	WAV_PS_RIFF,	/* collecting the 12-byte RIFF header */
+	WAV_PS_HDR,	/* collecting an 8-byte chunk header */
+	WAV_PS_FMT,	/* collecting a fmt chunk body */
+	WAV_PS_SKIP,	/* skipping a chunk body */
+	WAV_PS_DATA,	/* data chunk reached */
+	WAV_PS_ERR
+};
+
+struct wav_parse {
+	unsigned char hdr[12];	/* RIFF header, then chunk headers */
+	unsigned hdr_have;
+	uint64_t pos;		/* bytes consumed */
+	uint64_t skip;		/* body bytes left to skip */
+	uint64_t data_off;	/* absolute offset of the data body */
+	uint64_t data_decl;	/* declared data chunk size */
+	unsigned char fmt[16];
+	unsigned fmt_have;
+	uint16_t format, bits;
+	bool have_fmt;
+	struct wav_info w;
+	int state;
+	const char *err;
+};
+
+void wav_parse_init(struct wav_parse *ps);
+
+/*
+ * Feed bytes; returns how many were consumed.  Anything less than
+ * n means the data chunk was reached (the rest of the block is
+ * PCM — the caller takes over) or an error (ps->err).
+ */
+size_t wav_parse_feed(struct wav_parse *ps, const unsigned char *p,
+		      size_t n);
+
+/*
+ * Input ended before the data chunk was reached: report the
+ * batch-equivalent rejection in ps->err and return false.
+ */
+bool wav_parse_eof(struct wav_parse *ps);
+
 #endif /* BROWNNOTE_WAV_H */

@@ -85,6 +85,14 @@ brownnote peeks at stdin and picks a mode:
   common convention, bounded by one LSB either way. Results larger
   than the WAV format's 4 GiB limit fail with exit 2 rather than
   wrapping the header's 32-bit size fields.
+  WAV mode streams in both directions: input is parsed, converted and
+  resampled a block at a time, and the bench's output converts back as
+  it is produced, so peak memory is bounded by a few hundred KiB of
+  backlog rather than the file's size. Written to a pipe, the output
+  header keeps the streaming-WAV convention `0xFFFFFFFF` for the RIFF
+  and data sizes (readers that need exact sizes should write to a
+  file); written to a regular file the sizes are backfilled at the end,
+  so a seekable result is byte-for-byte the same.
 
 The output mode always mirrors the input mode.
 
@@ -157,8 +165,10 @@ The suite covers: build; raw-mode plumbing identity against `/bin/cat`
 (byte-identical); fuzz through the real bench (output changes, sane
 RMS); unknown-effect error propagation (the bench's candidate list, and
 its exit code); chaining; SIGPIPE against a closed downstream reader;
-WAV passthrough (header and level preserved); WAV fuzz; `--list`; and,
-when the Zig tools happen to be around, the full
+WAV passthrough (header and level preserved); WAV fuzz; `--list`;
+the streaming WAV header (placeholder sizes on a pipe, backfilled on a
+file); a 30 MB WAV streamed through a pipe under a small address space;
+and, when the Zig tools happen to be around, the full
 kujamba → brownnote → zcn round trip. Real-bench and round-trip tests
 skip cleanly (and the suite still passes) when their binaries are
 absent, which is what CI relies on.

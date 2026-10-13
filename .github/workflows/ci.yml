@@ -37,4 +37,8 @@ jobs:
         run: make
 
       - name: Test
+        env:
+          # the 4 GiB wrap test is pure pipe I/O under streaming —
+          # a few hundred KiB of heap at most, tens of seconds
+          BROWNNOTE_HEAVY: "1"
         run: make test
