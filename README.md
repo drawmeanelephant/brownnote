@@ -163,7 +163,12 @@ BENCH=vendor/GuitarPedal/Validation/bench/bench tests/run_tests.sh
 `make test` builds and runs the unit tests for the WAV parser, the
 resampler and the sample conversions, then the suite below
 (`make unit` runs just the unit tests; `tests/run_tests.sh` alone
-is the suite, without them).
+is the suite, without them). `make fuzz` runs the WAV parser
+fuzz harness over `tests/corpus/` plus a round of deterministic
+mutations under ASan/UBSan; `make sanitize` rebuilds everything
+sanitized and runs the whole battery. With clang/libFuzzer,
+`make fuzz-libfuzzer` fuzzes the same target properly.
+`tests/gen_corpus.py` regenerates the seed corpus.
 
 The suite covers: build; raw-mode plumbing identity against `/bin/cat`
 (byte-identical); fuzz through the real bench (output changes, sane
