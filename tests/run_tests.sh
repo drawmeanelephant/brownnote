@@ -779,9 +779,9 @@ def amp(f):
 a30, a18, a10 = amp(30000), amp(18000), amp(10000)
 if a10 < 0.30:
     raise SystemExit(f"bad: in-band 10 kHz control lost (amp {a10:.4f})")
-if a18 > 0.05:
+if a18 > 0.01:
     raise SystemExit(f"bad: 30 kHz folded to 18 kHz at amp {a18:.4f}")
-if a30 > 0.05:
+if a30 > 0.01:
     raise SystemExit(f"bad: 30 kHz passed through at amp {a30:.4f}")
 print(f"ok: 10 kHz control {a10:.4f}, alias {a18:.4f}, 30 kHz {a30:.4f}")
 PYEOF

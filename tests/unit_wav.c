@@ -433,6 +433,100 @@ static void test_antialias(void)
 	free(in);
 }
 
+/* Goertzel amplitude of frequency f (in `rate` units) over v. */
+static double goertzel_amp(const float *v, size_t n, double f, double rate)
+{
+	double k = 2.0 * cos(2.0 * M_PI * f / rate), s1 = 0.0, s2 = 0.0;
+
+	for (size_t i = 0; i < n; i++) {
+		double s0 = v[i] + k * s1 - s2;
+
+		s2 = s1;
+		s1 = s0;
+	}
+	return 2.0 * sqrt(fmax(s1 * s1 + s2 * s2 - k * s1 * s2, 0.0)) /
+		(double)n;
+}
+
+/*
+ * #35: measured on the review of PR #34, the fixed 65-tap Hann kernel
+ * leaked ~-24 dB of alias right at the output Nyquist and drooped up
+ * to -3.4 dB at 19 kHz on the 48 kHz -> 44.1 kHz leg.  For each of
+ * the review's ratios: a tone just above the output Nyquist must fold
+ * back under -40 dB (amplitude 0.01 of the 0.5 test tone), and a tone
+ * at 0.9x the output Nyquist must come through within 0.5 dB.
+ */
+static void test_antialias_ratios(void)
+{
+	static const struct {
+		unsigned in_rate, out_rate;
+		double probe;		/* tone frequency, above out Nyq */
+		double fold;		/* where it lands in the output */
+	} alias_cases[] = {
+		{ 192000, 48000, 25000, 23000 },
+		{ 48000, 44100, 23000, 21100 },
+		{ 48000,  8000,  4500,  3500 },
+	};
+	static const struct {
+		unsigned in_rate, out_rate;
+		double probe;		/* 0.9x output Nyquist */
+	} droop_cases[] = {
+		{ 192000, 48000, 21600 },
+		{ 48000, 44100, 19845 },
+		{ 48000,  8000,  3600 },
+	};
+
+	for (size_t t = 0; t < sizeof(alias_cases) / sizeof(alias_cases[0]);
+	     t++) {
+		unsigned ir = alias_cases[t].in_rate;
+		unsigned orr = alias_cases[t].out_rate;
+		size_t N = ir / 20;	/* 50 ms of input */
+		float *in = malloc(N * sizeof(float));
+		float *out = NULL;
+		size_t n;
+
+		for (size_t i = 0; i < N; i++)
+			in[i] = 0.5f * sinf(2.0f * (float)M_PI *
+				(float)alias_cases[t].probe *
+				(float)i / (float)ir);
+		n = resample_frames(in, N, 1, ir, orr, &out);
+		CHECK(n == (size_t)llround((double)N * orr / ir));
+		CHECK(out != NULL);
+		if (out) {
+			double a = goertzel_amp(out, n, alias_cases[t].fold,
+						orr);
+			CHECK(a <= 0.01);	/* -40 dB of the 0.5 tone */
+		}
+		free(out);
+		free(in);
+	}
+
+	for (size_t t = 0; t < sizeof(droop_cases) / sizeof(droop_cases[0]);
+	     t++) {
+		unsigned ir = droop_cases[t].in_rate;
+		unsigned orr = droop_cases[t].out_rate;
+		size_t N = ir / 20;
+		float *in = malloc(N * sizeof(float));
+		float *out = NULL;
+		size_t n;
+
+		for (size_t i = 0; i < N; i++)
+			in[i] = 0.5f * sinf(2.0f * (float)M_PI *
+				(float)droop_cases[t].probe *
+				(float)i / (float)ir);
+		n = resample_frames(in, N, 1, ir, orr, &out);
+		CHECK(n == (size_t)llround((double)N * orr / ir));
+		CHECK(out != NULL);
+		if (out) {
+			double a = goertzel_amp(out, n, droop_cases[t].probe,
+						orr);
+			CHECK(a >= 0.5 * 0.944);/* within 0.5 dB */
+		}
+		free(out);
+		free(in);
+	}
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -447,6 +541,7 @@ int main(void)
 	test_resample_counts_and_nodes();
 	test_resample_interleave();
 	test_antialias();
+	test_antialias_ratios();
 
 	if (failures) {
 		printf("unit_wav: FAILED %d/%d checks\n", failures, checks);
