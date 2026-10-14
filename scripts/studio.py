@@ -21,7 +21,9 @@ Serves build/studio.html at `/` plus workspace audio files and JSON APIs:
 Extra views over the same stems (every page carries the same page-nav bar):
   /mixer    -> console desk with VU meters, tap/loop per strip (+ user stems)
   /pads     -> 16-pad MPC-style finger drummer (keys 1-4/QWER/ASDF/ZXCV)
-               plus the in-browser recorder that produces user stems
+               plus the in-browser recorder that produces user stems,
+              + event looper: record pad hits quantized to 16ths, overdub
+              stacked takes, mute/clear per layer, bounce the loop to MP3
   /library  -> crate-digger: every rendered MP3/WAV with drawn waveforms
 """
 import http.server
@@ -286,7 +288,13 @@ def delete_user_sample(name):
 
 
 def render_sequence_to_mp3(payload):
-    """Render the current 16-step sequencer grid + stem mixer settings to a stereo WAV & 320k MP3."""
+    """Render the current 16-step sequencer grid + stem mixer settings to a stereo WAV & 320k MP3.
+
+    `steps`/`stepPitches` arrays of length 16 are a single bar repeated for
+    every bar (the `/` sequencer's format). Any other length is treated as a
+    flat `16 * bars` grid — the /pads looper's export format — with
+    out-of-range steps read as silent.
+    """
     bpm = float(payload.get("bpm", 116))
     bars = int(payload.get("bars", 4))
     swing = float(payload.get("swing", 0.0))
@@ -355,6 +363,11 @@ def render_sequence_to_mp3(payload):
         steps = tcfg.get("steps", [0] * 16)
         step_pitches = tcfg.get("stepPitches", [0] * 16)
 
+        def grid_val(arr, s, i):
+            if len(arr) == 16:
+                return arr[s]
+            return arr[i] if i < len(arr) else 0
+
         angle = (pan + 1.0) * (math.pi / 4.0)
         gl = gain * math.cos(angle)
         gr = gain * math.sin(angle)
@@ -362,11 +375,12 @@ def render_sequence_to_mp3(payload):
         shifted_cache = {}
         for bar in range(bars):
             for s in range(16):
-                vel = steps[s] if s < len(steps) else 0
+                i = bar * 16 + s
+                vel = grid_val(steps, s, i)
                 if not vel:
                     continue
                 vel_scale = 1.0 if vel == 1 else (1.25 if vel == 2 else 0.65)
-                sp = step_pitches[s] if s < len(step_pitches) else 0
+                sp = grid_val(step_pitches, s, i)
                 semi = base_pitch + sp
                 if semi not in shifted_cache:
                     shifted_cache[semi] = pitch_shift(trimmed, semi)
@@ -2862,6 +2876,62 @@ PADS_HTML = r"""<!DOCTYPE html>
   }
   .usamp select { max-width: 118px; font-size: 9.5px; padding: 3px 4px; }
   .usamp .mini-btn { flex-shrink: 0; }
+
+  /* LOOP station */
+  .loop-card { grid-column: 1 / -1; }
+  .loop-layout {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 14px;
+    align-items: start;
+  }
+  @media (max-width: 700px) { .loop-layout { grid-template-columns: 1fr; } }
+  #loopRing {
+    width: 180px;
+    height: 180px;
+    background: #0b0908;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .loop-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .loop-pill {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    padding: 3px 7px;
+    border-radius: 6px;
+  }
+  .loop-pill label { color: var(--muted); font-size: 9.5px; text-transform: uppercase; }
+  .loop-pill input[type="number"] { width: 54px; padding: 3px 5px; }
+  .loop-pill select { padding: 3px 5px; }
+  .loop-pill b { color: var(--accent-hi); font-size: 10px; }
+  .mini-btn.on { background: var(--green); color: #06210f; border-color: #4ade80; }
+  .mini-btn.rec-on { background: var(--red); color: #fff; border-color: #f87171; }
+  .loop-status { font-size: 10px; color: var(--muted); }
+  .layer-list { display: flex; flex-direction: column; gap: 4px; max-height: 160px; overflow-y: auto; }
+  .layer-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--panel-2);
+    border: 1px solid #2b231f;
+    border-radius: 6px;
+    padding: 4px 8px;
+  }
+  .layer-row.muted { opacity: 0.45; }
+  .layer-name { flex: 1; font-size: 10.5px; }
+  .layer-dots { display: flex; gap: 2px; }
+  .layer-dot { width: 7px; height: 7px; border-radius: 50%; }
+  .layer-empty { color: var(--muted); font-size: 10px; padding: 6px 2px; }
+  .pad.echo { box-shadow: 0 0 10px var(--stem-color, var(--accent)); }
 </style>
 </head>
 <body>
@@ -2889,7 +2959,7 @@ PADS_HTML = r"""<!DOCTYPE html>
       <button class="mini-btn" id="dryBtn" onclick="toggleAllDry()">DRY KIT</button>
     </div>
     <div class="pad-grid" id="padGrid"></div>
-    <div class="status-banner" id="statusText">Whack a pad. Same stem chokes its own tail — flam away.</div>
+    <div class="status-banner"><span id="statusText">Whack a pad. Same stem chokes its own tail — flam away.</span><span id="statusLink"></span></div>
   </section>
 
   <div class="side">
@@ -2920,9 +2990,35 @@ PADS_HTML = r"""<!DOCTYPE html>
     <section class="card legend">
       <b>PADS:</b> bombs on top row, lead second, wah/snare/hat third, kicks &amp; thuds on the bottom.<br>
       <b>VELOCITY:</b> click near the top edge of a pad to smack it, bottom edge for a soft poot.<br>
-      <b>CHOKE:</b> retriggering a pad from the same stem cuts the previous tail.
+      <b>CHOKE:</b> retriggering a pad from the same stem cuts the previous tail.<br>
+      <b>LOOP:</b> hits are quantized to 16ths on the loop grid. Each armed pass
+      becomes a take layer — OVERDUB stacks them, off replaces them.
     </section>
   </div>
+
+  <section class="card loop-card">
+    <div class="card-header">
+      <span class="card-title">Loop Station — event looper (16th-quantized)</span>
+      <span class="loop-status" id="loopStatus">idle</span>
+    </div>
+    <div class="loop-layout">
+      <canvas id="loopRing" width="180" height="180"></canvas>
+      <div>
+        <div class="loop-controls">
+          <button class="mini-btn" id="loopRecBtn" onclick="toggleRec()">● REC</button>
+          <button class="mini-btn" id="loopPlayBtn" onclick="toggleLoopPlay()">▶ PLAY</button>
+          <button class="mini-btn" onclick="undoLayer()">↩ UNDO TAKE</button>
+          <button class="mini-btn" onclick="clearLayers()">✕ CLEAR</button>
+          <button class="mini-btn" onclick="exportLoop()">⬇ MP3</button>
+          <span class="loop-pill"><label>BPM</label><input type="number" id="loopBpm" min="40" max="240" step="1" onchange="setLoopBpm(this.value)"><b id="loopBpmVal"></b></span>
+          <span class="loop-pill"><label>BARS</label><select id="loopBars" onchange="setLoopBars(this.value)"><option value="1">1</option><option value="2" selected>2</option><option value="4">4</option></select></span>
+          <button class="mini-btn on" id="clickBtn" onclick="toggleClick()">CLICK</button>
+          <button class="mini-btn on" id="odubBtn" onclick="toggleOverdub()">OVERDUB</button>
+        </div>
+        <div class="layer-list" id="layerList"></div>
+      </div>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -2963,6 +3059,7 @@ function ensureAudio() {
     drawScope();
   }
   if (audioCtx.state === 'suspended') audioCtx.resume();
+  if (STEMS.length) preloadKit();
 }
 
 async function padBuffer(stem) {
@@ -2973,7 +3070,7 @@ async function padBuffer(stem) {
     rawBufs[url] = await audioCtx.decodeAudioData(arr);
   }
   const src = rawBufs[url];
-  const key = url + '|t';
+  const key = url + '|' + stem.trimSec;
   if (trimBufs[key]) return trimBufs[key];
   const n = Math.min(src.length, Math.floor(stem.trimSec * src.sampleRate));
   const out = audioCtx.createBuffer(src.numberOfChannels, n, src.sampleRate);
@@ -2989,9 +3086,17 @@ async function padBuffer(stem) {
 
 async function hitPad(i, vel) {
   ensureAudio();
+  const tHit = audioCtx.currentTime;
   const pad = PADS[i];
   const stem = STEMS.find(s => s.id === pad.stem);
   if (!stem) return;
+  if (loopRecording && take) {
+    take.events.push({
+      stemId: pad.stem, semi: pad.semi,
+      vel: Math.round(vel * 100) / 100,
+      step: quantizeStep(tHit),
+    });
+  }
 
   const el = document.getElementById(`pad-${i}`);
   el.classList.add('hit');
@@ -3361,6 +3466,400 @@ async function deleteSample(stemId, name) {
   recStatus(`✓ "${name}" deleted.`);
 }
 
+// ---------- LOOP STATION (event looper, issue #48) ----------
+// Lookahead scheduler: a 25ms timer schedules every grid event falling
+// inside the next 100ms at audioCtx.currentTime-based times. Recorded hits
+// are stamped with audioCtx.currentTime and quantized to the nearest 16th.
+const LOOKAHEAD_MS = 25, HORIZON_S = 0.1;
+let bpm = initBpm();
+let loopBars = 2;
+let loopPlaying = false, loopRecording = false;
+let overdubOn = true, clickOn = true;
+let loopStart = 0;                 // audioCtx time of loop step 0
+let schedTimer = null;
+let schedStep = 0, schedTime = 0;  // next absolute step index and its audio time
+let layers = [], take = null, layerSeq = 0;
+let schedLate = 0;                 // worst event-scheduling lateness (acceptance log)
+
+function initBpm() {
+  try {
+    const st = JSON.parse(localStorage.getItem('brownnote.studio.v1') || 'null');
+    const v = st && st.seq && +st.seq.bpm;
+    if (v >= 40 && v <= 240) return Math.round(v);
+  } catch (e) {}
+  return 116;
+}
+
+const nSteps = () => 16 * loopBars;
+const stepSec = () => 60 / bpm / 4;
+const loopSec = () => nSteps() * stepSec();
+
+function preloadKit() {
+  return Promise.all(STEMS.map(s => padBuffer(s).catch(() => null)));
+}
+
+function setStatus(msg) {
+  document.getElementById('statusText').textContent = msg;
+}
+
+function quantizeStep(t) {
+  const s = Math.round((t - loopStart) / stepSec());
+  return ((s % nSteps()) + nSteps()) % nSteps();
+}
+
+function firePadEvent(ev, when) {
+  const stem = STEMS.find(s => s.id === ev.stemId);
+  if (!stem) return;
+  const buf = trimBufs[(allDry ? stem.dryUrl : stem.url) + '|' + stem.trimSec];
+  if (!buf) { padBuffer(stem); return; }  // warm for the next pass
+  const prev = lastSrc[ev.stemId];
+  if (prev) { try { prev.stop(when); } catch (e) {} }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.playbackRate.value = Math.pow(2, ev.semi / 12);
+  const g = audioCtx.createGain();
+  g.gain.value = ev.vel;
+  src.connect(g); g.connect(masterGain);
+  src.start(when);
+  src.stop(when + buf.duration + 0.05);
+  lastSrc[ev.stemId] = src;
+  src.onended = () => { if (lastSrc[ev.stemId] === src) lastSrc[ev.stemId] = null; };
+  setTimeout(() => echoStem(ev.stemId), Math.max(0, (when - audioCtx.currentTime) * 1000));
+}
+
+function echoStem(stemId) {
+  PADS.forEach((p, i) => {
+    if (p.stem !== stemId) return;
+    const el = document.getElementById(`pad-${i}`);
+    if (!el) return;
+    el.classList.add('echo');
+    setTimeout(() => el.classList.remove('echo'), 90);
+  });
+}
+
+function click(accent, when) {
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = 'square';
+  o.frequency.value = accent ? 2200 : 1400;
+  g.gain.setValueAtTime(accent ? 0.20 : 0.11, when);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + 0.035);
+  o.connect(g); g.connect(masterGain);
+  o.start(when);
+  o.stop(when + 0.05);
+}
+
+function schedTick() {
+  if (!loopPlaying || !audioCtx) return;
+  const horizon = audioCtx.currentTime + HORIZON_S;
+  const sSec = stepSec(), n = nSteps();
+  let guard = 0;
+  while (schedTime < horizon && guard++ < 8192) {
+    const s = schedStep % n;
+    const stale = schedTime < audioCtx.currentTime - 0.06;
+    if (!stale) {
+      for (const layer of layers) {
+        if (layer.muted) continue;
+        for (const ev of layer.byStep[s] || []) {
+          const late = audioCtx.currentTime - schedTime;
+          if (late > schedLate) {
+            schedLate = late;
+            console.debug(`[looper] event scheduled ${Math.round(late * 1000)}ms late (worst so far)`);
+          }
+          firePadEvent(ev, schedTime);
+        }
+      }
+      if (clickOn && s % 4 === 0) click(s % 16 === 0, schedTime);
+    }
+    schedStep++;
+    schedTime = loopStart + schedStep * sSec;
+    if (schedStep % n === 0) onCycleWrap();
+  }
+}
+
+function onCycleWrap() {
+  // An armed pass became a layer the moment the loop wrapped.
+  if (loopRecording && take && take.events.length) commitTake();
+}
+
+async function startLoop() {
+  await preloadKit();
+  loopStart = audioCtx.currentTime + 0.08;
+  schedStep = 0;
+  schedTime = loopStart;
+  schedLate = 0;
+  loopPlaying = true;
+  schedTimer = setInterval(schedTick, LOOKAHEAD_MS);
+  schedTick();
+  const btn = document.getElementById('loopPlayBtn');
+  btn.textContent = '⏹ STOP';
+  btn.classList.add('rec-on');
+  updateLoopStatus();
+}
+
+function stopLoop() {
+  if (loopRecording) disarmRec();
+  loopPlaying = false;
+  clearInterval(schedTimer);
+  for (const k in lastSrc) {
+    if (lastSrc[k]) { try { lastSrc[k].stop(); } catch (e) {} lastSrc[k] = null; }
+  }
+  const btn = document.getElementById('loopPlayBtn');
+  btn.textContent = '▶ PLAY';
+  btn.classList.remove('rec-on');
+  updateLoopStatus();
+}
+
+async function toggleLoopPlay() {
+  ensureAudio();
+  if (loopPlaying) stopLoop(); else await startLoop();
+}
+
+async function toggleRec() {
+  ensureAudio();
+  if (loopRecording) { disarmRec(); return; }
+  if (!loopPlaying) await startLoop();
+  take = { events: [] };
+  loopRecording = true;
+  document.getElementById('loopRecBtn').classList.add('rec-on');
+  setStatus('⏺ recording — play the pads; each loop pass becomes a take');
+  updateLoopStatus();
+}
+
+function disarmRec() {
+  loopRecording = false;
+  document.getElementById('loopRecBtn').classList.remove('rec-on');
+  commitTake();
+  updateLoopStatus();
+}
+
+function commitTake() {
+  if (take && take.events.length) {
+    if (!overdubOn) layers = [];
+    const byStep = {};
+    for (const ev of take.events) (byStep[ev.step] = byStep[ev.step] || []).push(ev);
+    layers.push({ id: ++layerSeq, events: take.events, byStep, muted: false });
+    setStatus(`✓ take ${layerSeq} locked in — ${take.events.length} hit(s)`);
+  }
+  // Still armed? Start the next pass's take; disarmed takes go away.
+  take = loopRecording ? { events: [] } : null;
+  renderLayers();
+}
+
+function loopPhase() {
+  // Position within the current cycle in [0, 1) — read before changing
+  // bpm/bars so the transport can re-anchor without a phase jump.
+  return (((audioCtx.currentTime - loopStart) / loopSec()) % 1 + 1) % 1;
+}
+
+function setLoopBpm(v) {
+  const nv = Math.max(40, Math.min(240, parseInt(v, 10) || bpm));
+  const phase = (loopPlaying && audioCtx) ? loopPhase() : 0;
+  bpm = nv;
+  if (loopPlaying) {
+    loopStart = audioCtx.currentTime - phase * loopSec();
+    schedStep = Math.ceil((audioCtx.currentTime - loopStart) / stepSec() - 1e-9);
+    schedTime = loopStart + schedStep * stepSec();
+  }
+  document.getElementById('loopBpm').value = bpm;
+  document.getElementById('loopBpmVal').textContent = bpm;
+  updateLoopStatus();
+}
+
+function setLoopBars(v) {
+  const nv = parseInt(v, 10);
+  if (![1, 2, 4].includes(nv)) return;
+  const phase = (loopPlaying && audioCtx) ? loopPhase() : 0;
+  loopBars = nv;
+  if (loopPlaying) {
+    loopStart = audioCtx.currentTime - phase * loopSec();
+    schedStep = Math.ceil((audioCtx.currentTime - loopStart) / stepSec() - 1e-9);
+    schedTime = loopStart + schedStep * stepSec();
+  }
+  for (const l of layers) {
+    l.events = l.events.filter(e => e.step < nSteps());
+    l.byStep = {};
+    for (const ev of l.events) (l.byStep[ev.step] = l.byStep[ev.step] || []).push(ev);
+  }
+  if (take) take.events = take.events.filter(e => e.step < nSteps());
+  renderLayers();
+}
+
+function toggleClick() {
+  clickOn = !clickOn;
+  document.getElementById('clickBtn').classList.toggle('on', clickOn);
+}
+
+function toggleOverdub() {
+  overdubOn = !overdubOn;
+  document.getElementById('odubBtn').classList.toggle('on', overdubOn);
+  setStatus(overdubOn ? 'OVERDUB on — new takes stack as layers' : 'OVERDUB off — next take replaces all layers');
+}
+
+function toggleLayerMute(id) {
+  const l = layers.find(x => x.id === id);
+  if (l) { l.muted = !l.muted; renderLayers(); }
+}
+
+function deleteLayer(id) {
+  layers = layers.filter(x => x.id !== id);
+  renderLayers();
+}
+
+function undoLayer() {
+  const gone = layers.pop();
+  renderLayers();
+  if (gone) setStatus(`↩ undid take ${gone.id} — ${layers.length} layer(s) left`);
+}
+
+function clearLayers() {
+  layers = [];
+  renderLayers();
+  setStatus('✕ loop cleared');
+}
+
+function updateLoopStatus() {
+  const mode = loopRecording ? '⏺ REC' : (loopPlaying ? '▶ looping' : 'idle');
+  const late = loopPlaying && schedLate > 0.001 ? ` · sched late ≤${Math.round(schedLate * 1000)}ms` : '';
+  document.getElementById('loopStatus').textContent =
+    `${mode} · ${loopBars} bar${loopBars > 1 ? 's' : ''} @ ${bpm} BPM · ` +
+    `${layers.length} take${layers.length === 1 ? '' : 's'} · ${overdubOn ? 'overdub' : 'replace'}${late}`;
+}
+
+function renderLayers() {
+  const el = document.getElementById('layerList');
+  if (!layers.length) {
+    el.innerHTML = '<div class="layer-empty">no takes yet — hit ● REC, then play the pads. Each loop pass becomes a layer.</div>';
+  } else {
+    el.innerHTML = layers.map(l => {
+      const dots = [...new Set(l.events.map(e => e.stemId))].slice(0, 8).map(id => {
+        const st = STEMS.find(s => s.id === id);
+        return `<span class="layer-dot" style="background:${st ? st.color : '#888'}"></span>`;
+      }).join('');
+      return `<div class="layer-row ${l.muted ? 'muted' : ''}">
+        <span class="layer-dots">${dots}</span>
+        <span class="layer-name">TAKE ${l.id} — ${l.events.length} hit${l.events.length === 1 ? '' : 's'}</span>
+        <button class="mini-btn ${l.muted ? 'mute-on' : ''}" onclick="toggleLayerMute(${l.id})">M</button>
+        <button class="mini-btn" onclick="deleteLayer(${l.id})">✕</button>
+      </div>`;
+    }).join('');
+  }
+  updateLoopStatus();
+}
+
+// Export is a lossy summary of the loop: one (velocity, pitch) pair per
+// stem per 16th — later takes win collisions; velocity quantizes to the
+// renderer's 3 levels (soft/medium/accent).
+function quantVel(v) { return v >= 0.95 ? 2 : (v >= 0.6 ? 1 : 3); }
+
+async function exportLoop() {
+  const stLink = document.getElementById('statusLink');
+  if (!layers.some(l => !l.muted && l.events.length)) {
+    setStatus('nothing to export — record a take first');
+    return;
+  }
+  const n = nSteps();
+  const tracks = {};
+  for (const stem of STEMS) {
+    tracks[stem.id] = {
+      steps: new Array(n).fill(0),
+      stepPitches: new Array(n).fill(0),
+      pitch: 0, gain: stem.defaultGain ?? 0.9, pan: 0,
+      trimSec: stem.trimSec, useDry: allDry, mute: false, solo: false,
+    };
+  }
+  for (const l of layers) {
+    if (l.muted) continue;
+    for (const ev of l.events) {
+      const t = tracks[ev.stemId];
+      if (!t) continue;
+      t.steps[ev.step] = quantVel(ev.vel);
+      t.stepPitches[ev.step] = ev.semi;
+    }
+  }
+  setStatus(`⏳ rendering ${loopBars}-bar loop @ ${bpm} BPM to MP3...`);
+  stLink.innerHTML = '';
+  try {
+    const res = await fetch('/api/render-sequence', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bpm, bars: loopBars, swing: 0, tracks }),
+    });
+    const data = await res.json();
+    if (!data.ok) { setStatus(`❌ export failed: ${data.error}`); return; }
+    setStatus(`✓ loop bounced (${data.durationSec}s) -> ${data.rootFile || data.url} — lossy summary of the loop`);
+    stLink.innerHTML = `<a href="${data.url}" download style="color:var(--accent-hi);font-weight:700;">⬇ Download MP3</a>`;
+  } catch (e) {
+    setStatus(`❌ export failed: ${e}`);
+  }
+}
+
+function drawRing() {
+  const cv = document.getElementById('loopRing');
+  const ctx = cv.getContext('2d');
+  let frameNo = 0;
+  function frame() {
+    requestAnimationFrame(frame);
+    const w = cv.width, h = cv.height, cx = w / 2, cy = h / 2, r = 76;
+    const n = nSteps();
+    ctx.fillStyle = '#0b0908';
+    ctx.fillRect(0, 0, w, h);
+
+    for (let s = 0; s < n; s++) {
+      const a = (s / n) * Math.PI * 2 - Math.PI / 2;
+      const inner = s % 16 === 0 ? r - 12 : (s % 4 === 0 ? r - 8 : r - 4);
+      ctx.strokeStyle = s % 16 === 0 ? '#5b463a' : (s % 4 === 0 ? '#41322a' : '#2b211c');
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner);
+      ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      ctx.stroke();
+    }
+
+    const drawEvents = (evts, dim, override) => {
+      for (const ev of evts) {
+        const st = STEMS.find(s => s.id === ev.stemId);
+        const a = (ev.step / n) * Math.PI * 2 - Math.PI / 2;
+        ctx.fillStyle = override || (st ? st.color : '#888');
+        ctx.globalAlpha = dim ? 0.22 : 0.95;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(a) * (r - 18), cy + Math.sin(a) * (r - 18),
+                1.6 + ev.vel * 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    };
+    for (const l of layers) drawEvents(l.events, l.muted);
+    if (take) drawEvents(take.events, false, '#ef4444');
+
+    if (loopPlaying && audioCtx) {
+      const phase = (((audioCtx.currentTime - loopStart) / loopSec()) % 1 + 1) % 1;
+      const a = phase * Math.PI * 2 - Math.PI / 2;
+      const col = loopRecording ? '#ef4444' : '#ffb347';
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + 3, -Math.PI / 2, a);
+      ctx.strokeStyle = loopRecording ? 'rgba(239,68,68,0.5)' : 'rgba(255,179,71,0.35)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = '#9e8e82';
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${bpm} BPM`, cx, cy - 4);
+    ctx.fillText(`${loopBars} BAR${loopBars > 1 ? 'S' : ''}`, cx, cy + 10);
+
+    if (++frameNo % 30 === 0) updateLoopStatus();
+  }
+  frame();
+}
+
 async function init() {
   const res = await fetch('/api/state');
   const data = await res.json();
@@ -3373,6 +3872,10 @@ async function init() {
   if (!stored.pads) {
     studioMerge({ pads: studioPadsSerialize(PADS) });   // seed once
   }
+  document.getElementById('loopBpm').value = bpm;
+  document.getElementById('loopBpmVal').textContent = bpm;
+  renderLayers();
+  drawRing();
 }
 
 window.addEventListener('storage', (ev) => {

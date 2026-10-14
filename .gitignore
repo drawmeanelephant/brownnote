@@ -1,6 +1,7 @@
 vendor/
 .refs/
 build/
+brownnote_custom_groove.mp3
 *.o
 .DS_Store
 zig-cache/

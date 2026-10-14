@@ -15,10 +15,16 @@ Boots the studio server on a free loopback port, then checks:
     WAV + stem def under build/user/, /api/state lists it user:true,
     the wav is served, stereo/48 kHz/float/pathy/non-WAV uploads 400,
     over-cap bodies 413, and {name, delete:true} removes both files
+  - POST /api/render-sequence       -> when stems are available: a length-16
+                                     steps grid repeats identically every
+                                     bar, while a length-16*bars grid places
+                                     hits on their own steps (issue #48
+                                     looper export)
 
 Prints "ok: ..." / "bad: ..." so tests/run_tests.sh can case-match the
 verdict like the inline python3 heredocs do.  Exit 0 on pass, 1 on fail.
 """
+import array
 import http.client
 import io
 import json
@@ -55,12 +61,12 @@ def get(path):
         return e.code, e.headers.get("Content-Type", ""), e.read()
 
 
-def post(path, body=b"{}"):
+def post(path, body=b"{}", timeout=10):
     req = urllib.request.Request(
         BASE + path, data=body, method="POST",
         headers={"Content-Type": "application/json"})
     try:
-        r = urllib.request.urlopen(req, timeout=10)
+        r = urllib.request.urlopen(req, timeout=timeout)
         return r.status, r.headers.get("Content-Type", ""), r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.headers.get("Content-Type", ""), e.read()
@@ -153,6 +159,7 @@ def main():
                 fails.append(f"GET {path}: 200 but no <html>")
 
         status, ctype, body = get("/api/state")
+        stem_ids = []
         try:
             payload = json.loads(body)
         except Exception:
@@ -160,6 +167,8 @@ def main():
         if status == 200:
             if not isinstance(payload, dict) or "stems" not in payload:
                 fails.append("GET /api/state: 200 but no 'stems' key")
+            else:
+                stem_ids = [s["id"] for s in payload["stems"] if "id" in s]
         elif status == 503:
             if not isinstance(payload, dict) or payload.get("ok") is not False:
                 fails.append("GET /api/state: 503 but body is not "
@@ -175,6 +184,77 @@ def main():
                            b"gassySave"):
                 if marker not in body:
                     fails.append(f"GET /: missing {marker.decode()!r}")
+
+        # issue #48: the /pads looper exports a flat 16*bars grid. Length-16
+        # steps arrays must keep the legacy repeat-per-bar behaviour, and an
+        # extended grid must place hits on their own steps.
+        render_note = "render-sequence skipped (stems unavailable)"
+        if stem_ids:
+            render_note = "render-sequence len16/len32 grids ok"
+            sid = "snare" if "snare" in stem_ids else stem_ids[0]
+
+            def seq_tracks(steps, pitches=None):
+                tr = {i: {"mute": True} for i in stem_ids}
+                tr[sid] = {
+                    "mute": False, "steps": steps,
+                    "stepPitches": pitches if pitches is not None else [0] * len(steps),
+                    "pitch": 0, "gain": 0.9, "pan": 0, "trimSec": 0.2,
+                }
+                return tr
+
+            def render_wav(tracks, bars=2, bpm=116):
+                body = json.dumps({"bpm": bpm, "bars": bars, "swing": 0,
+                                   "tracks": tracks}).encode()
+                st, _, b = post("/api/render-sequence", body, timeout=90)
+                if st != 200:
+                    return None, f"status {st}: {b[:160]!r}"
+                p = json.loads(b)
+                if not p.get("ok"):
+                    return None, f"not ok: {p.get('error')}"
+                wst, _, wb = get(p["wavUrl"])
+                if wst != 200:
+                    return None, f"wav fetch status {wst}"
+                return wb, None
+
+            def rms_at(wav_bytes, t, dur=0.05):
+                """Mean-square level of the left channel over [t, t+dur) sec."""
+                with wave.open(io.BytesIO(wav_bytes), "rb") as w:
+                    sr, ch, nf = w.getframerate(), w.getnchannels(), w.getnframes()
+                    i0 = max(0, min(int(t * sr), nf))
+                    w.setpos(i0)
+                    raw = w.readframes(max(0, min(int((t + dur) * sr), nf) - i0))
+                vals = array.array("h")
+                vals.frombytes(raw)
+                vals = vals[0::ch]
+                if not vals:
+                    return 0.0
+                return (sum(v * v for v in vals) / len(vals)) ** 0.5
+
+            bpm, bars = 116, 2
+            bar_sec = 4 * 60.0 / bpm
+            step_sec = bar_sec / 16
+            pat = [1] + [0] * 15                      # one hit, step 0
+            wav_a, e1 = render_wav(seq_tracks(pat), bars, bpm)
+            wav_b, e2 = render_wav(seq_tracks(pat * 2), bars, bpm)
+            pat32 = pat + [0] * 4 + [1] + [0] * 11    # hits at steps 0 and 20
+            wav_c, e3 = render_wav(seq_tracks(pat32), bars, bpm)
+            err = e1 or e2 or e3
+            if err:
+                fails.append(f"POST /api/render-sequence: {err}")
+            else:
+                if wav_a != wav_b:
+                    fails.append("render-sequence: length-16 grid did not "
+                                 "repeat identically per bar")
+                if wav_a == wav_c:
+                    fails.append("render-sequence: length-32 grid ignored "
+                                 "(identical to length-16 render)")
+                else:
+                    if rms_at(wav_c, bar_sec) > 100:
+                        fails.append("render-sequence: extended-grid hit "
+                                     "landed on the bar-2 downbeat")
+                    if rms_at(wav_c, bar_sec + 4 * step_sec) < 500:
+                        fails.append("render-sequence: no hit audible at "
+                                     "extended step 20")
 
         status, ctype, body = post("/api/no-such-endpoint")
         try:
@@ -409,7 +489,7 @@ def main():
               "/api/state sane; unknown POST 404s; "
               "patch save/list/load/delete round-trip + bad names 400; "
               "sample upload/list/delete round-trip + bad WAVs 400, "
-              "over-cap 413")
+              "over-cap 413; " + render_note)
         return 0
     finally:
         proc.terminate()
