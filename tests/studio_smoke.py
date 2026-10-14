@@ -111,6 +111,15 @@ def main():
         else:
             fails.append(f"GET /api/state: status {status} (want 200 or 503)")
 
+        # ---- #46: the gassy randomizer ships in the / page --------------
+        status, _, body = get("/")
+        if status == 200:
+            for marker in (b"randomizePatch", b"mulberry32",
+                           b"I'M FEELING GASSY", b"gassyChaos",
+                           b"gassySave"):
+                if marker not in body:
+                    fails.append(f"GET /: missing {marker.decode()!r}")
+
         status, ctype, body = post("/api/no-such-endpoint")
         try:
             payload = json.loads(body)
