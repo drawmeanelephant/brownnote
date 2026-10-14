@@ -918,6 +918,22 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (ab) presets.sh smoke test: list, fx render, and multi-track song
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ] && [ -x scripts/presets.sh ]; then
+	if scripts/presets.sh list >/dev/null 2>&1 &&
+	   scripts/presets.sh fx doom --out "$TMP/preset_fx.wav" >/dev/null 2>&1 &&
+	   scripts/presets.sh song funk --bars 2 --out "$TMP/preset_song.wav" >/dev/null 2>&1 &&
+	   [ -s "$TMP/preset_fx.wav" ] && [ -s "$TMP/preset_song.wav" ]; then
+		ok "(ab) presets.sh: fx and multi-track song WAVs rendered"
+	else
+		bad "(ab) presets.sh: failed to render fx or song WAV"
+	fi
+else
+	skip "(ab) presets.sh: python3 or scripts/presets.sh absent"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then
