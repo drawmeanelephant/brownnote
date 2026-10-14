@@ -11,13 +11,21 @@ Serves build/studio.html at `/` plus workspace audio files and JSON APIs:
   GET  /api/patch?name= -> the named patch JSON
   POST /api/patch       -> {name, patch} saves; {name, delete: true} deletes
                            (whole-studio snapshot, schema v1)
+  POST /api/upload-sample?name=<name>
+                        -> Content-Type: audio/wav, raw 44.1 kHz mono s16
+                           WAV body (10 MiB cap): saves build/user/<slug>.wav
+                           + a stem def and returns it; JSON {name, delete:
+                           true} removes both.  Anything but 44.1k/mono/s16
+                           PCM 400s — the browser resamples before sending.
 
 Extra views over the same stems (every page carries the same page-nav bar):
-  /mixer    -> 6-channel console desk with VU meters, tap/loop per strip
+  /mixer    -> console desk with VU meters, tap/loop per strip (+ user stems)
   /pads     -> 16-pad MPC-style finger drummer (keys 1-4/QWER/ASDF/ZXCV)
+               plus the in-browser recorder that produces user stems
   /library  -> crate-digger: every rendered MP3/WAV with drawn waveforms
 """
 import http.server
+import io
 import json
 import math
 import os
@@ -32,6 +40,7 @@ import time
 import urllib.parse
 import wave
 import array
+import zlib
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 PORT = int(os.environ.get("STUDIO_PORT", "8765"))
@@ -86,6 +95,23 @@ def list_tracks():
                     "url": f"/recordings/{fn}",
                     "sizeKb": round(os.path.getsize(p) / 1024, 1),
                 })
+    if os.path.isdir(USER_DIR):
+        for fn in sorted(os.listdir(USER_DIR)):
+            if fn.endswith(".wav"):
+                p = os.path.join(USER_DIR, fn)
+                label = fn
+                try:
+                    with open(os.path.join(USER_DIR, fn[:-4] + ".json"),
+                              "r", encoding="utf-8") as f:
+                        label = json.load(f).get("name") or fn
+                except Exception:
+                    pass
+                tracks.append({
+                    "name": label,
+                    "kind": "Sample",
+                    "url": f"/build/user/{fn}",
+                    "sizeKb": round(os.path.getsize(p) / 1024, 1),
+                })
     return tracks
 
 
@@ -136,6 +162,128 @@ def save_patch(name, patch):
         except OSError:
             pass
         raise
+
+
+# User samples (#43): recorded in the browser, uploaded as 44.1 kHz mono
+# s16 WAV (the only shape load_wav + the WebAudio pages assume).  Each one
+# is a stem def under build/user/ so /api/state, /pads, /mixer, and the
+# CRATES page pick it up; they are not sequencer lanes in v1.
+USER_DIR = os.path.join(ROOT, "build", "user")
+SAMPLE_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,48}$")
+SAMPLE_MAX_BYTES = 10 * 1024 * 1024
+USER_WAV_TYPES = {"audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"}
+USER_COLORS = [
+    "#38bdf8", "#f472b6", "#facc15", "#34d399",
+    "#fb923c", "#c084fc", "#f87171", "#a3e635",
+]
+
+
+def user_slug(name):
+    return re.sub(r"[ _]+", "_", name.strip().lower())
+
+
+def user_paths(name):
+    """Validated sample name -> (wav, json) paths inside build/user/, else None."""
+    if not isinstance(name, str) or not SAMPLE_NAME_RE.match(name):
+        return None
+    slug = user_slug(name)
+    if not slug:
+        return None
+    wav = os.path.join(USER_DIR, slug + ".wav")
+    js = os.path.join(USER_DIR, slug + ".json")
+    if os.path.dirname(os.path.abspath(wav)) != os.path.abspath(USER_DIR):
+        return None
+    return wav, js
+
+
+def user_stem_defs():
+    """Every build/user/*.json stem def, flagged user:true."""
+    defs = []
+    if os.path.isdir(USER_DIR):
+        for fn in sorted(os.listdir(USER_DIR)):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(USER_DIR, fn), "r",
+                          encoding="utf-8") as f:
+                    d = json.load(f)
+            except Exception:
+                continue   # a corrupt def file shouldn't break /api/state
+            if isinstance(d, dict) and d.get("id") and d.get("url"):
+                d["user"] = True
+                defs.append(d)
+    return defs
+
+
+def _atomic_write(path, data):
+    fd, tmp = tempfile.mkstemp(dir=USER_DIR, prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def save_user_sample(name, body):
+    """Validate a raw WAV body + name, write build/user/<slug>.{wav,json},
+    and return the stem def.  Raises ValueError for a 400 reply."""
+    paths = user_paths(name)
+    if paths is None:
+        raise ValueError("bad sample name (want [A-Za-z0-9 _-], 1-48 chars)")
+    wav_path, def_path = paths
+    try:
+        with wave.open(io.BytesIO(body), "rb") as w:
+            ch = w.getnchannels()
+            width = w.getsampwidth()
+            rate = w.getframerate()
+            frames = w.getnframes()
+    except Exception as e:
+        raise ValueError(f"not a readable PCM WAV: {e}")
+    if (rate, ch, width) != (44100, 1, 2):
+        raise ValueError(
+            f"WAV must be 44.1 kHz mono s16 "
+            f"(got {rate} Hz, {ch} channel(s), {width * 8}-bit)")
+    if frames <= 0:
+        raise ValueError("empty clip")
+
+    slug = user_slug(name)
+    stem_def = {
+        "id": f"user-{slug}",
+        "name": name.strip(),
+        "phrase": "recorded",
+        "effect": "user sample",
+        "url": f"/build/user/{slug}.wav",
+        "dryUrl": f"/build/user/{slug}.wav",
+        "color": USER_COLORS[
+            zlib.crc32(slug.encode("utf-8")) % len(USER_COLORS)],
+        "trimSec": round(frames / 44100.0, 3),
+        "defaultGain": 0.9,
+        "defaultPan": 0.0,
+        "defaultPitch": 0,
+        "user": True,
+    }
+    os.makedirs(USER_DIR, exist_ok=True)
+    _atomic_write(wav_path, body)
+    _atomic_write(def_path,
+                  (json.dumps(stem_def, indent=2) + "\n").encode("utf-8"))
+    return stem_def
+
+
+def delete_user_sample(name):
+    """Remove build/user/<slug>.{wav,json}; True if anything was there."""
+    wav_path, def_path = user_paths(name)
+    gone = False
+    for p in (wav_path, def_path):
+        if os.path.isfile(p):
+            os.unlink(p)
+            gone = True
+    return gone
+
 
 def render_sequence_to_mp3(payload):
     """Render the current 16-step sequencer grid + stem mixer settings to a stereo WAV & 320k MP3."""
@@ -316,7 +464,7 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 return self._send_json(503, {"ok": False, "error": str(e)})
             return self._send_json(200, {
-                "stems": STEM_DEFS,
+                "stems": STEM_DEFS + user_stem_defs(),
                 "tracks": list_tracks(),
             })
         if parsed.path == "/api/patches":
@@ -339,9 +487,50 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                 return self._send_json(500, {"ok": False, "error": f"corrupt patch file: {e}"})
         return super().do_GET()
 
+    def _handle_upload_sample(self, parsed):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length > SAMPLE_MAX_BYTES:
+            return self._send_json(413, {
+                "ok": False, "error": "sample body over the 10 MiB cap"})
+        raw_body = self.rfile.read(length) if length > 0 else b""
+        ctype = (self.headers.get("Content-Type") or "")
+        ctype = ctype.split(";")[0].strip().lower()
+
+        if ctype in USER_WAV_TYPES:
+            name = urllib.parse.parse_qs(parsed.query).get("name", [""])[0]
+            try:
+                stem_def = save_user_sample(name, raw_body)
+            except ValueError as e:
+                return self._send_json(400, {"ok": False, "error": str(e)})
+            return self._send_json(200, stem_def)
+
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except Exception:
+            return self._send_json(400, {
+                "ok": False,
+                "error": "expected a WAV body (Content-Type: audio/wav) "
+                         "or JSON {name, delete: true}"})
+        if not isinstance(payload, dict) or payload.get("delete") is not True:
+            return self._send_json(400, {
+                "ok": False,
+                "error": "POST raw WAV with Content-Type: audio/wav, or "
+                         "JSON {\"name\": ..., \"delete\": true}"})
+        name = payload.get("name")
+        if user_paths(name) is None:
+            return self._send_json(400, {
+                "ok": False,
+                "error": "bad sample name (want [A-Za-z0-9 _-], 1-48 chars)"})
+        if not delete_user_sample(name):
+            return self._send_json(404, {
+                "ok": False, "error": f"no sample named '{name}'"})
+        return self._send_json(200, {"ok": True, "deleted": name})
+
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         length = int(self.headers.get("Content-Length", "0"))
+        if parsed.path == "/api/upload-sample":
+            return self._handle_upload_sample(parsed)
         if parsed.path == "/api/patch" and length > PATCH_MAX_BYTES:
             return self._send_json(400, {"ok": False, "error": "patch body over the 256 KiB cap"})
         raw_body = self.rfile.read(length) if length > 0 else b"{}"
@@ -1760,7 +1949,8 @@ async function refreshState() {
   const res = await fetch('/api/state');
   const data = await res.json();
   if (STEMS.length === 0) {
-    STEMS = data.stems;
+    // user-recorded stems play on DESK/PADS/CRATES but are not seq lanes
+    STEMS = data.stems.filter(s => !s.user);
     for (const s of STEMS) {
       trackState[s.id] = {
         gain: s.defaultGain,
@@ -1960,7 +2150,7 @@ MIXER_HTML = r"""<!DOCTYPE html>
   }
   .strips {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 10px;
     flex: 1;
   }
@@ -2074,7 +2264,7 @@ MIXER_HTML = r"""<!DOCTYPE html>
   .master .mvol input { flex: 1; accent-color: var(--accent-hi); }
   @media (max-width: 1080px) {
     .desk { flex-direction: column; }
-    .strips { grid-template-columns: repeat(3, 1fr); }
+    .strips { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
     .master { width: 100%; }
   }
 </style>
@@ -2085,8 +2275,8 @@ MIXER_HTML = r"""<!DOCTYPE html>
   <div class="brand">
     <div class="logo-badge">💨</div>
     <div>
-      <h1>BROWNNOTE DESK // 6-CHANNEL STEM CONSOLE</h1>
-      <p>Vertical strips over the same six stems · VU per channel · loop or tap each channel</p>
+      <h1>BROWNNOTE DESK // STEM CONSOLE</h1>
+      <p>Strips over the six built-in stems + your recorded samples · VU per channel · loop or tap</p>
     </div>
   </div>
   <nav class="page-nav">
@@ -2474,6 +2664,26 @@ PADS_HTML = r"""<!DOCTYPE html>
   .legend b { color: var(--accent-hi); }
   .mvol { display: flex; align-items: center; gap: 8px; font-size: 9px; color: var(--muted); }
   .mvol input { flex: 1; accent-color: var(--accent); }
+  .side canvas#recWave {
+    width: 100%; height: 64px;
+    background: #0b0908; border: 1px solid var(--border); border-radius: 6px;
+  }
+  .rec-row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+  .rec-row input[type="text"] { flex: 1; min-width: 0; }
+  .rec-time { font-size: 10px; color: var(--red); min-width: 40px; text-align: right; }
+  #recBtn.rec-on { background: linear-gradient(180deg, #ef4444, #b91c1c); color: #fff; border-color: #fca5a5; }
+  .rec-sub {
+    font-size: 9px; color: var(--muted); letter-spacing: 0.08em;
+    margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
+  }
+  .usamp { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+  .usamp-name {
+    flex: 1; min-width: 0; font-size: 10px; font-weight: 700;
+    border-left: 3px solid var(--accent); padding-left: 6px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .usamp select { max-width: 118px; font-size: 9.5px; padding: 3px 4px; }
+  .usamp .mini-btn { flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -2483,7 +2693,7 @@ PADS_HTML = r"""<!DOCTYPE html>
     <div class="logo-badge">💨</div>
     <div>
       <h1>BROWNNOTE PADS // FART MPC</h1>
-      <p>16 finger-drum pads over the stems · choke per stem · hit high on the pad for max velocity</p>
+      <p>16 finger-drum pads over the stems + your recordings · choke per stem · hit high for max velocity</p>
     </div>
   </div>
   <nav class="page-nav">
@@ -2513,6 +2723,21 @@ PADS_HTML = r"""<!DOCTYPE html>
         <input type="range" min="0" max="120" value="95" oninput="setMaster(this.value/100)" />
         <b id="mvolLbl">95%</b>
       </div>
+    </section>
+    <section class="card">
+      <div class="card-header"><span class="card-title">Recorder — catch a real one</span></div>
+      <canvas id="recWave" width="230" height="64"></canvas>
+      <div class="rec-row">
+        <button id="recBtn" class="primary" onclick="toggleRecord()">● REC</button>
+        <button id="recPlay" class="mini-btn" onclick="playTake()" disabled title="audition the take">▶</button>
+        <span class="rec-time" id="recTime"></span>
+      </div>
+      <div class="rec-row">
+        <input type="text" id="recName" maxlength="48" placeholder="name it — letters, digits, space _ -" />
+        <button id="saveBtn" onclick="saveTake()" disabled>SAVE</button>
+      </div>
+      <div id="userSamples"></div>
+      <div class="status-banner" id="recStatus" style="min-height:0;">Record a fart, trim + normalize happens on save…</div>
     </section>
     <section class="card legend">
       <b>PADS:</b> bombs on top row, lead second, wah/snare/hat third, kicks &amp; thuds on the bottom.<br>
@@ -2676,6 +2901,288 @@ function drawScope() {
   frame();
 }
 
+// ---- RECORDER (#43): getUserMedia -> MediaRecorder -> decodeAudioData ->
+// OfflineAudioContext resample to 44.1 kHz mono -> strip leading silence
+// (-45 dBFS), peak-normalize to -1 dBFS, cap 4 s -> s16 WAV.  The server
+// takes only that exact shape; no ffmpeg on the server side at all.
+
+const REC_SR = 44100;
+const REC_MAX_SEC = 4;
+const REC_SILENCE = Math.pow(10, -45 / 20);
+const REC_PEAK = Math.pow(10, -1 / 20);
+const REC_NAME_RE = /^[A-Za-z0-9 _-]{1,48}$/;
+
+let mediaStream = null, mediaRec = null, recChunks = [];
+let recTimer = null, recT0 = 0;
+let takePcm = null, takeWav = null;
+
+function recStatus(msg) {
+  document.getElementById('recStatus').textContent = msg;
+}
+
+async function toggleRecord() {
+  if (mediaRec && mediaRec.state === 'recording') {
+    mediaRec.stop();
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    recStatus('⚠ Mic capture needs a secure context — open the studio on ' +
+              'localhost / 127.0.0.1 (a LAN IP will not work).');
+    return;
+  }
+  ensureAudio();
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    recStatus('⚠ Mic unavailable: ' + (e && e.message ? e.message : e) +
+              ' — getUserMedia wants localhost/127.0.0.1 or https.');
+    return;
+  }
+  recChunks = [];
+  mediaRec = new MediaRecorder(mediaStream);
+  mediaRec.ondataavailable = (ev) => { if (ev.data && ev.data.size) recChunks.push(ev.data); };
+  mediaRec.onstop = onTakeDone;
+  mediaRec.start();
+  recT0 = Date.now();
+  const btn = document.getElementById('recBtn');
+  btn.textContent = '■ STOP';
+  btn.classList.add('rec-on');
+  takePcm = takeWav = null;
+  document.getElementById('recPlay').disabled = true;
+  document.getElementById('saveBtn').disabled = true;
+  drawRecWave(null);
+  recTimer = setInterval(() => {
+    document.getElementById('recTime').textContent = ((Date.now() - recT0) / 1000).toFixed(1) + 's';
+  }, 100);
+  recStatus('🔴 recording… STOP when the deed is done.');
+}
+
+async function onTakeDone() {
+  clearInterval(recTimer); recTimer = null;
+  if (mediaStream) { for (const t of mediaStream.getTracks()) t.stop(); mediaStream = null; }
+  const btn = document.getElementById('recBtn');
+  btn.textContent = '● REC';
+  btn.classList.remove('rec-on');
+  mediaRec = null;
+  try {
+    const blob = new Blob(recChunks);
+    const decoded = await audioCtx.decodeAudioData(await blob.arrayBuffer());
+    takePcm = processTake(await resampleMono(decoded));
+    if (!takePcm.length) {
+      drawRecWave(null);
+      recStatus('⚠ take was all silence — fart louder.');
+      return;
+    }
+    takeWav = encodeWav16(takePcm);
+    drawRecWave(takePcm);
+    document.getElementById('recPlay').disabled = false;
+    document.getElementById('saveBtn').disabled = false;
+    document.getElementById('recTime').textContent = (takePcm.length / REC_SR).toFixed(2) + 's';
+    recStatus(`✓ ${(takePcm.length / REC_SR).toFixed(2)}s take — silence-stripped, normalized to −1 dBFS. ▶ it, name it, SAVE.`);
+  } catch (e) {
+    recStatus('⚠ could not decode the take: ' + (e && e.message ? e.message : e));
+  }
+}
+
+async function resampleMono(buf) {
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const frames = Math.max(1, Math.ceil(buf.duration * REC_SR));
+  const off = new OAC(1, frames, REC_SR);
+  const src = off.createBufferSource();
+  src.buffer = buf;
+  src.connect(off.destination);
+  src.start(0);
+  const rendered = await off.startRendering();
+  return rendered.getChannelData(0).slice();
+}
+
+function processTake(pcm) {
+  let start = 0;
+  while (start < pcm.length && Math.abs(pcm[start]) < REC_SILENCE) start++;
+  const end = Math.min(pcm.length, start + REC_MAX_SEC * REC_SR);
+  const out = pcm.slice(start, end);
+  let peak = 0;
+  for (let i = 0; i < out.length; i++) {
+    const a = Math.abs(out[i]);
+    if (a > peak) peak = a;
+  }
+  if (peak > 1e-6) {
+    const g = REC_PEAK / peak;
+    for (let i = 0; i < out.length; i++) out[i] *= g;
+  }
+  return out;
+}
+
+function encodeWav16(pcm) {
+  const n = pcm.length;
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const wstr = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+  wstr(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); wstr(8, 'WAVE');
+  wstr(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true); v.setUint32(24, REC_SR, true);
+  v.setUint32(28, REC_SR * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  wstr(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    const s = Math.max(-1, Math.min(1, pcm[i]));
+    v.setInt16(44 + i * 2, Math.round(s * 32767), true);
+  }
+  return buf;
+}
+
+function drawRecWave(pcm) {
+  const cv = document.getElementById('recWave');
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#0b0908';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  if (!pcm || !pcm.length) {
+    ctx.fillStyle = '#463a33';
+    ctx.font = '9px monospace';
+    ctx.fillText('no take yet', 8, cv.height / 2 + 3);
+    return;
+  }
+  const buckets = 160;
+  const step = Math.max(1, Math.floor(pcm.length / buckets));
+  const w = cv.width / buckets;
+  ctx.fillStyle = '#38bdf8';
+  for (let b = 0; b < buckets; b++) {
+    let m = 0;
+    const off = b * step;
+    for (let i = 0; i < step && off + i < pcm.length; i += 5) {
+      const a = Math.abs(pcm[off + i]);
+      if (a > m) m = a;
+    }
+    const h = Math.max(1, m * cv.height * 0.92);
+    ctx.fillRect(b * w, (cv.height - h) / 2, Math.max(1, w - 0.5), h);
+  }
+}
+
+function playTake() {
+  if (!takePcm || !takePcm.length) return;
+  ensureAudio();
+  const buf = audioCtx.createBuffer(1, takePcm.length, REC_SR);
+  buf.copyToChannel(takePcm, 0);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(masterGain);
+  src.start();
+}
+
+async function saveTake() {
+  if (!takeWav) return;
+  const name = document.getElementById('recName').value.trim();
+  if (!REC_NAME_RE.test(name)) {
+    recStatus('⚠ name it first — letters, digits, space, _ and - only, up to 48 chars.');
+    return;
+  }
+  document.getElementById('saveBtn').disabled = true;
+  let data = {};
+  try {
+    const res = await fetch('/api/upload-sample?name=' + encodeURIComponent(name), {
+      method: 'POST',
+      headers: { 'Content-Type': 'audio/wav' },
+      body: takeWav,
+    });
+    data = await res.json();
+    if (!res.ok || !data.id) {
+      recStatus('❌ save failed: ' + (data.error || `HTTP ${res.status}`));
+      document.getElementById('saveBtn').disabled = false;
+      return;
+    }
+  } catch (e) {
+    recStatus('❌ save failed: ' + (e && e.message ? e.message : e));
+    document.getElementById('saveBtn').disabled = false;
+    return;
+  }
+  const ix = STEMS.findIndex(s => s.id === data.id);
+  if (ix >= 0) STEMS[ix] = data; else STEMS.push(data);
+  delete rawBufs[data.url];
+  delete trimBufs[data.url + '|t'];
+  renderUserSamples();
+  recStatus(`✓ saved "${data.name}" (${(takePcm.length / REC_SR).toFixed(2)}s) — assign it to a pad below.`);
+}
+
+function renderUserSamples() {
+  const wrap = document.getElementById('userSamples');
+  wrap.innerHTML = '';
+  const users = STEMS.filter(s => s.user);
+  if (!users.length) return;
+  const sub = document.createElement('div');
+  sub.className = 'rec-sub';
+  sub.textContent = 'YOUR SAMPLES — assign to a pad, or delete';
+  wrap.appendChild(sub);
+  for (const s of users) {
+    const row = document.createElement('div');
+    row.className = 'usamp';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'usamp-name';
+    nameEl.style.borderColor = s.color;
+    nameEl.textContent = s.name;
+    nameEl.title = s.name;
+    const sel = document.createElement('select');
+    sel.innerHTML = '<option value="">→ pad…</option>' +
+      PADS.map((p, i) => `<option value="${i}" ${p.stem === s.id ? 'selected' : ''}>${i + 1} · ${p.key.toUpperCase()} · ${p.label}</option>`).join('');
+    sel.onchange = () => assignSample(s.id, sel.value);
+    const del = document.createElement('button');
+    del.className = 'mini-btn';
+    del.textContent = 'DEL';
+    del.onclick = () => deleteSample(s.id, s.name);
+    row.appendChild(nameEl);
+    row.appendChild(sel);
+    row.appendChild(del);
+    wrap.appendChild(row);
+  }
+}
+
+function assignSample(stemId, padIdx) {
+  if (padIdx === '') return;
+  const i = parseInt(padIdx, 10);
+  const stem = STEMS.find(s => s.id === stemId);
+  if (!stem || !(i >= 0 && i < PADS.length)) return;
+  PADS[i].stem = stemId;
+  PADS[i].semi = 0;
+  PADS[i].label = stem.name.toUpperCase().slice(0, 14);
+  studioMerge({ pads: studioPadsSerialize(PADS) });
+  buildPads();
+  renderUserSamples();
+  recStatus(`✓ "${stem.name}" lives on pad ${i + 1} (${PADS[i].key.toUpperCase()}) — it's in the patch.`);
+}
+
+async function deleteSample(stemId, name) {
+  const stem = STEMS.find(s => s.id === stemId);
+  let data = {};
+  try {
+    const res = await fetch('/api/upload-sample', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, delete: true }),
+    });
+    data = await res.json();
+    if (!res.ok || !data.ok) {
+      recStatus('❌ delete failed: ' + (data.error || `HTTP ${res.status}`));
+      return;
+    }
+  } catch (e) {
+    recStatus('❌ delete failed: ' + (e && e.message ? e.message : e));
+    return;
+  }
+  const ix = STEMS.findIndex(s => s.id === stemId);
+  if (ix >= 0) STEMS.splice(ix, 1);
+  if (stem) {
+    delete rawBufs[stem.url];
+    delete trimBufs[stem.url + '|t'];
+  }
+  // pads pointed at a deleted stem fall back to that slot's default
+  let changed = false;
+  PADS.forEach((p, i) => {
+    if (p.stem === stemId) { Object.assign(p, PADS_DEFAULT[i]); changed = true; }
+  });
+  if (changed) studioMerge({ pads: studioPadsSerialize(PADS) });
+  buildPads();
+  renderUserSamples();
+  recStatus(`✓ "${name}" deleted.`);
+}
+
 async function init() {
   const res = await fetch('/api/state');
   const data = await res.json();
@@ -2683,6 +3190,8 @@ async function init() {
   const stored = studioRead();
   applyPadsSlice(stored.pads);
   buildPads();
+  renderUserSamples();
+  drawRecWave(null);
   if (!stored.pads) {
     studioMerge({ pads: studioPadsSerialize(PADS) });   // seed once
   }
@@ -2692,6 +3201,7 @@ window.addEventListener('storage', (ev) => {
   if (ev.key !== STUDIO_LS_KEY) return;
   applyPadsSlice(studioRead().pads);
   buildPads();
+  renderUserSamples();
 });
 
 window.addEventListener('DOMContentLoaded', init);
@@ -2742,6 +3252,7 @@ LIBRARY_HTML = r"""<!DOCTYPE html>
   .kind-FX-Preset { --kind-color: #e07a3c; }
   .kind-Custom { --kind-color: #4ecdc4; }
   .kind-Recording { --kind-color: #22c55e; }
+  .kind-Sample { --kind-color: #38bdf8; }
 </style>
 </head>
 <body>
@@ -2770,6 +3281,7 @@ LIBRARY_HTML = r"""<!DOCTYPE html>
       <button class="filter-btn" data-kind="FX Preset" onclick="setFilter('FX Preset', this)">FX Presets</button>
       <button class="filter-btn" data-kind="Custom" onclick="setFilter('Custom', this)">Custom</button>
       <button class="filter-btn" data-kind="Recording" onclick="setFilter('Recording', this)">Recordings</button>
+      <button class="filter-btn" data-kind="Sample" onclick="setFilter('Sample', this)">Samples</button>
     </div>
     <button class="mini-btn" onclick="loadCrates()">↻ Refresh</button>
   </div>
@@ -2787,7 +3299,7 @@ let audioCtx = null;
 const peaks = {};   // url -> Float32Array of peaks 0..1
 let playingUrl = null;
 
-const KIND_CLASS = { 'Song': 'kind-Song', 'FX Preset': 'kind-FX-Preset', 'Custom': 'kind-Custom', 'Recording': 'kind-Recording' };
+const KIND_CLASS = { 'Song': 'kind-Song', 'FX Preset': 'kind-FX-Preset', 'Custom': 'kind-Custom', 'Recording': 'kind-Recording', 'Sample': 'kind-Sample' };
 
 function ensureAudio() {
   if (!audioCtx) {
