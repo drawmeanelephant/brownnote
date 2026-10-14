@@ -7,6 +7,10 @@ Serves build/studio.html at `/` plus workspace audio files and JSON APIs:
   GET  /api/state       -> available stems, preset MP3s, and effects list
   POST /api/render-fx   -> synthesize & pedal a custom phrase, return MP3/WAV URL
   POST /api/render-song -> render a full multi-track genre song or custom sequence to MP3
+  GET  /api/patches     -> [{name, mtime}] for every saved studio patch
+  GET  /api/patch?name= -> the named patch JSON
+  POST /api/patch       -> {name, patch} saves; {name, delete: true} deletes
+                           (whole-studio snapshot, schema v1)
 
 Extra views over the same stems (every page carries the same page-nav bar):
   /mixer    -> 6-channel console desk with VU meters, tap/loop per strip
@@ -17,11 +21,13 @@ import http.server
 import json
 import math
 import os
+import re
 import shutil
 import socketserver
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import wave
@@ -81,6 +87,55 @@ def list_tracks():
                     "sizeKb": round(os.path.getsize(p) / 1024, 1),
                 })
     return tracks
+
+
+PATCHES_DIR = os.path.join(ROOT, "build", "patches")
+PATCH_NAME_RE = re.compile(r"^[A-Za-z0-9 _+\-]{1,64}$")
+PATCH_MAX_BYTES = 256 * 1024
+PATCH_KEYS = {"v", "name", "seq", "desk", "pads", "key", "seed"}
+
+
+def patch_path(name):
+    """Validated patch name -> path inside build/patches/, else None."""
+    if not isinstance(name, str) or not PATCH_NAME_RE.match(name):
+        return None
+    path = os.path.join(PATCHES_DIR, name + ".json")
+    if os.path.dirname(os.path.abspath(path)) != os.path.abspath(PATCHES_DIR):
+        return None
+    return path
+
+
+def list_patches():
+    out = []
+    if os.path.isdir(PATCHES_DIR):
+        for fn in sorted(os.listdir(PATCHES_DIR)):
+            if not fn.endswith(".json"):
+                continue
+            p = os.path.join(PATCHES_DIR, fn)
+            if os.path.isfile(p):
+                out.append({"name": fn[:-5], "mtime": os.path.getmtime(p)})
+    return out
+
+
+def save_patch(name, patch):
+    path = patch_path(name)
+    if path is None:
+        raise ValueError("bad patch name")
+    patch = dict(patch)
+    patch["v"] = 1
+    patch["name"] = name
+    os.makedirs(PATCHES_DIR, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=PATCHES_DIR, prefix=".tmp-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(patch, indent=2) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 def render_sequence_to_mp3(payload):
     """Render the current 16-step sequencer grid + stem mixer settings to a stereo WAV & 320k MP3."""
@@ -264,11 +319,31 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                 "stems": STEM_DEFS,
                 "tracks": list_tracks(),
             })
+        if parsed.path == "/api/patches":
+            return self._send_json(200, list_patches())
+        if parsed.path == "/api/patch":
+            qs = urllib.parse.parse_qs(parsed.query)
+            name = qs.get("name", [""])[0]
+            path = patch_path(name)
+            if path is None:
+                return self._send_json(400, {
+                    "ok": False,
+                    "error": "bad patch name (want [A-Za-z0-9 _+-], 1-64 chars)",
+                })
+            if not os.path.isfile(path):
+                return self._send_json(404, {"ok": False, "error": f"no patch named '{name}'"})
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return self._send_json(200, json.load(f))
+            except Exception as e:
+                return self._send_json(500, {"ok": False, "error": f"corrupt patch file: {e}"})
         return super().do_GET()
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         length = int(self.headers.get("Content-Length", "0"))
+        if parsed.path == "/api/patch" and length > PATCH_MAX_BYTES:
+            return self._send_json(400, {"ok": False, "error": "patch body over the 256 KiB cap"})
         raw_body = self.rfile.read(length) if length > 0 else b"{}"
         try:
             payload = json.loads(raw_body.decode("utf-8"))
@@ -310,6 +385,37 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                     "tracks": list_tracks(),
                 })
 
+            if parsed.path == "/api/patch":
+                name = payload.get("name")
+                path = patch_path(name)
+                if path is None:
+                    return self._send_json(400, {
+                        "ok": False,
+                        "error": "bad patch name (want [A-Za-z0-9 _+-], 1-64 chars)",
+                    })
+                if payload.get("delete") is True:
+                    if not os.path.isfile(path):
+                        return self._send_json(404, {"ok": False, "error": f"no patch named '{name}'"})
+                    os.unlink(path)
+                    return self._send_json(200, {"ok": True, "deleted": name})
+                patch = payload.get("patch")
+                if not isinstance(patch, dict):
+                    return self._send_json(400, {"ok": False, "error": "missing 'patch' object"})
+                if patch.get("v") != 1:
+                    return self._send_json(400, {
+                        "ok": False,
+                        "error": f"unsupported patch schema v={patch.get('v')!r} (want 1)",
+                    })
+                extra = sorted(set(patch) - PATCH_KEYS)
+                if extra:
+                    return self._send_json(400, {"ok": False, "error": f"unknown patch keys: {extra}"})
+                for sect, kind in (("seq", dict), ("desk", dict), ("pads", list)):
+                    if sect in patch and patch[sect] is not None \
+                            and not isinstance(patch[sect], kind):
+                        return self._send_json(400, {"ok": False, "error": f"patch.{sect} must be a {kind.__name__}"})
+                save_patch(name, patch)
+                return self._send_json(200, {"ok": True, "name": name, "patches": list_patches()})
+
             return self._send_json(404, {"ok": False, "error": "unknown endpoint"})
         except Exception as e:
             return self._send_json(500, {"ok": False, "error": str(e)})
@@ -317,6 +423,71 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
 
 class ReusableTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
+
+
+# Shared whole-studio state: one localStorage object, brownnote.studio.v1,
+# read by every page (they share an origin).  Sections: seq (the / page),
+# desk (/mixer), pads (/pads), key & seed (reserved for #46/#47).  A missing
+# section means "keep this page's defaults", so partial patches still load.
+STUDIO_JS = r"""
+const STUDIO_LS_KEY = 'brownnote.studio.v1';
+
+const PADS_DEFAULT = [
+  { stem: 'bomb',  semi: 0,   key: '1', label: 'BROWN BOMB' },
+  { stem: 'bomb',  semi: -5,  key: '2', label: 'BOMB -5' },
+  { stem: 'bomb',  semi: -12, key: '3', label: 'SEWER BOMB' },
+  { stem: 'bomb',  semi: 7,   key: '4', label: 'BOMB +7' },
+  { stem: 'lead',  semi: 0,   key: 'q', label: 'FUZZ LEAD' },
+  { stem: 'lead',  semi: 7,   key: 'w', label: 'LEAD +7' },
+  { stem: 'lead',  semi: 12,  key: 'e', label: 'LEAD OCT' },
+  { stem: 'lead',  semi: -7,  key: 'r', label: 'SLUDGE' },
+  { stem: 'wah',   semi: 0,   key: 'a', label: 'WAH FUNK' },
+  { stem: 'wah',   semi: 5,   key: 's', label: 'WAH +5' },
+  { stem: 'snare', semi: 0,   key: 'd', label: 'SPLAT' },
+  { stem: 'hat',   semi: 0,   key: 'f', label: 'HAT' },
+  { stem: 'kick',  semi: 0,   key: 'z', label: 'SUB KICK' },
+  { stem: 'kick',  semi: -5,  key: 'x', label: 'KICK -5' },
+  { stem: 'snare', semi: -12, key: 'c', label: 'THUD' },
+  { stem: 'wah',   semi: -7,  key: 'v', label: 'WAH -7' },
+];
+
+function studioRead() {
+  try {
+    const o = JSON.parse(localStorage.getItem(STUDIO_LS_KEY) || 'null');
+    if (o && typeof o === 'object' && !Array.isArray(o)) return o;
+  } catch (e) {}
+  return { v: 1 };
+}
+
+function studioWrite(obj) {
+  obj.v = 1;
+  try { localStorage.setItem(STUDIO_LS_KEY, JSON.stringify(obj)); } catch (e) {}
+  return obj;
+}
+
+function studioMerge(slice) {
+  const o = studioRead();
+  Object.assign(o, slice);
+  return studioWrite(o);
+}
+
+function studioPadsSerialize(pads) {
+  return pads.map(p => ({ stem: p.stem, semi: p.semi, label: p.label }));
+}
+
+// Default desk slice (the /mixer page owns this live, but / needs it to
+// write complete whole-studio patches before /mixer has ever run).
+function studioDeskDefaults(stems) {
+  const channels = {};
+  for (const s of stems) {
+    channels[s.id] = {
+      gain: s.defaultGain, pan: s.defaultPan, pitch: s.defaultPitch,
+      mute: false, solo: false, useDry: false,
+    };
+  }
+  return { master: 0.9, channels };
+}
+"""
 
 
 STUDIO_HTML = r"""<!DOCTYPE html>
@@ -501,6 +672,30 @@ STUDIO_HTML = r"""<!DOCTYPE html>
     border-color: var(--accent-hi);
     background: #3a2618;
     color: var(--accent-hi);
+  }
+  .patch-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+    padding: 7px 9px;
+    background: #14110f;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+  }
+  .patch-label {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    color: var(--accent-hi);
+  }
+  .patch-bar input[type="text"] { width: 170px; }
+  .patch-bar select { min-width: 150px; }
+  .patch-hint {
+    font-size: 9.5px;
+    color: var(--muted);
+    margin-left: auto;
   }
 
   /* Sequencer & Mixer Rows */
@@ -775,7 +970,7 @@ STUDIO_HTML = r"""<!DOCTYPE html>
     </div>
     <div class="ctrl-pill">
       <label for="barsSelect">Export Bars</label>
-      <select id="barsSelect">
+      <select id="barsSelect" onchange="persistSeq()">
         <option value="2">2 Bars</option>
         <option value="4" selected>4 Bars</option>
         <option value="8">8 Bars</option>
@@ -812,6 +1007,16 @@ STUDIO_HTML = r"""<!DOCTYPE html>
         <button class="preset-btn" onclick="randomizePattern()">🎲 Randomize</button>
         <button class="preset-btn" onclick="clearPattern()">Clear</button>
       </div>
+    </div>
+
+    <div class="patch-bar">
+      <span class="patch-label">PATCHES</span>
+      <input id="patchName" type="text" maxlength="64" placeholder="name this jam…" />
+      <button class="preset-btn primary" onclick="savePatch()">💾 Save</button>
+      <select id="patchSelect"></select>
+      <button class="preset-btn" onclick="loadPatch()">⤵ Load</button>
+      <button class="preset-btn" onclick="deletePatch()">🗑 Del</button>
+      <span class="patch-hint">the studio autosaves to this browser, so a refresh won't wipe the jam</span>
     </div>
 
     <div class="seq-header-row">
@@ -892,6 +1097,7 @@ STUDIO_HTML = r"""<!DOCTYPE html>
 </div>
 
 <script>
+""" + STUDIO_JS + r"""
 let STEMS = [];
 let trackState = {};
 let audioCtx = null;
@@ -1070,19 +1276,23 @@ function setTrackParam(id, key, val) {
   if (key === 'gain') document.getElementById(`lbl-gain-${id}`).textContent = `${Math.round(val*100)}%`;
   if (key === 'pan') document.getElementById(`lbl-pan-${id}`).textContent = formatPan(val);
   if (key === 'pitch') document.getElementById(`lbl-pitch-${id}`).textContent = `${val >= 0 ? '+'+val : val}st`;
+  persistSeq();
 }
 
 function toggleMute(id) {
   trackState[id].mute = !trackState[id].mute;
   document.getElementById(`btn-mute-${id}`).classList.toggle('mute-on', trackState[id].mute);
+  persistSeq();
 }
 function toggleSolo(id) {
   trackState[id].solo = !trackState[id].solo;
   document.getElementById(`btn-solo-${id}`).classList.toggle('solo-on', trackState[id].solo);
+  persistSeq();
 }
 function toggleDry(id) {
   trackState[id].useDry = !trackState[id].useDry;
   document.getElementById(`btn-dry-${id}`).classList.toggle('dry-on', trackState[id].useDry);
+  persistSeq();
   triggerOneShot(id);
 }
 
@@ -1096,6 +1306,7 @@ function onStepClick(ev, id, s) {
     st.steps[s] = (st.steps[s] + 1) % 3;
   }
   refreshTrackCells(id);
+  persistSeq();
   if (st.steps[s] > 0 && !isPlaying) {
     playStemSample(id, st.stepPitches[s], st.steps[s] === 2 ? 1.25 : 1.0);
   }
@@ -1218,11 +1429,13 @@ function togglePlay() {
 function updateBpm(val) {
   bpm = parseInt(val, 10);
   document.getElementById('bpmVal').textContent = bpm;
+  persistSeq();
 }
 
 function updateSwing(val) {
   swing = parseInt(val, 10) / 100;
   document.getElementById('swingVal').textContent = `${val}%`;
+  persistSeq();
 }
 
 function loadPatternPreset(name) {
@@ -1248,6 +1461,7 @@ function loadPatternPreset(name) {
       refreshTrackCells(stem.id);
     }
   }
+  persistSeq();
 }
 
 function clearPattern() {
@@ -1256,6 +1470,7 @@ function clearPattern() {
     trackState[stem.id].stepPitches = new Array(16).fill(0);
     refreshTrackCells(stem.id);
   }
+  persistSeq();
 }
 
 function randomizePattern() {
@@ -1273,6 +1488,160 @@ function randomizePattern() {
     }
     refreshTrackCells(stem.id);
   }
+  persistSeq();
+}
+
+// ---- PATCHES: whole-studio snapshots (schema v1) -----------------------
+// seq slice = this page's share of brownnote.studio.v1; a saved patch also
+// carries the desk/pads/key/seed sections so /mixer and /pads hydrate too.
+
+function seqSlice() {
+  const tracks = {};
+  for (const s of STEMS) {
+    const st = trackState[s.id];
+    tracks[s.id] = {
+      gain: st.gain, pan: st.pan, pitch: st.pitch,
+      mute: !!st.mute, solo: !!st.solo, useDry: !!st.useDry,
+      steps: [...st.steps], stepPitches: [...st.stepPitches],
+    };
+  }
+  return {
+    bpm, swing,
+    bars: parseInt(document.getElementById('barsSelect').value, 10) || 4,
+    tracks,
+  };
+}
+
+function persistSeq() {
+  if (!STEMS.length) return;
+  studioMerge({ seq: seqSlice() });
+}
+
+function applySeqSlice(seq) {
+  if (!seq || typeof seq !== 'object') return;
+  if (typeof seq.bpm === 'number') {
+    bpm = Math.round(seq.bpm);
+    document.getElementById('bpmInput').value = bpm;
+    document.getElementById('bpmVal').textContent = bpm;
+  }
+  if (typeof seq.swing === 'number') {
+    swing = seq.swing;
+    const pct = Math.round(swing * 100);
+    document.getElementById('swingInput').value = pct;
+    document.getElementById('swingVal').textContent = `${pct}%`;
+  }
+  if (seq.bars) {
+    document.getElementById('barsSelect').value = String(seq.bars);
+  }
+  const tr = seq.tracks || {};
+  for (const stem of STEMS) {
+    const pt = tr[stem.id];
+    if (!pt || typeof pt !== 'object') continue;   // unknown ids ignored
+    const st = trackState[stem.id];
+    for (const k of ['gain', 'pan', 'pitch']) {
+      if (typeof pt[k] === 'number') st[k] = pt[k];
+    }
+    for (const k of ['mute', 'solo', 'useDry']) {
+      if (k in pt) st[k] = !!pt[k];
+    }
+    if (Array.isArray(pt.steps)) {
+      st.steps = Array.from({ length: 16 }, (_, i) => pt.steps[i] | 0);
+    }
+    if (Array.isArray(pt.stepPitches)) {
+      st.stepPitches = Array.from({ length: 16 }, (_, i) => pt.stepPitches[i] | 0);
+    }
+  }
+  buildTracksUI();
+}
+
+function buildPatch(name) {
+  const base = studioRead();
+  return {
+    v: 1,
+    name,
+    seq: seqSlice(),
+    desk: base.desk || studioDeskDefaults(STEMS),
+    pads: base.pads || studioPadsSerialize(PADS_DEFAULT),
+    key: base.key ?? null,
+    seed: base.seed ?? null,
+  };
+}
+
+function setStatus(msg) {
+  document.getElementById('statusText').textContent = msg;
+}
+
+async function refreshPatchList(selectName) {
+  try {
+    const res = await fetch('/api/patches');
+    const list = await res.json();
+    const sel = document.getElementById('patchSelect');
+    sel.innerHTML = '';
+    if (!Array.isArray(list) || !list.length) {
+      sel.innerHTML = '<option value="">(no saved patches)</option>';
+      return;
+    }
+    for (const p of list) {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = p.name;
+      sel.appendChild(opt);
+    }
+    if (selectName) sel.value = selectName;
+  } catch (e) {}
+}
+
+async function savePatch() {
+  const name = document.getElementById('patchName').value.trim();
+  if (!name) { setStatus('⚠ Name the patch first — "Sewer Bomb + Flanger" deserves a name.'); return; }
+  const res = await fetch('/api/patch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, patch: buildPatch(name) }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    setStatus(`❌ Patch save failed: ${data.error || res.status}`);
+    return;
+  }
+  await refreshPatchList(name);
+  setStatus(`✓ Saved patch "${name}" — seq, desk, pads, key & seed all in the bag.`);
+}
+
+async function loadPatch() {
+  const name = document.getElementById('patchSelect').value;
+  if (!name) { setStatus('⚠ Pick a patch to load.'); return; }
+  const res = await fetch('/api/patch?name=' + encodeURIComponent(name));
+  const data = await res.json();
+  if (!res.ok) {
+    setStatus(`❌ Patch load failed: ${data.error || res.status}`);
+    return;
+  }
+  if (data.v !== 1) {
+    setStatus(`❌ Patch "${name}" is schema v${data.v} — this studio only reads v1.`);
+    return;
+  }
+  studioWrite(data);          // whole object in; other pages hydrate on load
+  applySeqSlice(data.seq);
+  document.getElementById('patchName').value = name;
+  setStatus(`✓ Loaded "${name}". /mixer & /pads pick it up on their next load.`);
+}
+
+async function deletePatch() {
+  const name = document.getElementById('patchSelect').value;
+  if (!name) { setStatus('⚠ Pick a patch to delete.'); return; }
+  const res = await fetch('/api/patch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, delete: true }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    setStatus(`❌ Patch delete failed: ${data.error || res.status}`);
+    return;
+  }
+  await refreshPatchList();
+  setStatus(`🗑 Deleted patch "${name}".`);
 }
 
 async function bounceSequenceToMp3() {
@@ -1405,11 +1774,31 @@ async function refreshState() {
       };
     }
     initStepHeader();
-    buildTracksUI();
-    loadPatternPreset('funk');
+    const stored = studioRead();
+    if (stored.seq && typeof stored.seq === 'object') {
+      applySeqSlice(stored.seq);            // autosaved jam survives refresh
+    } else {
+      buildTracksUI();
+      loadPatternPreset('funk');
+    }
+    // Seed sections this page doesn't own so the first Save already writes
+    // a complete whole-studio snapshot.
+    const seed = {};
+    if (!stored.desk) seed.desk = studioDeskDefaults(STEMS);
+    if (!stored.pads) seed.pads = studioPadsSerialize(PADS_DEFAULT);
+    if (!('key' in stored)) seed.key = null;
+    if (!('seed' in stored)) seed.seed = null;
+    if (Object.keys(seed).length) studioMerge(seed);
+    refreshPatchList();
   }
   renderJukebox(data.tracks || []);
 }
+
+window.addEventListener('storage', (ev) => {
+  if (ev.key !== STUDIO_LS_KEY) return;
+  const o = studioRead();
+  if (o.seq && typeof o.seq === 'object') applySeqSlice(o.seq);
+});
 
 window.addEventListener('DOMContentLoaded', refreshState);
 </script>
@@ -1725,18 +2114,75 @@ MIXER_HTML = r"""<!DOCTYPE html>
 </div>
 
 <script>
+""" + STUDIO_JS + r"""
 let STEMS = [];
 let ch = {};
 let audioCtx = null;
 let masterGain = null, masterAnalyser = null;
+let masterLevel = 0.9;
 const rawBufs = {}, trimBufs = {};
+
+// desk slice of brownnote.studio.v1 — never serialize the WebAudio nodes
+// (g, p, a, loopSrc) that live alongside these fields in ch[].
+function deskSlice() {
+  const channels = {};
+  for (const s of STEMS) {
+    const st = ch[s.id];
+    channels[s.id] = {
+      gain: st.gain, pan: st.pan, pitch: st.pitch,
+      mute: !!st.mute, solo: !!st.solo, useDry: !!st.useDry,
+    };
+  }
+  return { master: masterLevel, channels };
+}
+
+function persistDesk() {
+  if (!STEMS.length) return;
+  studioMerge({ desk: deskSlice() });
+}
+
+function applyDeskSlice(desk) {
+  if (!desk || typeof desk !== 'object') return;
+  if (typeof desk.master === 'number') {
+    masterLevel = desk.master;
+    document.getElementById('masterVol').value = Math.round(masterLevel * 100);
+    document.getElementById('masterVolLbl').textContent = `${Math.round(masterLevel * 100)}%`;
+    if (masterGain) masterGain.gain.value = masterLevel;
+  }
+  const chans = desk.channels || {};
+  for (const s of STEMS) {
+    const c = chans[s.id];
+    if (!c || typeof c !== 'object') continue;   // unknown ids ignored
+    const st = ch[s.id];
+    for (const k of ['gain', 'pan', 'pitch']) {
+      if (typeof c[k] === 'number') st[k] = c[k];
+    }
+    for (const k of ['mute', 'solo', 'useDry']) {
+      if (k in c) st[k] = !!c[k];
+    }
+  }
+  if (document.getElementById('strips').children.length) {
+    buildStrips();
+    for (const s of STEMS) {
+      const st = ch[s.id];
+      if (st.loopSrc) {
+        const btn = document.getElementById(`loop-${s.id}`);
+        if (btn) { btn.classList.add('on'); btn.textContent = 'LOOPING'; }
+      }
+      if (audioCtx) {
+        applyGain(s.id);
+        if (st.p) st.p.pan.value = st.pan;
+      }
+    }
+  }
+}
 
 function ensureAudio() {
   if (!audioCtx) {
     const AC = window.AudioContext || window.webkitAudioContext;
     audioCtx = new AC();
     masterGain = audioCtx.createGain();
-    masterGain.gain.value = 0.9;
+    masterGain.gain.value = masterLevel;
     masterAnalyser = audioCtx.createAnalyser();
     masterAnalyser.fftSize = 512;
     masterGain.connect(masterAnalyser);
@@ -1820,6 +2266,7 @@ function setParam(id, key, val) {
   if (key === 'pitch') {
     document.getElementById(`tlbl-${id}`).textContent = `${val >= 0 ? '+'+val : val}st`;
   }
+  persistDesk();
 }
 
 function toggleFlag(id, flag, cls) {
@@ -1827,6 +2274,7 @@ function toggleFlag(id, flag, cls) {
   document.getElementById(`btn-${flag}-${id}`).classList.toggle(cls, ch[id][flag]);
   if (flag === 'mute' || flag === 'solo') STEMS.forEach(s => applyGain(s.id));
   if (flag === 'useDry') { delete trimBufs[id + '|d']; delete trimBufs[id + '|w']; tap(id); }
+  persistDesk();
 }
 
 async function tap(id) {
@@ -1847,8 +2295,10 @@ async function toggleLoop(id) {
 }
 
 function setMaster(v) {
+  masterLevel = v;
   if (masterGain) masterGain.gain.value = v;
   document.getElementById('masterVolLbl').textContent = `${Math.round(v*100)}%`;
+  persistDesk();
 }
 
 function panic() {
@@ -1889,9 +2339,9 @@ function buildStrips() {
           oninput="setParam('${stem.id}','pitch',parseInt(this.value,10))" />
       </div>
       <div class="strip-btns">
-        <button class="mini-btn" id="btn-useDry-${stem.id}" onclick="toggleFlag('${stem.id}','useDry','dry-on')">DRY</button>
-        <button class="mini-btn" id="btn-mute-${stem.id}" onclick="toggleFlag('${stem.id}','mute','mute-on')">M</button>
-        <button class="mini-btn" id="btn-solo-${stem.id}" onclick="toggleFlag('${stem.id}','solo','solo-on')">S</button>
+        <button class="mini-btn ${st.useDry ? 'dry-on' : ''}" id="btn-useDry-${stem.id}" onclick="toggleFlag('${stem.id}','useDry','dry-on')">DRY</button>
+        <button class="mini-btn ${st.mute ? 'mute-on' : ''}" id="btn-mute-${stem.id}" onclick="toggleFlag('${stem.id}','mute','mute-on')">M</button>
+        <button class="mini-btn ${st.solo ? 'solo-on' : ''}" id="btn-solo-${stem.id}" onclick="toggleFlag('${stem.id}','solo','solo-on')">S</button>
       </div>
       <button class="tap" id="tap-${stem.id}" onclick="tap('${stem.id}')">TAP</button>
       <button class="mini-btn loop" id="loop-${stem.id}" onclick="toggleLoop('${stem.id}')">LOOP</button>
@@ -1952,8 +2402,16 @@ async function init() {
       g: null, p: null, a: null, loopSrc: null,
     };
   }
+  const stored = studioRead();
+  applyDeskSlice(stored.desk);
   buildStrips();
+  if (!stored.desk) persistDesk();   // seed the shared snapshot once
 }
+
+window.addEventListener('storage', (ev) => {
+  if (ev.key !== STUDIO_LS_KEY) return;
+  applyDeskSlice(studioRead().desk);
+});
 
 window.addEventListener('DOMContentLoaded', init);
 </script>
@@ -2065,24 +2523,22 @@ PADS_HTML = r"""<!DOCTYPE html>
 </div>
 
 <script>
-const PADS = [
-  { stem: 'bomb',  semi: 0,   key: '1', label: 'BROWN BOMB' },
-  { stem: 'bomb',  semi: -5,  key: '2', label: 'BOMB -5' },
-  { stem: 'bomb',  semi: -12, key: '3', label: 'SEWER BOMB' },
-  { stem: 'bomb',  semi: 7,   key: '4', label: 'BOMB +7' },
-  { stem: 'lead',  semi: 0,   key: 'q', label: 'FUZZ LEAD' },
-  { stem: 'lead',  semi: 7,   key: 'w', label: 'LEAD +7' },
-  { stem: 'lead',  semi: 12,  key: 'e', label: 'LEAD OCT' },
-  { stem: 'lead',  semi: -7,  key: 'r', label: 'SLUDGE' },
-  { stem: 'wah',   semi: 0,   key: 'a', label: 'WAH FUNK' },
-  { stem: 'wah',   semi: 5,   key: 's', label: 'WAH +5' },
-  { stem: 'snare', semi: 0,   key: 'd', label: 'SPLAT' },
-  { stem: 'hat',   semi: 0,   key: 'f', label: 'HAT' },
-  { stem: 'kick',  semi: 0,   key: 'z', label: 'SUB KICK' },
-  { stem: 'kick',  semi: -5,  key: 'x', label: 'KICK -5' },
-  { stem: 'snare', semi: -12, key: 'c', label: 'THUD' },
-  { stem: 'wah',   semi: -7,  key: 'v', label: 'WAH -7' },
-];
+""" + STUDIO_JS + r"""
+// The pad map is the 'pads' slice of brownnote.studio.v1 — serialized as
+// {stem, semi, label} per slot; 'key' stays a page-local default.
+let PADS = PADS_DEFAULT.map(p => Object.assign({}, p));
+
+function applyPadsSlice(pads) {
+  if (!Array.isArray(pads)) return;
+  for (let i = 0; i < PADS.length && i < pads.length; i++) {
+    const p = pads[i];
+    if (!p || typeof p !== 'object') continue;
+    if (p.stem !== undefined && !STEMS.find(s => s.id === p.stem)) continue; // unknown stems ignored
+    if (p.stem !== undefined) PADS[i].stem = p.stem;
+    if (typeof p.semi === 'number') PADS[i].semi = p.semi;
+    if (p.label !== undefined) PADS[i].label = String(p.label);
+  }
+}
 
 let STEMS = [];
 let audioCtx = null;
@@ -2224,8 +2680,19 @@ async function init() {
   const res = await fetch('/api/state');
   const data = await res.json();
   STEMS = data.stems;
+  const stored = studioRead();
+  applyPadsSlice(stored.pads);
   buildPads();
+  if (!stored.pads) {
+    studioMerge({ pads: studioPadsSerialize(PADS) });   // seed once
+  }
 }
+
+window.addEventListener('storage', (ev) => {
+  if (ev.key !== STUDIO_LS_KEY) return;
+  applyPadsSlice(studioRead().pads);
+  buildPads();
+});
 
 window.addEventListener('DOMContentLoaded', init);
 </script>
