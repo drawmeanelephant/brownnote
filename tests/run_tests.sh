@@ -935,8 +935,9 @@ fi
 
 # ------------------------------------------------------------------
 # (ac) studio.py smoke test: all four pages serve HTML, /api/state
-#      answers JSON (200, or 503 when stems can't build here), and an
-#      unknown POST endpoint 404s as JSON
+#      answers JSON (200, or 503 when stems can't build here), an
+#      unknown POST endpoint 404s as JSON, and the #45 patch API
+#      round-trips save -> list -> load -> delete with bad names 400ing
 # ------------------------------------------------------------------
 if [ "$have_python" = 1 ] && [ -f scripts/studio.py ]; then
 	verdict=$(python3 tests/studio_smoke.py 2>&1)

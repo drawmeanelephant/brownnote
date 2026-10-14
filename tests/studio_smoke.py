@@ -7,6 +7,10 @@ Boots the studio server on a free loopback port, then checks:
   - GET /api/state                  -> 200 with stems, or 503 JSON if the
                                      stem build cannot run on this machine
   - POST /api/no-such-endpoint      -> 404 JSON {"ok": false, ...}
+  - PATCHES (#45): POST /api/patch saves a v1 snapshot under
+    build/patches/, GET /api/patches lists it, GET /api/patch?name=
+    returns it, delete removes it, and pathy/oversized/empty names
+    plus non-v1 schemas 400 without writing outside build/patches/
 
 Prints "ok: ..." / "bad: ..." so tests/run_tests.sh can case-match the
 verdict like the inline python3 heredocs do.  Exit 0 on pass, 1 on fail.
@@ -18,6 +22,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -117,12 +122,99 @@ def main():
             fails.append("POST /api/no-such-endpoint: 404 but body is not "
                          '{"ok": false, ...}')
 
+        # ---- #45: whole-studio patches ----------------------------------
+        pname = "smoke test"
+        pfile = os.path.join(ROOT, "build", "patches", pname + ".json")
+        patch = {
+            "v": 1, "name": pname,
+            "seq": {"bpm": 120, "swing": 0.1, "bars": 4, "tracks": {}},
+            "desk": {"master": 0.9, "channels": {}},
+            "pads": [{"stem": "bomb", "semi": 0, "label": "BROWN BOMB"}],
+            "key": None, "seed": None,
+        }
+        try:
+            # save
+            status, _, body = post("/api/patch", json.dumps(
+                {"name": pname, "patch": patch}).encode())
+            payload = json.loads(body) if body else {}
+            if status != 200 or payload.get("ok") is not True:
+                fails.append(f"POST /api/patch save: status {status} {payload!r}")
+            elif not os.path.isfile(pfile):
+                fails.append("POST /api/patch save: 200 but no file in build/patches/")
+
+            # list
+            status, _, body = get("/api/patches")
+            names = []
+            try:
+                names = [p.get("name") for p in json.loads(body)]
+            except Exception:
+                pass
+            if status != 200 or pname not in names:
+                fails.append(f"GET /api/patches: status {status}, names {names!r}")
+
+            # load round-trips the snapshot
+            status, _, body = get("/api/patch?name=" +
+                                  urllib.parse.quote(pname))
+            try:
+                got = json.loads(body)
+            except Exception:
+                got = {}
+            if status != 200 or got.get("v") != 1 or \
+                    got.get("seq", {}).get("bpm") != 120:
+                fails.append(f"GET /api/patch?name=: status {status} {got!r}")
+
+            # bad names 400 and write nothing outside build/patches/
+            for bad_name in ("../x", "a/b", "", "x" * 65):
+                status, _, _ = post("/api/patch", json.dumps(
+                    {"name": bad_name, "patch": patch}).encode())
+                if status != 400:
+                    fails.append(f"POST /api/patch name {bad_name!r}: "
+                                 f"status {status} (want 400)")
+                status, _, _ = get("/api/patch?name=" +
+                                   urllib.parse.quote(bad_name))
+                if status != 400:
+                    fails.append(f"GET /api/patch name {bad_name!r}: "
+                                 f"status {status} (want 400)")
+            if os.path.exists(os.path.join(ROOT, "build", "x.json")) or \
+                    os.path.exists(os.path.join(ROOT, "x.json")):
+                fails.append("patchy name escaped build/patches/")
+
+            # non-v1 schema rejected
+            status, _, _ = post("/api/patch", json.dumps(
+                {"name": pname, "patch": {"v": 2}}).encode())
+            if status != 400:
+                fails.append(f"POST /api/patch v=2: status {status} (want 400)")
+
+            # delete, then it's gone from list + load
+            status, _, body = post("/api/patch", json.dumps(
+                {"name": pname, "delete": True}).encode())
+            payload = json.loads(body) if body else {}
+            if status != 200 or payload.get("ok") is not True:
+                fails.append(f"POST /api/patch delete: status {status} {payload!r}")
+            status, _, body = get("/api/patches")
+            try:
+                names = [p.get("name") for p in json.loads(body)]
+            except Exception:
+                names = [pname]
+            if pname in names:
+                fails.append("GET /api/patches: deleted patch still listed")
+            status, _, _ = get("/api/patch?name=" + urllib.parse.quote(pname))
+            if status != 404:
+                fails.append(f"GET /api/patch after delete: status {status} "
+                             "(want 404)")
+        finally:
+            try:
+                os.unlink(pfile)
+            except OSError:
+                pass
+
         if fails:
             for f in fails:
                 print(f"bad: {f}")
             return 1
         print("ok: / /mixer /pads /library serve HTML; "
-              "/api/state sane; unknown POST 404s")
+              "/api/state sane; unknown POST 404s; "
+              "patch save/list/load/delete round-trip + bad names 400")
         return 0
     finally:
         proc.terminate()
