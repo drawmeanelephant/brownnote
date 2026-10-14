@@ -630,8 +630,9 @@ class ReusableTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
 # Shared whole-studio state: one localStorage object, brownnote.studio.v1,
 # read by every page (they share an origin).  Sections: seq (the / page),
-# desk (/mixer), pads (/pads), key & seed (reserved for #46/#47).  A missing
-# section means "keep this page's defaults", so partial patches still load.
+# desk (/mixer), pads (/pads), key (the #47 studio key: scale/root/q),
+# seed (reserved for #46).  A missing section means "keep this page's
+# defaults", so partial patches still load.
 STUDIO_JS = r"""
 const STUDIO_LS_KEY = 'brownnote.studio.v1';
 
@@ -690,6 +691,95 @@ function studioDeskDefaults(stems) {
   }
   return { master: 0.9, channels };
 }
+
+// ===== scale-quantize block start (#47) =====
+// One global studio key in the 'key' slice of brownnote.studio.v1,
+// shared by every page.  ROOT is a transpose offset, not a detected
+// key — the stems are not tuned to a known pitch, so semitone 0 is each
+// sample's native pitch and "in key" means relative to the samples.
+const SCALES = {
+  minor_penta: [0, 3, 5, 7, 10],
+  major_penta: [0, 2, 4, 7, 9],
+  blues:       [0, 3, 5, 6, 7, 10],
+  major:       [0, 2, 4, 5, 7, 9, 11],
+  minor:       [0, 2, 3, 5, 7, 8, 10],
+  dorian:      [0, 2, 3, 5, 7, 9, 10],
+  chromatic:   [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+};
+const SCALE_LABELS = {
+  minor_penta: 'minor penta', major_penta: 'major penta', blues: 'blues',
+  major: 'major', minor: 'minor', dorian: 'dorian', chromatic: 'chromatic',
+};
+// Percussion is never snapped: hat sits at +14 and kick is pitched down
+// for timbre, not melody.
+const PITCHED = ['wah', 'lead', 'bomb'];
+
+let KEY = { scale: 'minor_penta', root: 0, q: false };
+
+function studioKeyDefault() {
+  return { scale: 'minor_penta', root: 0, q: false };
+}
+
+// Pull the 'key' slice out of brownnote.studio.v1 into KEY (normalized).
+function studioKeyApply() {
+  const k = studioRead().key;
+  KEY = {
+    scale: (k && SCALES[k.scale]) ? k.scale : 'minor_penta',
+    root: (k && typeof k.root === 'number' && isFinite(k.root))
+      ? Math.max(0, Math.min(11, Math.round(k.root))) : 0,
+    q: !!(k && k.q),
+  };
+  return KEY;
+}
+
+// Write one or more key fields back to the shared object.
+function studioSetKey(slice) {
+  studioMerge({ key: Object.assign({}, KEY, slice) });
+  return studioKeyApply();
+}
+
+// q(semi): subtract root, snap to the nearest tone of KEY.scale across
+// octaves (ties snap down), add root back.
+function q(semi) {
+  const tones = SCALES[KEY.scale] || SCALES.chromatic;
+  const x = semi - KEY.root;
+  const oct = Math.floor(x / 12) * 12;
+  let best = Infinity;
+  for (const t of tones) {
+    for (const o of [-12, 0, 12]) {
+      const cand = t + oct + o;
+      if (Math.abs(cand - x) < Math.abs(best - x) ||
+          (Math.abs(cand - x) === Math.abs(best - x) && cand < best)) {
+        best = cand;
+      }
+    }
+  }
+  return best + KEY.root;
+}
+
+// Play-time gate: Q off or a non-pitched stem passes the total through.
+// Callers pass the TOTAL shift (stem pitch + step/pad offset) — bomb sits
+// at -5 by default, so snapping the offset alone would drift it out of key.
+function qStem(stemId, semi) {
+  if (!KEY.q || !PITCHED.includes(stemId)) return semi;
+  return q(semi);
+}
+
+function keyBadgeText() {
+  const name = SCALE_LABELS[KEY.scale] || KEY.scale;
+  const root = KEY.root >= 0 ? `+${KEY.root}` : `${KEY.root}`;
+  return `KEY: ${name} ${root}${KEY.q ? ' · Q ON' : ' · Q off'}`;
+}
+
+function refreshKeyBadge() {
+  const el = document.getElementById('keyBadge');
+  if (el) el.textContent = keyBadgeText();
+}
+
+globalThis.q = q;
+globalThis.SCALES = SCALES;
+globalThis.PITCHED = PITCHED;
+// ===== scale-quantize block end =====
 """
 
 
@@ -1077,6 +1167,15 @@ STUDIO_HTML = r"""<!DOCTYPE html>
     font-size: 8.5px;
     opacity: 0.85;
   }
+  .step-cell.q-snap {
+    box-shadow: inset 0 -3px 0 var(--accent-hi), 0 0 10px rgba(255,179,71,0.35);
+  }
+  #qBtn.q-on {
+    background: var(--accent-hi);
+    color: #000;
+    border-color: #fcd34d;
+    font-weight: 900;
+  }
 
   /* Bottom two-column section */
   .bottom-split {
@@ -1182,6 +1281,34 @@ STUDIO_HTML = r"""<!DOCTYPE html>
       <label for="swingInput">Swing</label>
       <input id="swingInput" type="range" min="0" max="70" value="12" oninput="updateSwing(this.value)" />
       <span id="swingVal">12%</span>
+    </div>
+    <div class="ctrl-pill" title="Studio key — Q snaps wah/lead/bomb to the scale at play time; kick/snare/hat are never quantized">
+      <label for="scaleSelect">KEY</label>
+      <select id="scaleSelect" onchange="setKeyScale(this.value)">
+        <option value="minor_penta">Minor Penta</option>
+        <option value="major_penta">Major Penta</option>
+        <option value="blues">Blues</option>
+        <option value="major">Major</option>
+        <option value="minor">Minor</option>
+        <option value="dorian">Dorian</option>
+        <option value="chromatic">Chromatic</option>
+      </select>
+      <label for="rootSelect">ROOT</label>
+      <select id="rootSelect" onchange="setKeyRoot(this.value)">
+        <option value="0">+0 st</option>
+        <option value="1">+1 st</option>
+        <option value="2">+2 st</option>
+        <option value="3">+3 st</option>
+        <option value="4">+4 st</option>
+        <option value="5">+5 st</option>
+        <option value="6">+6 st</option>
+        <option value="7">+7 st</option>
+        <option value="8">+8 st</option>
+        <option value="9">+9 st</option>
+        <option value="10">+10 st</option>
+        <option value="11">+11 st</option>
+      </select>
+      <button id="qBtn" class="mini-btn" onclick="toggleQuantize()" title="Quantize pitched stems to the studio key">Q</button>
     </div>
     <div class="ctrl-pill">
       <label for="barsSelect">Export Bars</label>
@@ -1532,13 +1659,22 @@ function onStepClick(ev, id, s) {
 
 function refreshTrackCells(id) {
   const st = trackState[id];
+  const pitched = KEY.q && PITCHED.includes(id);
   for (let s = 0; s < 16; s++) {
     const cell = document.getElementById(`cell-${id}-${s}`);
     if (!cell) continue;
-    cell.classList.remove('on-1', 'on-2');
+    cell.classList.remove('on-1', 'on-2', 'q-snap');
     const v = st.steps[s];
     const sp = st.stepPitches[s];
-    const semiTxt = sp !== 0 ? (sp > 0 ? `+${sp}` : `${sp}`) : '';
+    let semiTxt = sp !== 0 ? (sp > 0 ? `+${sp}` : `${sp}`) : '';
+    if (v > 0 && pitched) {
+      const raw = (st.pitch || 0) + sp;
+      const snapped = q(raw);
+      if (snapped !== raw) {
+        cell.classList.add('q-snap');
+        semiTxt = `${snapped >= 0 ? '+' : ''}${snapped}◆`;
+      }
+    }
     if (v === 1) {
       cell.classList.add('on-1');
       cell.innerHTML = `<span>●</span><span class="step-semi">${semiTxt}</span>`;
@@ -1561,7 +1697,7 @@ async function playStemSample(id, stepSemi = 0, velScale = 1.0) {
 
   const src = audioCtx.createBufferSource();
   src.buffer = buf;
-  const totalSemi = (st.pitch || 0) + (stepSemi || 0);
+  const totalSemi = qStem(id, (st.pitch || 0) + (stepSemi || 0));
   src.playbackRate.value = Math.pow(2, totalSemi / 12);
 
   const gainNode = audioCtx.createGain();
@@ -1655,6 +1791,26 @@ function updateSwing(val) {
   document.getElementById('swingVal').textContent = `${val}%`;
   persistSeq();
 }
+
+// ---- Studio key UI (the 'key' slice is owned here, shared everywhere) --
+
+function syncKeyUI() {
+  const sel = document.getElementById('scaleSelect');
+  if (sel) sel.value = KEY.scale;
+  const rs = document.getElementById('rootSelect');
+  if (rs) rs.value = String(KEY.root);
+  const qb = document.getElementById('qBtn');
+  if (qb) qb.classList.toggle('q-on', KEY.q);
+}
+
+function applyKeyChange() {
+  syncKeyUI();
+  for (const s of STEMS) refreshTrackCells(s.id);
+}
+
+function setKeyScale(v) { studioSetKey({ scale: v }); applyKeyChange(); }
+function setKeyRoot(v) { studioSetKey({ root: parseInt(v, 10) || 0 }); applyKeyChange(); }
+function toggleQuantize() { studioSetKey({ q: !KEY.q }); applyKeyChange(); }
 
 function loadPatternPreset(name) {
   const p = PATTERN_PRESETS[name];
@@ -1996,6 +2152,8 @@ async function loadPatch() {
     return;
   }
   studioWrite(data);          // whole object in; other pages hydrate on load
+  studioKeyApply();
+  syncKeyUI();
   applySeqSlice(data.seq);
   document.getElementById('patchName').value = name;
   setStatus(`✓ Loaded "${name}". /mixer & /pads pick it up on their next load.`);
@@ -2018,6 +2176,30 @@ async function deletePatch() {
   setStatus(`🗑 Deleted patch "${name}".`);
 }
 
+// Server-side render hears what the browser hears: with Q on, pitched
+// tracks post their SNAPPED total (pitch folded into stepPitches so the
+// server's semi = pitch + stepPitches[s] is already in key).  With Q off
+// the payload is byte-identical to the raw trackState.
+function renderTracks() {
+  if (!KEY.q) return trackState;
+  const out = {};
+  for (const s of STEMS) {
+    const st = trackState[s.id];
+    const t = {
+      gain: st.gain, pan: st.pan, pitch: st.pitch,
+      mute: !!st.mute, solo: !!st.solo, useDry: !!st.useDry,
+      steps: [...st.steps], stepPitches: [...st.stepPitches],
+    };
+    if (PITCHED.includes(s.id)) {
+      const base = st.pitch || 0;
+      t.pitch = 0;
+      t.stepPitches = st.stepPitches.map(sp => q(base + (sp || 0)));
+    }
+    out[s.id] = t;
+  }
+  return out;
+}
+
 async function bounceSequenceToMp3() {
   const stText = document.getElementById('statusText');
   const stLink = document.getElementById('statusLink');
@@ -2028,7 +2210,7 @@ async function bounceSequenceToMp3() {
   const res = await fetch('/api/render-sequence', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ bpm, bars, swing, tracks: trackState })
+    body: JSON.stringify({ bpm, bars, swing, tracks: renderTracks() })
   });
   const data = await res.json();
   if (!data.ok) {
@@ -2150,6 +2332,8 @@ async function refreshState() {
     }
     initStepHeader();
     const stored = studioRead();
+    studioKeyApply();
+    syncKeyUI();
     if (stored.seq && typeof stored.seq === 'object') {
       applySeqSlice(stored.seq);            // autosaved jam survives refresh
     } else {
@@ -2161,7 +2345,7 @@ async function refreshState() {
     const seed = {};
     if (!stored.desk) seed.desk = studioDeskDefaults(STEMS);
     if (!stored.pads) seed.pads = studioPadsSerialize(PADS_DEFAULT);
-    if (!('key' in stored)) seed.key = null;
+    if (!('key' in stored)) seed.key = studioKeyDefault();
     if (!('seed' in stored)) seed.seed = null;
     if (Object.keys(seed).length) studioMerge(seed);
     refreshPatchList();
@@ -2178,8 +2362,11 @@ async function refreshState() {
 
 window.addEventListener('storage', (ev) => {
   if (ev.key !== STUDIO_LS_KEY) return;
+  studioKeyApply();
+  syncKeyUI();
   const o = studioRead();
   if (o.seq && typeof o.seq === 'object') applySeqSlice(o.seq);
+  else for (const s of STEMS) refreshTrackCells(s.id);
 });
 
 window.addEventListener('DOMContentLoaded', refreshState);
@@ -2324,6 +2511,18 @@ PAGE_CSS = r"""
     background: #2f251f;
     color: var(--accent-hi);
     white-space: nowrap;
+  }
+  .key-badge {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    color: var(--accent-hi);
+    border: 1px solid var(--accent);
+    background: var(--panel-2);
+    border-radius: 6px;
+    padding: 6px 10px;
+    white-space: nowrap;
+    align-self: center;
   }
 """
 
@@ -2471,6 +2670,7 @@ MIXER_HTML = r"""<!DOCTYPE html>
       <p>Strips over the six built-in stems + your recorded samples · VU per channel · loop or tap</p>
     </div>
   </div>
+  <span class="key-badge" id="keyBadge" title="Studio key is set on the SEQ+MIX page">KEY: —</span>
   <nav class="page-nav">
     <a href="/">SEQ+MIX</a>
     <a href="/mixer" class="active">DESK</a>
@@ -2618,7 +2818,7 @@ function fireSource(id, loop) {
   return trimmedBuffer(stem, st.useDry).then(buf => {
     const src = audioCtx.createBufferSource();
     src.buffer = buf;
-    src.playbackRate.value = Math.pow(2, (st.pitch || 0) / 12);
+    src.playbackRate.value = Math.pow(2, qStem(id, st.pitch || 0) / 12);
     src.loop = !!loop;
     src.connect(st.g);
     src.start();
@@ -2785,6 +2985,8 @@ async function init() {
     };
   }
   const stored = studioRead();
+  studioKeyApply();
+  refreshKeyBadge();
   applyDeskSlice(stored.desk);
   buildStrips();
   if (!stored.desk) persistDesk();   // seed the shared snapshot once
@@ -2792,6 +2994,8 @@ async function init() {
 
 window.addEventListener('storage', (ev) => {
   if (ev.key !== STUDIO_LS_KEY) return;
+  studioKeyApply();
+  refreshKeyBadge();
   applyDeskSlice(studioRead().desk);
 });
 
@@ -2841,6 +3045,7 @@ PADS_HTML = r"""<!DOCTYPE html>
     transform: scale(0.95);
   }
   .pad.hit .pad-label, .pad.hit .pad-key, .pad.hit .pad-sub { color: #090807; }
+  .pad.q-snap { box-shadow: inset 0 -4px 0 var(--accent-hi); }
   .pad-label { font-size: 12px; font-weight: 800; letter-spacing: 0.04em; }
   .pad-sub { font-size: 9px; color: var(--muted); }
   .pad-key {
@@ -2944,6 +3149,7 @@ PADS_HTML = r"""<!DOCTYPE html>
       <p>16 finger-drum pads over the stems + your recordings · choke per stem · hit high for max velocity</p>
     </div>
   </div>
+  <span class="key-badge" id="keyBadge" title="Studio key is set on the SEQ+MIX page">KEY: —</span>
   <nav class="page-nav">
     <a href="/">SEQ+MIX</a>
     <a href="/mixer">DESK</a>
@@ -3110,14 +3316,16 @@ async function hitPad(i, vel) {
   const buf = await padBuffer(stem);
   const src = audioCtx.createBufferSource();
   src.buffer = buf;
-  src.playbackRate.value = Math.pow(2, pad.semi / 12);
+  const semi = qStem(pad.stem, pad.semi);
+  src.playbackRate.value = Math.pow(2, semi / 12);
   const g = audioCtx.createGain();
   g.gain.value = vel;
   src.connect(g); g.connect(masterGain);
   src.start();
   lastSrc[pad.stem] = src;
   src.onended = () => { if (lastSrc[pad.stem] === src) lastSrc[pad.stem] = null; };
-  document.getElementById('statusText').textContent = `💥 ${pad.label} @ vel ${Math.round(vel*100)}%`;
+  const snapTxt = semi !== pad.semi ? ` · Q→${semi >= 0 ? '+' : ''}${semi}st` : '';
+  document.getElementById('statusText').textContent = `💥 ${pad.label} @ vel ${Math.round(vel*100)}%${snapTxt}`;
 }
 
 function toggleAllDry() {
@@ -3140,9 +3348,14 @@ function buildPads() {
     el.className = 'pad';
     el.id = `pad-${i}`;
     el.style.setProperty('--stem-color', stem ? stem.color : '#e07a3c');
+    const snapped = (KEY.q && stem && PITCHED.includes(stem.id)) ? q(pad.semi) : pad.semi;
+    if (snapped !== pad.semi) el.classList.add('q-snap');
+    const subTxt = pad.semi
+      ? `${pad.semi > 0 ? '+' : ''}${pad.semi}st` + (snapped !== pad.semi ? `→${snapped >= 0 ? '+' : ''}${snapped}` : '')
+      : (snapped !== pad.semi ? `Q→${snapped >= 0 ? '+' : ''}${snapped}st` : '');
     el.innerHTML = `
       <span class="pad-label">${pad.label}</span>
-      <span class="pad-sub">${stem ? stem.name : pad.stem} ${pad.semi ? (pad.semi>0?'+':'') + pad.semi + 'st' : ''}</span>
+      <span class="pad-sub">${stem ? stem.name : pad.stem} ${subTxt}</span>
       <span class="pad-key">${pad.key.toUpperCase()}</span>
     `;
     el.addEventListener('pointerdown', (ev) => {
@@ -3516,7 +3729,7 @@ function firePadEvent(ev, when) {
   if (prev) { try { prev.stop(when); } catch (e) {} }
   const src = audioCtx.createBufferSource();
   src.buffer = buf;
-  src.playbackRate.value = Math.pow(2, ev.semi / 12);
+  src.playbackRate.value = Math.pow(2, qStem(ev.stemId, ev.semi) / 12);
   const g = audioCtx.createGain();
   g.gain.value = ev.vel;
   src.connect(g); g.connect(masterGain);
@@ -3774,7 +3987,7 @@ async function exportLoop() {
       const t = tracks[ev.stemId];
       if (!t) continue;
       t.steps[ev.step] = quantVel(ev.vel);
-      t.stepPitches[ev.step] = ev.semi;
+      t.stepPitches[ev.step] = qStem(ev.stemId, ev.semi);
     }
   }
   setStatus(`⏳ rendering ${loopBars}-bar loop @ ${bpm} BPM to MP3...`);
@@ -3865,6 +4078,8 @@ async function init() {
   const data = await res.json();
   STEMS = data.stems;
   const stored = studioRead();
+  studioKeyApply();
+  refreshKeyBadge();
   applyPadsSlice(stored.pads);
   buildPads();
   renderUserSamples();
@@ -3880,6 +4095,8 @@ async function init() {
 
 window.addEventListener('storage', (ev) => {
   if (ev.key !== STUDIO_LS_KEY) return;
+  studioKeyApply();
+  refreshKeyBadge();
   applyPadsSlice(studioRead().pads);
   buildPads();
   renderUserSamples();
