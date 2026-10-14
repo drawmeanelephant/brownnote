@@ -60,7 +60,7 @@ come from the bench itself — `--list` prints its truth, and its exit codes
 propagate unchanged.
 
 - [[getting-started|Start here]] for a working first run.
-- [[guides/index|Guides]] for the file pipeline, live rooms, and the recorded evidence.
+- [[guides/index|Guides]] for the file pipeline, live rooms, [[guides/studio|preset songs and 16-step Studio UI]], and the recorded evidence.
 - [[reference/index|Reference]] for flags, effects, formats, and exit codes.
 
 No tracking, remote fonts, or application framework. This manual is compiled
