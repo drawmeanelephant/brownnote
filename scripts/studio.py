@@ -886,6 +886,18 @@ STUDIO_HTML = r"""<!DOCTYPE html>
     color: var(--muted);
     margin-left: auto;
   }
+  .gassy-opt {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    cursor: pointer;
+    user-select: none;
+  }
+  .gassy-opt input { accent-color: var(--accent); margin: 0; }
 
   /* Sequencer & Mixer Rows */
   .seq-header-row {
@@ -1194,6 +1206,9 @@ STUDIO_HTML = r"""<!DOCTYPE html>
         <button class="preset-btn" id="pat-techno" onclick="loadPatternPreset('techno')">Acid 303 Techno 132</button>
         <button class="preset-btn" id="pat-doom" onclick="loadPatternPreset('doom')">Tectonic Doom 66</button>
         <button class="preset-btn" onclick="randomizePattern()">🎲 Randomize</button>
+        <button class="preset-btn primary" onclick="randomizePatch()" title="Roll a whole patch — steps, pitches, mixer, BPM & swing — from a shown, replayable seed">💨 I'M FEELING GASSY</button>
+        <label class="gassy-opt" title="SAFE keeps the kick & snare steps; CHAOS re-rolls every stem"><input type="checkbox" id="gassyChaos" />CHAOS</label>
+        <label class="gassy-opt" title="Auto-save each roll as a 'Gassy N' patch"><input type="checkbox" id="gassySave" checked />SAVE</label>
         <button class="preset-btn" onclick="clearPattern()">Clear</button>
       </div>
     </div>
@@ -1680,6 +1695,162 @@ function randomizePattern() {
   persistSeq();
 }
 
+// ---- "I'M FEELING GASSY" full-patch randomizer (#46) --------------------
+// mulberry32: tiny seeded PRNG.  Every draw in a roll goes through it —
+// Math.random() can't be seeded, so ?seed= replay needs this.  Same seed
+// + same build = identical patch.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const rint  = (rng, lo, hi) => lo + Math.floor(rng() * (hi - lo + 1));
+const rspan = (rng, lo, hi) => lo + rng() * (hi - lo);
+const rpick = (rng, arr) => arr[Math.floor(rng() * arr.length)];
+
+// Per-stem taste table (#46 clarifications): sane ranges, not uniform
+// noise.  pitch is an inclusive semitone range, or 'cycle' = pick from
+// PITCH_CYCLE; pan is a ±span (kick stays center); density is per-step.
+const GASSY_TASTE = {
+  kick:  { pitch: [-7, 2],   gain: [0.80, 1.00], pan: 0,   density: 0.25 },
+  snare: { pitch: [-3, 3],   gain: [0.70, 0.95], pan: 0.2, density: 0.15 },
+  hat:   { pitch: [10, 18],  gain: [0.30, 0.55], pan: 0.5, density: 0.50 },
+  wah:   { pitch: 'cycle',   gain: [0.60, 0.90], pan: 0.6, density: 0.20 },
+  lead:  { pitch: 'cycle',   gain: [0.60, 0.90], pan: 0.6, density: 0.20 },
+  bomb:  { pitch: [-12, 0],  gain: [0.75, 0.95], pan: 0.2, density: 0.08 },
+};
+const GASSY_BPM = [80, 150];
+const GASSY_SWING = [0, 0.5];
+const GASSY_DRY_P = 0.2;      // per-stem dry/pedaled flip chance
+const GASSY_ACCENT_P = 0.25;  // on-step -> accent chance (as randomizePattern)
+const GASSY_SAFE_STEMS = new Set(['kick', 'snare']);  // SAFE keeps their steps
+
+// #47 hook: scale quantize is specced to expose window.q(semi) and store
+// {scale, root, q:true} in the shared `key` slice, snapping only pitched
+// stems.  Roll totals (base + step offset) through it while Q is on;
+// identity until that work lands.
+const GASSY_Q_PITCHED = new Set(['wah', 'lead', 'bomb']);
+function qRollPitch(stemId, semi) {
+  const k = studioRead().key;
+  if (k && k.q && GASSY_Q_PITCHED.has(stemId) && typeof window.q === 'function') {
+    return window.q(semi);
+  }
+  return semi;
+}
+
+// Deterministic whole-roll draw — no DOM, no Math.random().  Draw order is
+// fixed, so seed alone decides the patch.
+function rollPatch(seed) {
+  const rng = mulberry32(seed);
+  const tracks = {};
+  for (const stem of STEMS) {
+    const t = GASSY_TASTE[stem.id];
+    if (!t) continue;
+    const steps = new Array(16).fill(0);
+    for (let s = 0; s < 16; s++) {
+      if (rng() < t.density) steps[s] = rng() < GASSY_ACCENT_P ? 2 : 1;
+    }
+    let pitch = t.pitch === 'cycle' ? rpick(rng, PITCH_CYCLE)
+                                    : rint(rng, t.pitch[0], t.pitch[1]);
+    pitch = qRollPitch(stem.id, pitch);
+    const stepPitches = new Array(16).fill(0);
+    for (let s = 0; s < 16; s++) {
+      if (!steps[s]) continue;
+      const raw = rpick(rng, PITCH_CYCLE.slice(0, 5));
+      stepPitches[s] = qRollPitch(stem.id, pitch + raw) - pitch;
+    }
+    tracks[stem.id] = {
+      steps, stepPitches, pitch,
+      gain: Math.round(rspan(rng, t.gain[0], t.gain[1]) * 100) / 100,
+      pan: t.pan === 0 ? 0 : Math.round(rspan(rng, -t.pan, t.pan) * 100) / 100,
+      useDry: rng() < GASSY_DRY_P,
+    };
+  }
+  return {
+    bpm: rint(rng, GASSY_BPM[0], GASSY_BPM[1]),
+    swing: Math.round(rspan(rng, GASSY_SWING[0], GASSY_SWING[1]) * 100) / 100,
+    tracks,
+  };
+}
+
+// Apply a roll to the live studio.  keepGroove (SAFE) restores the current
+// kick & snare steps afterwards; ?seed= replay passes false so the URL
+// alone decides the whole patch.
+function applyGassyRoll(seed, keepGroove) {
+  const roll = rollPatch(seed);
+  const kept = {};
+  if (keepGroove) {
+    for (const id of GASSY_SAFE_STEMS) {
+      if (trackState[id]) kept[id] = [...trackState[id].steps];
+    }
+  }
+  bpm = roll.bpm;
+  swing = roll.swing;
+  document.getElementById('bpmInput').value = bpm;
+  document.getElementById('bpmVal').textContent = bpm;
+  const pct = Math.round(swing * 100);
+  document.getElementById('swingInput').value = pct;
+  document.getElementById('swingVal').textContent = `${pct}%`;
+  for (const stem of STEMS) {
+    const t = roll.tracks[stem.id];
+    if (!t) continue;
+    const st = trackState[stem.id];
+    st.gain = t.gain;
+    st.pan = t.pan;
+    st.pitch = t.pitch;
+    st.useDry = t.useDry;
+    st.stepPitches = t.stepPitches;
+    st.steps = kept[stem.id] || t.steps;
+  }
+  buildTracksUI();
+  studioMerge({ seed });
+  persistSeq();
+}
+
+async function randomizePatch() {
+  if (!STEMS.length) return;
+  const seed = Math.floor(Math.random() * 4294967296);
+  const chaos = document.getElementById('gassyChaos').checked;
+  applyGassyRoll(seed, !chaos);
+  let msg = `💨 Gassy roll (${chaos ? 'CHAOS' : 'SAFE'}) — seed ${seed}. ` +
+            `Replay the full draw at /?seed=${seed}.`;
+  if (document.getElementById('gassySave').checked) {
+    msg += ' ' + await autoSaveGassy();
+  }
+  setStatus(msg);
+}
+
+// Auto-save each roll as "Gassy N" (#46; '#' is outside the patch-name
+// charset).  The rolled seed rides along in the patch's seed field.
+async function autoSaveGassy() {
+  try {
+    const res = await fetch('/api/patches');
+    const list = await res.json();
+    let n = 1;
+    for (const p of (Array.isArray(list) ? list : [])) {
+      const m = /^Gassy (\d+)$/.exec((p && p.name) || '');
+      if (m) n = Math.max(n, parseInt(m[1], 10) + 1);
+    }
+    const name = `Gassy ${n}`;
+    const save = await fetch('/api/patch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, patch: buildPatch(name) }),
+    });
+    const data = await save.json();
+    if (!save.ok || !data.ok) return `⚠ auto-save failed: ${data.error || save.status}`;
+    refreshPatchList(name);
+    return `Auto-saved as "${name}".`;
+  } catch (e) {
+    return `⚠ auto-save failed: ${e.message}`;
+  }
+}
+
 // ---- PATCHES: whole-studio snapshots (schema v1) -----------------------
 // seq slice = this page's share of brownnote.studio.v1; a saved patch also
 // carries the desk/pads/key/seed sections so /mixer and /pads hydrate too.
@@ -1980,6 +2151,13 @@ async function refreshState() {
     if (!('seed' in stored)) seed.seed = null;
     if (Object.keys(seed).length) studioMerge(seed);
     refreshPatchList();
+    // #46: /?seed=N replays a gassy roll.  Full draw (not SAFE) so the URL
+    // alone decides the whole patch — same seed, same build, same patch.
+    const seedParam = new URLSearchParams(location.search).get('seed');
+    if (seedParam !== null && /^-?\d{1,10}$/.test(seedParam)) {
+      applyGassyRoll(parseInt(seedParam, 10), false);
+      setStatus(`💨 Replayed gassy seed ${seedParam} — same seed, same patch.`);
+    }
   }
   renderJukebox(data.tracks || []);
 }
