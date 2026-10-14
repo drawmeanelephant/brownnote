@@ -20,10 +20,12 @@ Serves build/studio.html at `/` plus workspace audio files and JSON APIs:
 
 Extra views over the same stems (every page carries the same page-nav bar):
   /mixer    -> console desk with VU meters, tap/loop per strip (+ user stems)
+               (Web MIDI: CC20-25 ch gain, CC30-35 ch pan, CC7 master)
   /pads     -> 16-pad MPC-style finger drummer (keys 1-4/QWER/ASDF/ZXCV)
                plus the in-browser recorder that produces user stems,
               + event looper: record pad hits quantized to 16ths, overdub
               stacked takes, mute/clear per layer, bounce the loop to MP3
+               (Web MIDI: notes base..base+15 hit pads, default base 36)
   /library  -> crate-digger: every rendered MP3/WAV with drawn waveforms
 """
 import http.server
@@ -2524,6 +2526,79 @@ PAGE_CSS = r"""
     white-space: nowrap;
     align-self: center;
   }
+  .midi-badge {
+    align-self: center;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 5px 9px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .midi-badge.on { color: var(--green); border-color: var(--green); }
+  .midi-badge.err { color: var(--yellow); }
+"""
+
+
+# Shared Web MIDI input helper for /pads and /mixer. Pure client-side and
+# feature-detected: listens on every channel, hot-plugs via statechange,
+# and degrades to a nav badge reason on unsupported browsers or insecure
+# origins (e.g. STUDIO_HOST=0.0.0.0 opened over a LAN IP).
+MIDI_JS = r"""
+// ---- Web MIDI input (shared by /pads and /mixer) ----
+function midiBadge(state, detail) {
+  const el = document.getElementById('midiBadge');
+  if (!el) return;
+  el.className = 'midi-badge ' + state;
+  if (state === 'on')       el.textContent = `MIDI: ${detail}`;
+  else if (state === 'off') el.textContent = 'MIDI: none';
+  else                      el.textContent = `MIDI: unavailable (${detail})`;
+}
+
+function midiDispatch(ev, hooks) {
+  const d = ev.data;
+  if (!d || d.length < 3) return;
+  const type = d[0] & 0xf0;                  // all channels: low nibble ignored
+  if (type === 0x90) {                       // noteon; velocity 0 is noteoff
+    if (d[2] > 0 && hooks.noteOn) hooks.noteOn(d[1], d[2]);
+  } else if (type === 0xb0 && hooks.cc) {    // control change
+    hooks.cc(d[1], d[2]);
+  }
+  // noteoff (0x80) and everything else ignored: one-shots, no clock
+}
+
+function midiWireInputs(access, hooks) {
+  const names = [];
+  for (const input of access.inputs.values()) {
+    names.push(input.name || 'MIDI device');
+    input.onmidimessage = (ev) => midiDispatch(ev, hooks);
+  }
+  midiBadge(names.length ? 'on' : 'off',
+            names.length === 1 ? names[0] : `${names.length} devices`);
+}
+
+async function initMidi(hooks) {
+  if (!window.isSecureContext) {
+    midiBadge('err', 'insecure origin — open via localhost or 127.0.0.1');
+    return;
+  }
+  if (!navigator.requestMIDIAccess) {
+    midiBadge('err', 'unsupported browser — needs Chrome/Edge or Firefox 108+');
+    return;
+  }
+  try {
+    const access = await navigator.requestMIDIAccess();
+    midiWireInputs(access, hooks);
+    access.onstatechange = () => midiWireInputs(access, hooks);
+  } catch (err) {
+    midiBadge('err', err && err.name === 'SecurityError'
+      ? 'permission denied'
+      : (err && err.message) || 'request failed');
+  }
+}
 """
 
 
@@ -2676,6 +2751,7 @@ MIXER_HTML = r"""<!DOCTYPE html>
     <a href="/mixer" class="active">DESK</a>
     <a href="/pads">PADS</a>
     <a href="/library">CRATES</a>
+    <span class="midi-badge" id="midiBadge">MIDI: …</span>
   </nav>
 </header>
 
@@ -2696,7 +2772,7 @@ MIXER_HTML = r"""<!DOCTYPE html>
 </div>
 
 <script>
-""" + STUDIO_JS + r"""
+""" + STUDIO_JS + MIDI_JS + r"""
 let STEMS = [];
 let ch = {};
 let audioCtx = null;
@@ -2838,11 +2914,13 @@ function setParam(id, key, val) {
   ch[id][key] = val;
   if (key === 'gain') {
     document.getElementById(`vlbl-${id}`).textContent = `${Math.round(val*100)}%`;
+    document.getElementById(`gain-${id}`).value = Math.round(val * 100);
     applyGain(id);
   }
   if (key === 'pan') {
     document.getElementById(`plbl-${id}`).textContent =
       Math.abs(val) < 0.05 ? 'C' : (val < 0 ? `${Math.round(-val*100)}L` : `${Math.round(val*100)}R`);
+    document.getElementById(`pan-${id}`).value = Math.round(val * 100);
     if (ch[id].p) ch[id].p.pan.value = val;
   }
   if (key === 'pitch') {
@@ -2879,6 +2957,7 @@ async function toggleLoop(id) {
 function setMaster(v) {
   masterLevel = v;
   if (masterGain) masterGain.gain.value = v;
+  document.getElementById('masterVol').value = Math.round(v * 100);
   document.getElementById('masterVolLbl').textContent = `${Math.round(v*100)}%`;
   persistDesk();
 }
@@ -2905,14 +2984,14 @@ function buildStrips() {
       <div class="strip-name">${stem.name}</div>
       <div class="strip-sub">"${stem.phrase}"<br>${stem.effect}</div>
       <div class="strip-mid">
-        <input class="fader" type="range" orient="vertical" min="0" max="140" value="${Math.round(st.gain*100)}"
+        <input class="fader" id="gain-${stem.id}" type="range" orient="vertical" min="0" max="140" value="${Math.round(st.gain*100)}"
           oninput="setParam('${stem.id}','gain',this.value/100)" />
         <canvas class="vu" id="vu-${stem.id}" width="12" height="128"></canvas>
       </div>
       <div class="strip-slider"><span>VOL <b id="vlbl-${stem.id}">${Math.round(st.gain*100)}%</b></span></div>
       <div class="strip-slider">
         <span>PAN <b id="plbl-${stem.id}">${panLbl}</b></span>
-        <input type="range" min="-100" max="100" value="${Math.round(st.pan*100)}"
+        <input id="pan-${stem.id}" type="range" min="-100" max="100" value="${Math.round(st.pan*100)}"
           oninput="setParam('${stem.id}','pan',this.value/100)" />
       </div>
       <div class="strip-slider">
@@ -2990,6 +3069,24 @@ async function init() {
   applyDeskSlice(stored.desk);
   buildStrips();
   if (!stored.desk) persistDesk();   // seed the shared snapshot once
+  initMidi({
+    cc: (num, val) => {
+      const st = document.getElementById('statusText');
+      const g = num - 20;                         // CC20-25: channel 1-6 gain
+      const p = num - 30;                         // CC30-35: channel 1-6 pan
+      if (g >= 0 && g < STEMS.length) {
+        setParam(STEMS[g].id, 'gain', (val / 127) * 1.4);
+        st.textContent = `🎛 CC${num} → ${STEMS[g].name} vol ${document.getElementById('vlbl-' + STEMS[g].id).textContent}`;
+      } else if (p >= 0 && p < STEMS.length) {
+        setParam(STEMS[p].id, 'pan', Math.max(-1, Math.min(1, (val - 64) / 64)));
+        st.textContent = `🎛 CC${num} → ${STEMS[p].name} pan ${document.getElementById('plbl-' + STEMS[p].id).textContent}`;
+      } else if (num === 7) {                     // CC7: master out
+        const v = (val / 127) * 1.2;
+        setMaster(v);
+        st.textContent = `🎛 CC7 → master out ${Math.round(v * 100)}%`;
+      }
+    },
+  });
 }
 
 window.addEventListener('storage', (ev) => {
@@ -3155,6 +3252,7 @@ PADS_HTML = r"""<!DOCTYPE html>
     <a href="/mixer">DESK</a>
     <a href="/pads" class="active">PADS</a>
     <a href="/library">CRATES</a>
+    <span class="midi-badge" id="midiBadge">MIDI: …</span>
   </nav>
 </header>
 
@@ -3162,7 +3260,11 @@ PADS_HTML = r"""<!DOCTYPE html>
   <section class="card">
     <div class="card-header">
       <span class="card-title">Pad Grid — keys 1-4 / Q W E R / A S D F / Z X C V</span>
-      <button class="mini-btn" id="dryBtn" onclick="toggleAllDry()">DRY KIT</button>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <label for="midiBase" style="color:var(--muted); font-size:9.5px; text-transform:uppercase; letter-spacing:0.06em;">MIDI base note</label>
+        <input id="midiBase" type="number" min="0" max="112" value="36" style="width:54px;" onchange="setMidiBase(this.value)" />
+        <button class="mini-btn" id="dryBtn" onclick="toggleAllDry()">DRY KIT</button>
+      </div>
     </div>
     <div class="pad-grid" id="padGrid"></div>
     <div class="status-banner"><span id="statusText">Whack a pad. Same stem chokes its own tail — flam away.</span><span id="statusLink"></span></div>
@@ -3228,7 +3330,7 @@ PADS_HTML = r"""<!DOCTYPE html>
 </div>
 
 <script>
-""" + STUDIO_JS + r"""
+""" + STUDIO_JS + MIDI_JS + r"""
 // The pad map is the 'pads' slice of brownnote.studio.v1 — serialized as
 // {stem, semi, label} per slot; 'key' stays a page-local default.
 let PADS = PADS_DEFAULT.map(p => Object.assign({}, p));
@@ -3251,6 +3353,20 @@ let masterGain = null, masterAnalyser = null;
 let allDry = false;
 const rawBufs = {}, trimBufs = {};
 const lastSrc = {};
+
+let midiBase = 36;
+try {
+  const saved = parseInt(localStorage.getItem('brownnote.midiBaseNote'), 10);
+  if (!isNaN(saved)) midiBase = Math.min(112, Math.max(0, saved));
+} catch (e) {}
+
+function setMidiBase(v) {
+  midiBase = Math.min(112, Math.max(0, parseInt(v, 10) || 0));
+  document.getElementById('midiBase').value = midiBase;
+  try { localStorage.setItem('brownnote.midiBaseNote', String(midiBase)); } catch (e) {}
+  document.getElementById('statusText').textContent =
+    `🎹 MIDI base note ${midiBase} — listening on notes ${midiBase}–${midiBase + 15}, all channels.`;
+}
 
 function ensureAudio() {
   if (!audioCtx) {
@@ -4091,6 +4207,15 @@ async function init() {
   document.getElementById('loopBpmVal').textContent = bpm;
   renderLayers();
   drawRing();
+  document.getElementById('midiBase').value = midiBase;
+  initMidi({
+    noteOn: (note, vel) => {
+      const off = note - midiBase;                 // bottom-left pad sends `base`
+      if (off < 0 || off > 15) return;
+      const row = 3 - (off >> 2), col = off & 3;   // physical 4x4 layout = screen
+      hitPad(row * 4 + col, vel / 127);
+    },
+  });
 }
 
 window.addEventListener('storage', (ev) => {
