@@ -50,6 +50,7 @@ which prints the candidate list when it cannot resolve a name.
 | You want | Next step |
 |---|---|
 | A fuzzed fart file | [[guides/pipeline|The pipeline]] |
+| Preset pedalboards, genre songs, and the 16-step Studio UI | [[guides/studio|Presets and Studio Sequencer]] |
 | Every flag and exit code | [[reference/cli|Command reference]] |
 | What happens to your samples | [[reference/formats|Input modes and formats]] |
 

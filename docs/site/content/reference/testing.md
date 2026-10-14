@@ -29,6 +29,9 @@ unit tests; `tests/run_tests.sh` alone is the suite, without them.
 - WAV passthrough (header and level preserved)
 - WAV fuzz
 - `--list`
+- streaming WAV headers, 30 MB bounded-memory streaming, and anti-aliasing decimation
+- README alias-table drift against `src/brownnote.c` and the bench's `--list`
+- `scripts/presets.sh` single-shot FX and multi-track song rendering
 - when the Zig tools happen to be around, the full
   kujamba → brownnote → zcn round trip
 
