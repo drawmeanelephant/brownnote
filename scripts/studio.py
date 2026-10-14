@@ -21,7 +21,9 @@ Serves build/studio.html at `/` plus workspace audio files and JSON APIs:
 Extra views over the same stems (every page carries the same page-nav bar):
   /mixer    -> console desk with VU meters, tap/loop per strip (+ user stems)
   /pads     -> 16-pad MPC-style finger drummer (keys 1-4/QWER/ASDF/ZXCV)
-               plus the in-browser recorder that produces user stems
+               plus the in-browser recorder that produces user stems,
+              + event looper: record pad hits quantized to 16ths, overdub
+              stacked takes, mute/clear per layer, bounce the loop to MP3
   /library  -> crate-digger: every rendered MP3/WAV with drawn waveforms
 """
 import http.server
@@ -286,7 +288,13 @@ def delete_user_sample(name):
 
 
 def render_sequence_to_mp3(payload):
-    """Render the current 16-step sequencer grid + stem mixer settings to a stereo WAV & 320k MP3."""
+    """Render the current 16-step sequencer grid + stem mixer settings to a stereo WAV & 320k MP3.
+
+    `steps`/`stepPitches` arrays of length 16 are a single bar repeated for
+    every bar (the `/` sequencer's format). Any other length is treated as a
+    flat `16 * bars` grid — the /pads looper's export format — with
+    out-of-range steps read as silent.
+    """
     bpm = float(payload.get("bpm", 116))
     bars = int(payload.get("bars", 4))
     swing = float(payload.get("swing", 0.0))
@@ -355,6 +363,11 @@ def render_sequence_to_mp3(payload):
         steps = tcfg.get("steps", [0] * 16)
         step_pitches = tcfg.get("stepPitches", [0] * 16)
 
+        def grid_val(arr, s, i):
+            if len(arr) == 16:
+                return arr[s]
+            return arr[i] if i < len(arr) else 0
+
         angle = (pan + 1.0) * (math.pi / 4.0)
         gl = gain * math.cos(angle)
         gr = gain * math.sin(angle)
@@ -362,11 +375,12 @@ def render_sequence_to_mp3(payload):
         shifted_cache = {}
         for bar in range(bars):
             for s in range(16):
-                vel = steps[s] if s < len(steps) else 0
+                i = bar * 16 + s
+                vel = grid_val(steps, s, i)
                 if not vel:
                     continue
                 vel_scale = 1.0 if vel == 1 else (1.25 if vel == 2 else 0.65)
-                sp = step_pitches[s] if s < len(step_pitches) else 0
+                sp = grid_val(step_pitches, s, i)
                 semi = base_pitch + sp
                 if semi not in shifted_cache:
                     shifted_cache[semi] = pitch_shift(trimmed, semi)
@@ -616,8 +630,9 @@ class ReusableTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
 # Shared whole-studio state: one localStorage object, brownnote.studio.v1,
 # read by every page (they share an origin).  Sections: seq (the / page),
-# desk (/mixer), pads (/pads), key & seed (reserved for #46/#47).  A missing
-# section means "keep this page's defaults", so partial patches still load.
+# desk (/mixer), pads (/pads), key (the #47 studio key: scale/root/q),
+# seed (reserved for #46).  A missing section means "keep this page's
+# defaults", so partial patches still load.
 STUDIO_JS = r"""
 const STUDIO_LS_KEY = 'brownnote.studio.v1';
 
@@ -676,6 +691,95 @@ function studioDeskDefaults(stems) {
   }
   return { master: 0.9, channels };
 }
+
+// ===== scale-quantize block start (#47) =====
+// One global studio key in the 'key' slice of brownnote.studio.v1,
+// shared by every page.  ROOT is a transpose offset, not a detected
+// key — the stems are not tuned to a known pitch, so semitone 0 is each
+// sample's native pitch and "in key" means relative to the samples.
+const SCALES = {
+  minor_penta: [0, 3, 5, 7, 10],
+  major_penta: [0, 2, 4, 7, 9],
+  blues:       [0, 3, 5, 6, 7, 10],
+  major:       [0, 2, 4, 5, 7, 9, 11],
+  minor:       [0, 2, 3, 5, 7, 8, 10],
+  dorian:      [0, 2, 3, 5, 7, 9, 10],
+  chromatic:   [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+};
+const SCALE_LABELS = {
+  minor_penta: 'minor penta', major_penta: 'major penta', blues: 'blues',
+  major: 'major', minor: 'minor', dorian: 'dorian', chromatic: 'chromatic',
+};
+// Percussion is never snapped: hat sits at +14 and kick is pitched down
+// for timbre, not melody.
+const PITCHED = ['wah', 'lead', 'bomb'];
+
+let KEY = { scale: 'minor_penta', root: 0, q: false };
+
+function studioKeyDefault() {
+  return { scale: 'minor_penta', root: 0, q: false };
+}
+
+// Pull the 'key' slice out of brownnote.studio.v1 into KEY (normalized).
+function studioKeyApply() {
+  const k = studioRead().key;
+  KEY = {
+    scale: (k && SCALES[k.scale]) ? k.scale : 'minor_penta',
+    root: (k && typeof k.root === 'number' && isFinite(k.root))
+      ? Math.max(0, Math.min(11, Math.round(k.root))) : 0,
+    q: !!(k && k.q),
+  };
+  return KEY;
+}
+
+// Write one or more key fields back to the shared object.
+function studioSetKey(slice) {
+  studioMerge({ key: Object.assign({}, KEY, slice) });
+  return studioKeyApply();
+}
+
+// q(semi): subtract root, snap to the nearest tone of KEY.scale across
+// octaves (ties snap down), add root back.
+function q(semi) {
+  const tones = SCALES[KEY.scale] || SCALES.chromatic;
+  const x = semi - KEY.root;
+  const oct = Math.floor(x / 12) * 12;
+  let best = Infinity;
+  for (const t of tones) {
+    for (const o of [-12, 0, 12]) {
+      const cand = t + oct + o;
+      if (Math.abs(cand - x) < Math.abs(best - x) ||
+          (Math.abs(cand - x) === Math.abs(best - x) && cand < best)) {
+        best = cand;
+      }
+    }
+  }
+  return best + KEY.root;
+}
+
+// Play-time gate: Q off or a non-pitched stem passes the total through.
+// Callers pass the TOTAL shift (stem pitch + step/pad offset) — bomb sits
+// at -5 by default, so snapping the offset alone would drift it out of key.
+function qStem(stemId, semi) {
+  if (!KEY.q || !PITCHED.includes(stemId)) return semi;
+  return q(semi);
+}
+
+function keyBadgeText() {
+  const name = SCALE_LABELS[KEY.scale] || KEY.scale;
+  const root = KEY.root >= 0 ? `+${KEY.root}` : `${KEY.root}`;
+  return `KEY: ${name} ${root}${KEY.q ? ' · Q ON' : ' · Q off'}`;
+}
+
+function refreshKeyBadge() {
+  const el = document.getElementById('keyBadge');
+  if (el) el.textContent = keyBadgeText();
+}
+
+globalThis.q = q;
+globalThis.SCALES = SCALES;
+globalThis.PITCHED = PITCHED;
+// ===== scale-quantize block end =====
 """
 
 
@@ -1063,6 +1167,15 @@ STUDIO_HTML = r"""<!DOCTYPE html>
     font-size: 8.5px;
     opacity: 0.85;
   }
+  .step-cell.q-snap {
+    box-shadow: inset 0 -3px 0 var(--accent-hi), 0 0 10px rgba(255,179,71,0.35);
+  }
+  #qBtn.q-on {
+    background: var(--accent-hi);
+    color: #000;
+    border-color: #fcd34d;
+    font-weight: 900;
+  }
 
   /* Bottom two-column section */
   .bottom-split {
@@ -1168,6 +1281,34 @@ STUDIO_HTML = r"""<!DOCTYPE html>
       <label for="swingInput">Swing</label>
       <input id="swingInput" type="range" min="0" max="70" value="12" oninput="updateSwing(this.value)" />
       <span id="swingVal">12%</span>
+    </div>
+    <div class="ctrl-pill" title="Studio key — Q snaps wah/lead/bomb to the scale at play time; kick/snare/hat are never quantized">
+      <label for="scaleSelect">KEY</label>
+      <select id="scaleSelect" onchange="setKeyScale(this.value)">
+        <option value="minor_penta">Minor Penta</option>
+        <option value="major_penta">Major Penta</option>
+        <option value="blues">Blues</option>
+        <option value="major">Major</option>
+        <option value="minor">Minor</option>
+        <option value="dorian">Dorian</option>
+        <option value="chromatic">Chromatic</option>
+      </select>
+      <label for="rootSelect">ROOT</label>
+      <select id="rootSelect" onchange="setKeyRoot(this.value)">
+        <option value="0">+0 st</option>
+        <option value="1">+1 st</option>
+        <option value="2">+2 st</option>
+        <option value="3">+3 st</option>
+        <option value="4">+4 st</option>
+        <option value="5">+5 st</option>
+        <option value="6">+6 st</option>
+        <option value="7">+7 st</option>
+        <option value="8">+8 st</option>
+        <option value="9">+9 st</option>
+        <option value="10">+10 st</option>
+        <option value="11">+11 st</option>
+      </select>
+      <button id="qBtn" class="mini-btn" onclick="toggleQuantize()" title="Quantize pitched stems to the studio key">Q</button>
     </div>
     <div class="ctrl-pill">
       <label for="barsSelect">Export Bars</label>
@@ -1518,13 +1659,22 @@ function onStepClick(ev, id, s) {
 
 function refreshTrackCells(id) {
   const st = trackState[id];
+  const pitched = KEY.q && PITCHED.includes(id);
   for (let s = 0; s < 16; s++) {
     const cell = document.getElementById(`cell-${id}-${s}`);
     if (!cell) continue;
-    cell.classList.remove('on-1', 'on-2');
+    cell.classList.remove('on-1', 'on-2', 'q-snap');
     const v = st.steps[s];
     const sp = st.stepPitches[s];
-    const semiTxt = sp !== 0 ? (sp > 0 ? `+${sp}` : `${sp}`) : '';
+    let semiTxt = sp !== 0 ? (sp > 0 ? `+${sp}` : `${sp}`) : '';
+    if (v > 0 && pitched) {
+      const raw = (st.pitch || 0) + sp;
+      const snapped = q(raw);
+      if (snapped !== raw) {
+        cell.classList.add('q-snap');
+        semiTxt = `${snapped >= 0 ? '+' : ''}${snapped}◆`;
+      }
+    }
     if (v === 1) {
       cell.classList.add('on-1');
       cell.innerHTML = `<span>●</span><span class="step-semi">${semiTxt}</span>`;
@@ -1547,7 +1697,7 @@ async function playStemSample(id, stepSemi = 0, velScale = 1.0) {
 
   const src = audioCtx.createBufferSource();
   src.buffer = buf;
-  const totalSemi = (st.pitch || 0) + (stepSemi || 0);
+  const totalSemi = qStem(id, (st.pitch || 0) + (stepSemi || 0));
   src.playbackRate.value = Math.pow(2, totalSemi / 12);
 
   const gainNode = audioCtx.createGain();
@@ -1641,6 +1791,26 @@ function updateSwing(val) {
   document.getElementById('swingVal').textContent = `${val}%`;
   persistSeq();
 }
+
+// ---- Studio key UI (the 'key' slice is owned here, shared everywhere) --
+
+function syncKeyUI() {
+  const sel = document.getElementById('scaleSelect');
+  if (sel) sel.value = KEY.scale;
+  const rs = document.getElementById('rootSelect');
+  if (rs) rs.value = String(KEY.root);
+  const qb = document.getElementById('qBtn');
+  if (qb) qb.classList.toggle('q-on', KEY.q);
+}
+
+function applyKeyChange() {
+  syncKeyUI();
+  for (const s of STEMS) refreshTrackCells(s.id);
+}
+
+function setKeyScale(v) { studioSetKey({ scale: v }); applyKeyChange(); }
+function setKeyRoot(v) { studioSetKey({ root: parseInt(v, 10) || 0 }); applyKeyChange(); }
+function toggleQuantize() { studioSetKey({ q: !KEY.q }); applyKeyChange(); }
 
 function loadPatternPreset(name) {
   const p = PATTERN_PRESETS[name];
@@ -1982,6 +2152,8 @@ async function loadPatch() {
     return;
   }
   studioWrite(data);          // whole object in; other pages hydrate on load
+  studioKeyApply();
+  syncKeyUI();
   applySeqSlice(data.seq);
   document.getElementById('patchName').value = name;
   setStatus(`✓ Loaded "${name}". /mixer & /pads pick it up on their next load.`);
@@ -2004,6 +2176,30 @@ async function deletePatch() {
   setStatus(`🗑 Deleted patch "${name}".`);
 }
 
+// Server-side render hears what the browser hears: with Q on, pitched
+// tracks post their SNAPPED total (pitch folded into stepPitches so the
+// server's semi = pitch + stepPitches[s] is already in key).  With Q off
+// the payload is byte-identical to the raw trackState.
+function renderTracks() {
+  if (!KEY.q) return trackState;
+  const out = {};
+  for (const s of STEMS) {
+    const st = trackState[s.id];
+    const t = {
+      gain: st.gain, pan: st.pan, pitch: st.pitch,
+      mute: !!st.mute, solo: !!st.solo, useDry: !!st.useDry,
+      steps: [...st.steps], stepPitches: [...st.stepPitches],
+    };
+    if (PITCHED.includes(s.id)) {
+      const base = st.pitch || 0;
+      t.pitch = 0;
+      t.stepPitches = st.stepPitches.map(sp => q(base + (sp || 0)));
+    }
+    out[s.id] = t;
+  }
+  return out;
+}
+
 async function bounceSequenceToMp3() {
   const stText = document.getElementById('statusText');
   const stLink = document.getElementById('statusLink');
@@ -2014,7 +2210,7 @@ async function bounceSequenceToMp3() {
   const res = await fetch('/api/render-sequence', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ bpm, bars, swing, tracks: trackState })
+    body: JSON.stringify({ bpm, bars, swing, tracks: renderTracks() })
   });
   const data = await res.json();
   if (!data.ok) {
@@ -2136,6 +2332,8 @@ async function refreshState() {
     }
     initStepHeader();
     const stored = studioRead();
+    studioKeyApply();
+    syncKeyUI();
     if (stored.seq && typeof stored.seq === 'object') {
       applySeqSlice(stored.seq);            // autosaved jam survives refresh
     } else {
@@ -2147,7 +2345,7 @@ async function refreshState() {
     const seed = {};
     if (!stored.desk) seed.desk = studioDeskDefaults(STEMS);
     if (!stored.pads) seed.pads = studioPadsSerialize(PADS_DEFAULT);
-    if (!('key' in stored)) seed.key = null;
+    if (!('key' in stored)) seed.key = studioKeyDefault();
     if (!('seed' in stored)) seed.seed = null;
     if (Object.keys(seed).length) studioMerge(seed);
     refreshPatchList();
@@ -2164,8 +2362,11 @@ async function refreshState() {
 
 window.addEventListener('storage', (ev) => {
   if (ev.key !== STUDIO_LS_KEY) return;
+  studioKeyApply();
+  syncKeyUI();
   const o = studioRead();
   if (o.seq && typeof o.seq === 'object') applySeqSlice(o.seq);
+  else for (const s of STEMS) refreshTrackCells(s.id);
 });
 
 window.addEventListener('DOMContentLoaded', refreshState);
@@ -2310,6 +2511,18 @@ PAGE_CSS = r"""
     background: #2f251f;
     color: var(--accent-hi);
     white-space: nowrap;
+  }
+  .key-badge {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    color: var(--accent-hi);
+    border: 1px solid var(--accent);
+    background: var(--panel-2);
+    border-radius: 6px;
+    padding: 6px 10px;
+    white-space: nowrap;
+    align-self: center;
   }
 """
 
@@ -2457,6 +2670,7 @@ MIXER_HTML = r"""<!DOCTYPE html>
       <p>Strips over the six built-in stems + your recorded samples · VU per channel · loop or tap</p>
     </div>
   </div>
+  <span class="key-badge" id="keyBadge" title="Studio key is set on the SEQ+MIX page">KEY: —</span>
   <nav class="page-nav">
     <a href="/">SEQ+MIX</a>
     <a href="/mixer" class="active">DESK</a>
@@ -2604,7 +2818,7 @@ function fireSource(id, loop) {
   return trimmedBuffer(stem, st.useDry).then(buf => {
     const src = audioCtx.createBufferSource();
     src.buffer = buf;
-    src.playbackRate.value = Math.pow(2, (st.pitch || 0) / 12);
+    src.playbackRate.value = Math.pow(2, qStem(id, st.pitch || 0) / 12);
     src.loop = !!loop;
     src.connect(st.g);
     src.start();
@@ -2771,6 +2985,8 @@ async function init() {
     };
   }
   const stored = studioRead();
+  studioKeyApply();
+  refreshKeyBadge();
   applyDeskSlice(stored.desk);
   buildStrips();
   if (!stored.desk) persistDesk();   // seed the shared snapshot once
@@ -2778,6 +2994,8 @@ async function init() {
 
 window.addEventListener('storage', (ev) => {
   if (ev.key !== STUDIO_LS_KEY) return;
+  studioKeyApply();
+  refreshKeyBadge();
   applyDeskSlice(studioRead().desk);
 });
 
@@ -2827,6 +3045,7 @@ PADS_HTML = r"""<!DOCTYPE html>
     transform: scale(0.95);
   }
   .pad.hit .pad-label, .pad.hit .pad-key, .pad.hit .pad-sub { color: #090807; }
+  .pad.q-snap { box-shadow: inset 0 -4px 0 var(--accent-hi); }
   .pad-label { font-size: 12px; font-weight: 800; letter-spacing: 0.04em; }
   .pad-sub { font-size: 9px; color: var(--muted); }
   .pad-key {
@@ -2862,6 +3081,62 @@ PADS_HTML = r"""<!DOCTYPE html>
   }
   .usamp select { max-width: 118px; font-size: 9.5px; padding: 3px 4px; }
   .usamp .mini-btn { flex-shrink: 0; }
+
+  /* LOOP station */
+  .loop-card { grid-column: 1 / -1; }
+  .loop-layout {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 14px;
+    align-items: start;
+  }
+  @media (max-width: 700px) { .loop-layout { grid-template-columns: 1fr; } }
+  #loopRing {
+    width: 180px;
+    height: 180px;
+    background: #0b0908;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .loop-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .loop-pill {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    padding: 3px 7px;
+    border-radius: 6px;
+  }
+  .loop-pill label { color: var(--muted); font-size: 9.5px; text-transform: uppercase; }
+  .loop-pill input[type="number"] { width: 54px; padding: 3px 5px; }
+  .loop-pill select { padding: 3px 5px; }
+  .loop-pill b { color: var(--accent-hi); font-size: 10px; }
+  .mini-btn.on { background: var(--green); color: #06210f; border-color: #4ade80; }
+  .mini-btn.rec-on { background: var(--red); color: #fff; border-color: #f87171; }
+  .loop-status { font-size: 10px; color: var(--muted); }
+  .layer-list { display: flex; flex-direction: column; gap: 4px; max-height: 160px; overflow-y: auto; }
+  .layer-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--panel-2);
+    border: 1px solid #2b231f;
+    border-radius: 6px;
+    padding: 4px 8px;
+  }
+  .layer-row.muted { opacity: 0.45; }
+  .layer-name { flex: 1; font-size: 10.5px; }
+  .layer-dots { display: flex; gap: 2px; }
+  .layer-dot { width: 7px; height: 7px; border-radius: 50%; }
+  .layer-empty { color: var(--muted); font-size: 10px; padding: 6px 2px; }
+  .pad.echo { box-shadow: 0 0 10px var(--stem-color, var(--accent)); }
 </style>
 </head>
 <body>
@@ -2874,6 +3149,7 @@ PADS_HTML = r"""<!DOCTYPE html>
       <p>16 finger-drum pads over the stems + your recordings · choke per stem · hit high for max velocity</p>
     </div>
   </div>
+  <span class="key-badge" id="keyBadge" title="Studio key is set on the SEQ+MIX page">KEY: —</span>
   <nav class="page-nav">
     <a href="/">SEQ+MIX</a>
     <a href="/mixer">DESK</a>
@@ -2889,7 +3165,7 @@ PADS_HTML = r"""<!DOCTYPE html>
       <button class="mini-btn" id="dryBtn" onclick="toggleAllDry()">DRY KIT</button>
     </div>
     <div class="pad-grid" id="padGrid"></div>
-    <div class="status-banner" id="statusText">Whack a pad. Same stem chokes its own tail — flam away.</div>
+    <div class="status-banner"><span id="statusText">Whack a pad. Same stem chokes its own tail — flam away.</span><span id="statusLink"></span></div>
   </section>
 
   <div class="side">
@@ -2920,9 +3196,35 @@ PADS_HTML = r"""<!DOCTYPE html>
     <section class="card legend">
       <b>PADS:</b> bombs on top row, lead second, wah/snare/hat third, kicks &amp; thuds on the bottom.<br>
       <b>VELOCITY:</b> click near the top edge of a pad to smack it, bottom edge for a soft poot.<br>
-      <b>CHOKE:</b> retriggering a pad from the same stem cuts the previous tail.
+      <b>CHOKE:</b> retriggering a pad from the same stem cuts the previous tail.<br>
+      <b>LOOP:</b> hits are quantized to 16ths on the loop grid. Each armed pass
+      becomes a take layer — OVERDUB stacks them, off replaces them.
     </section>
   </div>
+
+  <section class="card loop-card">
+    <div class="card-header">
+      <span class="card-title">Loop Station — event looper (16th-quantized)</span>
+      <span class="loop-status" id="loopStatus">idle</span>
+    </div>
+    <div class="loop-layout">
+      <canvas id="loopRing" width="180" height="180"></canvas>
+      <div>
+        <div class="loop-controls">
+          <button class="mini-btn" id="loopRecBtn" onclick="toggleRec()">● REC</button>
+          <button class="mini-btn" id="loopPlayBtn" onclick="toggleLoopPlay()">▶ PLAY</button>
+          <button class="mini-btn" onclick="undoLayer()">↩ UNDO TAKE</button>
+          <button class="mini-btn" onclick="clearLayers()">✕ CLEAR</button>
+          <button class="mini-btn" onclick="exportLoop()">⬇ MP3</button>
+          <span class="loop-pill"><label>BPM</label><input type="number" id="loopBpm" min="40" max="240" step="1" onchange="setLoopBpm(this.value)"><b id="loopBpmVal"></b></span>
+          <span class="loop-pill"><label>BARS</label><select id="loopBars" onchange="setLoopBars(this.value)"><option value="1">1</option><option value="2" selected>2</option><option value="4">4</option></select></span>
+          <button class="mini-btn on" id="clickBtn" onclick="toggleClick()">CLICK</button>
+          <button class="mini-btn on" id="odubBtn" onclick="toggleOverdub()">OVERDUB</button>
+        </div>
+        <div class="layer-list" id="layerList"></div>
+      </div>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -2963,6 +3265,7 @@ function ensureAudio() {
     drawScope();
   }
   if (audioCtx.state === 'suspended') audioCtx.resume();
+  if (STEMS.length) preloadKit();
 }
 
 async function padBuffer(stem) {
@@ -2973,7 +3276,7 @@ async function padBuffer(stem) {
     rawBufs[url] = await audioCtx.decodeAudioData(arr);
   }
   const src = rawBufs[url];
-  const key = url + '|t';
+  const key = url + '|' + stem.trimSec;
   if (trimBufs[key]) return trimBufs[key];
   const n = Math.min(src.length, Math.floor(stem.trimSec * src.sampleRate));
   const out = audioCtx.createBuffer(src.numberOfChannels, n, src.sampleRate);
@@ -2989,9 +3292,17 @@ async function padBuffer(stem) {
 
 async function hitPad(i, vel) {
   ensureAudio();
+  const tHit = audioCtx.currentTime;
   const pad = PADS[i];
   const stem = STEMS.find(s => s.id === pad.stem);
   if (!stem) return;
+  if (loopRecording && take) {
+    take.events.push({
+      stemId: pad.stem, semi: pad.semi,
+      vel: Math.round(vel * 100) / 100,
+      step: quantizeStep(tHit),
+    });
+  }
 
   const el = document.getElementById(`pad-${i}`);
   el.classList.add('hit');
@@ -3005,14 +3316,16 @@ async function hitPad(i, vel) {
   const buf = await padBuffer(stem);
   const src = audioCtx.createBufferSource();
   src.buffer = buf;
-  src.playbackRate.value = Math.pow(2, pad.semi / 12);
+  const semi = qStem(pad.stem, pad.semi);
+  src.playbackRate.value = Math.pow(2, semi / 12);
   const g = audioCtx.createGain();
   g.gain.value = vel;
   src.connect(g); g.connect(masterGain);
   src.start();
   lastSrc[pad.stem] = src;
   src.onended = () => { if (lastSrc[pad.stem] === src) lastSrc[pad.stem] = null; };
-  document.getElementById('statusText').textContent = `💥 ${pad.label} @ vel ${Math.round(vel*100)}%`;
+  const snapTxt = semi !== pad.semi ? ` · Q→${semi >= 0 ? '+' : ''}${semi}st` : '';
+  document.getElementById('statusText').textContent = `💥 ${pad.label} @ vel ${Math.round(vel*100)}%${snapTxt}`;
 }
 
 function toggleAllDry() {
@@ -3035,9 +3348,14 @@ function buildPads() {
     el.className = 'pad';
     el.id = `pad-${i}`;
     el.style.setProperty('--stem-color', stem ? stem.color : '#e07a3c');
+    const snapped = (KEY.q && stem && PITCHED.includes(stem.id)) ? q(pad.semi) : pad.semi;
+    if (snapped !== pad.semi) el.classList.add('q-snap');
+    const subTxt = pad.semi
+      ? `${pad.semi > 0 ? '+' : ''}${pad.semi}st` + (snapped !== pad.semi ? `→${snapped >= 0 ? '+' : ''}${snapped}` : '')
+      : (snapped !== pad.semi ? `Q→${snapped >= 0 ? '+' : ''}${snapped}st` : '');
     el.innerHTML = `
       <span class="pad-label">${pad.label}</span>
-      <span class="pad-sub">${stem ? stem.name : pad.stem} ${pad.semi ? (pad.semi>0?'+':'') + pad.semi + 'st' : ''}</span>
+      <span class="pad-sub">${stem ? stem.name : pad.stem} ${subTxt}</span>
       <span class="pad-key">${pad.key.toUpperCase()}</span>
     `;
     el.addEventListener('pointerdown', (ev) => {
@@ -3361,11 +3679,407 @@ async function deleteSample(stemId, name) {
   recStatus(`✓ "${name}" deleted.`);
 }
 
+// ---------- LOOP STATION (event looper, issue #48) ----------
+// Lookahead scheduler: a 25ms timer schedules every grid event falling
+// inside the next 100ms at audioCtx.currentTime-based times. Recorded hits
+// are stamped with audioCtx.currentTime and quantized to the nearest 16th.
+const LOOKAHEAD_MS = 25, HORIZON_S = 0.1;
+let bpm = initBpm();
+let loopBars = 2;
+let loopPlaying = false, loopRecording = false;
+let overdubOn = true, clickOn = true;
+let loopStart = 0;                 // audioCtx time of loop step 0
+let schedTimer = null;
+let schedStep = 0, schedTime = 0;  // next absolute step index and its audio time
+let layers = [], take = null, layerSeq = 0;
+let schedLate = 0;                 // worst event-scheduling lateness (acceptance log)
+
+function initBpm() {
+  try {
+    const st = JSON.parse(localStorage.getItem('brownnote.studio.v1') || 'null');
+    const v = st && st.seq && +st.seq.bpm;
+    if (v >= 40 && v <= 240) return Math.round(v);
+  } catch (e) {}
+  return 116;
+}
+
+const nSteps = () => 16 * loopBars;
+const stepSec = () => 60 / bpm / 4;
+const loopSec = () => nSteps() * stepSec();
+
+function preloadKit() {
+  return Promise.all(STEMS.map(s => padBuffer(s).catch(() => null)));
+}
+
+function setStatus(msg) {
+  document.getElementById('statusText').textContent = msg;
+}
+
+function quantizeStep(t) {
+  const s = Math.round((t - loopStart) / stepSec());
+  return ((s % nSteps()) + nSteps()) % nSteps();
+}
+
+function firePadEvent(ev, when) {
+  const stem = STEMS.find(s => s.id === ev.stemId);
+  if (!stem) return;
+  const buf = trimBufs[(allDry ? stem.dryUrl : stem.url) + '|' + stem.trimSec];
+  if (!buf) { padBuffer(stem); return; }  // warm for the next pass
+  const prev = lastSrc[ev.stemId];
+  if (prev) { try { prev.stop(when); } catch (e) {} }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.playbackRate.value = Math.pow(2, qStem(ev.stemId, ev.semi) / 12);
+  const g = audioCtx.createGain();
+  g.gain.value = ev.vel;
+  src.connect(g); g.connect(masterGain);
+  src.start(when);
+  src.stop(when + buf.duration + 0.05);
+  lastSrc[ev.stemId] = src;
+  src.onended = () => { if (lastSrc[ev.stemId] === src) lastSrc[ev.stemId] = null; };
+  setTimeout(() => echoStem(ev.stemId), Math.max(0, (when - audioCtx.currentTime) * 1000));
+}
+
+function echoStem(stemId) {
+  PADS.forEach((p, i) => {
+    if (p.stem !== stemId) return;
+    const el = document.getElementById(`pad-${i}`);
+    if (!el) return;
+    el.classList.add('echo');
+    setTimeout(() => el.classList.remove('echo'), 90);
+  });
+}
+
+function click(accent, when) {
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = 'square';
+  o.frequency.value = accent ? 2200 : 1400;
+  g.gain.setValueAtTime(accent ? 0.20 : 0.11, when);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + 0.035);
+  o.connect(g); g.connect(masterGain);
+  o.start(when);
+  o.stop(when + 0.05);
+}
+
+function schedTick() {
+  if (!loopPlaying || !audioCtx) return;
+  const horizon = audioCtx.currentTime + HORIZON_S;
+  const sSec = stepSec(), n = nSteps();
+  let guard = 0;
+  while (schedTime < horizon && guard++ < 8192) {
+    const s = schedStep % n;
+    const stale = schedTime < audioCtx.currentTime - 0.06;
+    if (!stale) {
+      for (const layer of layers) {
+        if (layer.muted) continue;
+        for (const ev of layer.byStep[s] || []) {
+          const late = audioCtx.currentTime - schedTime;
+          if (late > schedLate) {
+            schedLate = late;
+            console.debug(`[looper] event scheduled ${Math.round(late * 1000)}ms late (worst so far)`);
+          }
+          firePadEvent(ev, schedTime);
+        }
+      }
+      if (clickOn && s % 4 === 0) click(s % 16 === 0, schedTime);
+    }
+    schedStep++;
+    schedTime = loopStart + schedStep * sSec;
+    if (schedStep % n === 0) onCycleWrap();
+  }
+}
+
+function onCycleWrap() {
+  // An armed pass became a layer the moment the loop wrapped.
+  if (loopRecording && take && take.events.length) commitTake();
+}
+
+async function startLoop() {
+  await preloadKit();
+  loopStart = audioCtx.currentTime + 0.08;
+  schedStep = 0;
+  schedTime = loopStart;
+  schedLate = 0;
+  loopPlaying = true;
+  schedTimer = setInterval(schedTick, LOOKAHEAD_MS);
+  schedTick();
+  const btn = document.getElementById('loopPlayBtn');
+  btn.textContent = '⏹ STOP';
+  btn.classList.add('rec-on');
+  updateLoopStatus();
+}
+
+function stopLoop() {
+  if (loopRecording) disarmRec();
+  loopPlaying = false;
+  clearInterval(schedTimer);
+  for (const k in lastSrc) {
+    if (lastSrc[k]) { try { lastSrc[k].stop(); } catch (e) {} lastSrc[k] = null; }
+  }
+  const btn = document.getElementById('loopPlayBtn');
+  btn.textContent = '▶ PLAY';
+  btn.classList.remove('rec-on');
+  updateLoopStatus();
+}
+
+async function toggleLoopPlay() {
+  ensureAudio();
+  if (loopPlaying) stopLoop(); else await startLoop();
+}
+
+async function toggleRec() {
+  ensureAudio();
+  if (loopRecording) { disarmRec(); return; }
+  if (!loopPlaying) await startLoop();
+  take = { events: [] };
+  loopRecording = true;
+  document.getElementById('loopRecBtn').classList.add('rec-on');
+  setStatus('⏺ recording — play the pads; each loop pass becomes a take');
+  updateLoopStatus();
+}
+
+function disarmRec() {
+  loopRecording = false;
+  document.getElementById('loopRecBtn').classList.remove('rec-on');
+  commitTake();
+  updateLoopStatus();
+}
+
+function commitTake() {
+  if (take && take.events.length) {
+    if (!overdubOn) layers = [];
+    const byStep = {};
+    for (const ev of take.events) (byStep[ev.step] = byStep[ev.step] || []).push(ev);
+    layers.push({ id: ++layerSeq, events: take.events, byStep, muted: false });
+    setStatus(`✓ take ${layerSeq} locked in — ${take.events.length} hit(s)`);
+  }
+  // Still armed? Start the next pass's take; disarmed takes go away.
+  take = loopRecording ? { events: [] } : null;
+  renderLayers();
+}
+
+function loopPhase() {
+  // Position within the current cycle in [0, 1) — read before changing
+  // bpm/bars so the transport can re-anchor without a phase jump.
+  return (((audioCtx.currentTime - loopStart) / loopSec()) % 1 + 1) % 1;
+}
+
+function setLoopBpm(v) {
+  const nv = Math.max(40, Math.min(240, parseInt(v, 10) || bpm));
+  const phase = (loopPlaying && audioCtx) ? loopPhase() : 0;
+  bpm = nv;
+  if (loopPlaying) {
+    loopStart = audioCtx.currentTime - phase * loopSec();
+    schedStep = Math.ceil((audioCtx.currentTime - loopStart) / stepSec() - 1e-9);
+    schedTime = loopStart + schedStep * stepSec();
+  }
+  document.getElementById('loopBpm').value = bpm;
+  document.getElementById('loopBpmVal').textContent = bpm;
+  updateLoopStatus();
+}
+
+function setLoopBars(v) {
+  const nv = parseInt(v, 10);
+  if (![1, 2, 4].includes(nv)) return;
+  const phase = (loopPlaying && audioCtx) ? loopPhase() : 0;
+  loopBars = nv;
+  if (loopPlaying) {
+    loopStart = audioCtx.currentTime - phase * loopSec();
+    schedStep = Math.ceil((audioCtx.currentTime - loopStart) / stepSec() - 1e-9);
+    schedTime = loopStart + schedStep * stepSec();
+  }
+  for (const l of layers) {
+    l.events = l.events.filter(e => e.step < nSteps());
+    l.byStep = {};
+    for (const ev of l.events) (l.byStep[ev.step] = l.byStep[ev.step] || []).push(ev);
+  }
+  if (take) take.events = take.events.filter(e => e.step < nSteps());
+  renderLayers();
+}
+
+function toggleClick() {
+  clickOn = !clickOn;
+  document.getElementById('clickBtn').classList.toggle('on', clickOn);
+}
+
+function toggleOverdub() {
+  overdubOn = !overdubOn;
+  document.getElementById('odubBtn').classList.toggle('on', overdubOn);
+  setStatus(overdubOn ? 'OVERDUB on — new takes stack as layers' : 'OVERDUB off — next take replaces all layers');
+}
+
+function toggleLayerMute(id) {
+  const l = layers.find(x => x.id === id);
+  if (l) { l.muted = !l.muted; renderLayers(); }
+}
+
+function deleteLayer(id) {
+  layers = layers.filter(x => x.id !== id);
+  renderLayers();
+}
+
+function undoLayer() {
+  const gone = layers.pop();
+  renderLayers();
+  if (gone) setStatus(`↩ undid take ${gone.id} — ${layers.length} layer(s) left`);
+}
+
+function clearLayers() {
+  layers = [];
+  renderLayers();
+  setStatus('✕ loop cleared');
+}
+
+function updateLoopStatus() {
+  const mode = loopRecording ? '⏺ REC' : (loopPlaying ? '▶ looping' : 'idle');
+  const late = loopPlaying && schedLate > 0.001 ? ` · sched late ≤${Math.round(schedLate * 1000)}ms` : '';
+  document.getElementById('loopStatus').textContent =
+    `${mode} · ${loopBars} bar${loopBars > 1 ? 's' : ''} @ ${bpm} BPM · ` +
+    `${layers.length} take${layers.length === 1 ? '' : 's'} · ${overdubOn ? 'overdub' : 'replace'}${late}`;
+}
+
+function renderLayers() {
+  const el = document.getElementById('layerList');
+  if (!layers.length) {
+    el.innerHTML = '<div class="layer-empty">no takes yet — hit ● REC, then play the pads. Each loop pass becomes a layer.</div>';
+  } else {
+    el.innerHTML = layers.map(l => {
+      const dots = [...new Set(l.events.map(e => e.stemId))].slice(0, 8).map(id => {
+        const st = STEMS.find(s => s.id === id);
+        return `<span class="layer-dot" style="background:${st ? st.color : '#888'}"></span>`;
+      }).join('');
+      return `<div class="layer-row ${l.muted ? 'muted' : ''}">
+        <span class="layer-dots">${dots}</span>
+        <span class="layer-name">TAKE ${l.id} — ${l.events.length} hit${l.events.length === 1 ? '' : 's'}</span>
+        <button class="mini-btn ${l.muted ? 'mute-on' : ''}" onclick="toggleLayerMute(${l.id})">M</button>
+        <button class="mini-btn" onclick="deleteLayer(${l.id})">✕</button>
+      </div>`;
+    }).join('');
+  }
+  updateLoopStatus();
+}
+
+// Export is a lossy summary of the loop: one (velocity, pitch) pair per
+// stem per 16th — later takes win collisions; velocity quantizes to the
+// renderer's 3 levels (soft/medium/accent).
+function quantVel(v) { return v >= 0.95 ? 2 : (v >= 0.6 ? 1 : 3); }
+
+async function exportLoop() {
+  const stLink = document.getElementById('statusLink');
+  if (!layers.some(l => !l.muted && l.events.length)) {
+    setStatus('nothing to export — record a take first');
+    return;
+  }
+  const n = nSteps();
+  const tracks = {};
+  for (const stem of STEMS) {
+    tracks[stem.id] = {
+      steps: new Array(n).fill(0),
+      stepPitches: new Array(n).fill(0),
+      pitch: 0, gain: stem.defaultGain ?? 0.9, pan: 0,
+      trimSec: stem.trimSec, useDry: allDry, mute: false, solo: false,
+    };
+  }
+  for (const l of layers) {
+    if (l.muted) continue;
+    for (const ev of l.events) {
+      const t = tracks[ev.stemId];
+      if (!t) continue;
+      t.steps[ev.step] = quantVel(ev.vel);
+      t.stepPitches[ev.step] = qStem(ev.stemId, ev.semi);
+    }
+  }
+  setStatus(`⏳ rendering ${loopBars}-bar loop @ ${bpm} BPM to MP3...`);
+  stLink.innerHTML = '';
+  try {
+    const res = await fetch('/api/render-sequence', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bpm, bars: loopBars, swing: 0, tracks }),
+    });
+    const data = await res.json();
+    if (!data.ok) { setStatus(`❌ export failed: ${data.error}`); return; }
+    setStatus(`✓ loop bounced (${data.durationSec}s) -> ${data.rootFile || data.url} — lossy summary of the loop`);
+    stLink.innerHTML = `<a href="${data.url}" download style="color:var(--accent-hi);font-weight:700;">⬇ Download MP3</a>`;
+  } catch (e) {
+    setStatus(`❌ export failed: ${e}`);
+  }
+}
+
+function drawRing() {
+  const cv = document.getElementById('loopRing');
+  const ctx = cv.getContext('2d');
+  let frameNo = 0;
+  function frame() {
+    requestAnimationFrame(frame);
+    const w = cv.width, h = cv.height, cx = w / 2, cy = h / 2, r = 76;
+    const n = nSteps();
+    ctx.fillStyle = '#0b0908';
+    ctx.fillRect(0, 0, w, h);
+
+    for (let s = 0; s < n; s++) {
+      const a = (s / n) * Math.PI * 2 - Math.PI / 2;
+      const inner = s % 16 === 0 ? r - 12 : (s % 4 === 0 ? r - 8 : r - 4);
+      ctx.strokeStyle = s % 16 === 0 ? '#5b463a' : (s % 4 === 0 ? '#41322a' : '#2b211c');
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner);
+      ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      ctx.stroke();
+    }
+
+    const drawEvents = (evts, dim, override) => {
+      for (const ev of evts) {
+        const st = STEMS.find(s => s.id === ev.stemId);
+        const a = (ev.step / n) * Math.PI * 2 - Math.PI / 2;
+        ctx.fillStyle = override || (st ? st.color : '#888');
+        ctx.globalAlpha = dim ? 0.22 : 0.95;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(a) * (r - 18), cy + Math.sin(a) * (r - 18),
+                1.6 + ev.vel * 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    };
+    for (const l of layers) drawEvents(l.events, l.muted);
+    if (take) drawEvents(take.events, false, '#ef4444');
+
+    if (loopPlaying && audioCtx) {
+      const phase = (((audioCtx.currentTime - loopStart) / loopSec()) % 1 + 1) % 1;
+      const a = phase * Math.PI * 2 - Math.PI / 2;
+      const col = loopRecording ? '#ef4444' : '#ffb347';
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + 3, -Math.PI / 2, a);
+      ctx.strokeStyle = loopRecording ? 'rgba(239,68,68,0.5)' : 'rgba(255,179,71,0.35)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = '#9e8e82';
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${bpm} BPM`, cx, cy - 4);
+    ctx.fillText(`${loopBars} BAR${loopBars > 1 ? 'S' : ''}`, cx, cy + 10);
+
+    if (++frameNo % 30 === 0) updateLoopStatus();
+  }
+  frame();
+}
+
 async function init() {
   const res = await fetch('/api/state');
   const data = await res.json();
   STEMS = data.stems;
   const stored = studioRead();
+  studioKeyApply();
+  refreshKeyBadge();
   applyPadsSlice(stored.pads);
   buildPads();
   renderUserSamples();
@@ -3373,10 +4087,16 @@ async function init() {
   if (!stored.pads) {
     studioMerge({ pads: studioPadsSerialize(PADS) });   // seed once
   }
+  document.getElementById('loopBpm').value = bpm;
+  document.getElementById('loopBpmVal').textContent = bpm;
+  renderLayers();
+  drawRing();
 }
 
 window.addEventListener('storage', (ev) => {
   if (ev.key !== STUDIO_LS_KEY) return;
+  studioKeyApply();
+  refreshKeyBadge();
   applyPadsSlice(studioRead().pads);
   buildPads();
   renderUserSamples();

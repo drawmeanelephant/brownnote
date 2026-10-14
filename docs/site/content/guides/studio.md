@@ -92,6 +92,17 @@ A 4×4 pad grid mapped to keys `1-4` / `Q W E R` / `A S D F` / `Z X C V`.
 Click height on a pad sets velocity, and a hit on a stem chokes that
 stem's tail, so flams and stutters stay tight.
 
+Below the grid sits the **Loop Station**, an event looper: arm **● REC**
+and play the pads — hits are quantized to 16ths on a 1, 2, or 4-bar grid
+and replayed by an `audioCtx.currentTime` lookahead scheduler. Each armed
+pass becomes a take layer (OVERDUB on stacks them, off replaces them);
+layers can be muted, cleared, or undone one at a time. BPM (default 116,
+or `seq.bpm` from the shared `brownnote.studio.v1` state), a bars select,
+and a click/metronome toggle live in the same panel, plus a ring view of
+the loop. **⬇ MP3** bounces the loop through `/api/render-sequence` using
+the extended `16 × bars` step grid — a lossy summary (one velocity/pitch
+per stem per 16th, 3 velocity levels).
+
 ### `/library` — CRATES (rendered library)
 
 Every MP3 and WAV in `build/presets/` and `recordings/` as a card with a

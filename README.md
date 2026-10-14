@@ -178,6 +178,10 @@ by a nav bar:
   a master bus with scope and panic button.
 - `/pads` **MPC** — 16 finger-drum pads (keys `1-4` / `QWER` / `ASDF` /
   `ZXCV`); click height sets velocity and same-stem hits choke the tail.
+  Includes the **Loop Station**: an event looper that records pad hits
+  quantized to 16ths on a 1/2/4-bar grid with lookahead scheduling,
+  stacks overdub passes as mute/clear-able take layers, and bounces the
+  loop to MP3.
 - `/library` **CRATES** — every rendered MP3/WAV in `build/presets/` and
   `recordings/` as a card with a drawn waveform, playhead, and kind
   filters.
