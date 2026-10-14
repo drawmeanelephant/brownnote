@@ -152,6 +152,25 @@ delayed, chorused fart comes out. These were rendered before the
 resampler's anti-aliasing filter (#32): re-rendering them today
 would produce slightly different output.
 
+## Presets & Studio Sequencer
+
+`scripts/presets.sh` renders signature single-shot pedal chains (`doom`,
+`cathedral`, `machinegun`, `swamp`, `klon-crunch`, `cyber-laser`, `dry`)
+and full multi-track stereo genre arrangements (`funk`, `metal`, `doom`,
+`techno`) to WAV or 320 kbps MP3:
+
+```sh
+scripts/presets.sh list
+scripts/presets.sh fx cathedral --phrase "harufu mbaya angani" --play
+scripts/presets.sh song funk --bpm 116 --bars 8 --out funk.mp3 --play
+make presets   # renders all FX presets + genre songs into build/presets/
+```
+
+`scripts/studio.py` (`make studio`) serves an interactive browser
+16-step sequencer, 6-channel stem mixer (with per-channel volume, stereo
+pan, pitch, dry/wet A/B, mute/solo), custom phrase/pedal renderer, and
+MP3 exporter on `http://127.0.0.1:8765/`.
+
 ## Testing
 
 ```sh

@@ -63,4 +63,10 @@ sanitize:
 clean:
 	rm -rf build
 
-.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean
+presets: $(BIN)
+	scripts/presets.sh pack
+
+studio: $(BIN)
+	python3 scripts/studio.py
+
+.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio
