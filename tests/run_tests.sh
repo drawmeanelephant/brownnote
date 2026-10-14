@@ -939,9 +939,10 @@ fi
 #      unknown POST endpoint 404s as JSON, the #45 patch API round-trips
 #      save -> list -> load -> delete with bad names 400ing, the #43
 #      sample API round-trips a 44.1 kHz s16 WAV with bad formats 400ing
-#      and over-cap bodies 413ing, and — when stems are available —
+#      and over-cap bodies 413ing, — when stems are available —
 #      /api/render-sequence honours length-16 (repeat per bar) and
-#      length-16*bars (flat looper grid) step arrays
+#      length-16*bars (flat looper grid) step arrays, and the #47
+#      shared q() block is evaluated under node when node is present
 # ------------------------------------------------------------------
 if [ "$have_python" = 1 ] && [ -f scripts/studio.py ]; then
 	verdict=$(python3 tests/studio_smoke.py 2>&1)

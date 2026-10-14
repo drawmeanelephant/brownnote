@@ -20,6 +20,9 @@ Boots the studio server on a free loopback port, then checks:
                                      bar, while a length-16*bars grid places
                                      hits on their own steps (issue #48
                                      looper export)
+  - SCALE QUANTIZE (#47): the shared JS block on / carries SCALES +
+    q(); with node present its minor_penta table (incl. ties snapping
+    down and octave wrap) is evaluated for real
 
 Prints "ok: ..." / "bad: ..." so tests/run_tests.sh can case-match the
 verdict like the inline python3 heredocs do.  Exit 0 on pass, 1 on fail.
@@ -30,6 +33,8 @@ import io
 import json
 import math
 import os
+import re
+import shutil
 import socket
 import struct
 import subprocess
@@ -266,6 +271,40 @@ def main():
         elif not isinstance(payload, dict) or payload.get("ok") is not False:
             fails.append("POST /api/no-such-endpoint: 404 but body is not "
                          '{"ok": false, ...}')
+
+        # ---- #47: scale quantize ------------------------------------
+        # The q() helper lives in the shared STUDIO_JS block served on
+        # every page; slice it out of / and run the issue's worked
+        # examples under node when node is on this machine.
+        status, _, body = get("/")
+        m = re.search(
+            rb"// =+ scale-quantize block start \(#47\) =+\n(.*?)"
+            rb"// =+ scale-quantize block end =+",
+            body, re.S)
+        if status != 200 or not m:
+            fails.append("GET /: shared scale-quantize block missing")
+        else:
+            block = m.group(1).decode("utf-8", "replace")
+            for tok in ("SCALES", "PITCHED", "function q("):
+                if tok not in block:
+                    fails.append(f"scale-quantize block: missing {tok!r}")
+            node = shutil.which("node")
+            if node:
+                script = block + """
+KEY = {scale: 'minor_penta', root: 0, q: true};
+const got = [1, 2, 6, 11, -1, -5, 14].map(q);
+if (JSON.stringify(got) !== '[0,3,5,10,-2,-5,15]')
+  throw new Error('q table ' + JSON.stringify(got));
+KEY = {scale: 'major', root: 2, q: true};
+if (q(3) !== 2) throw new Error('major root+2 q(3)=' + q(3));
+KEY = {scale: 'chromatic', root: 0, q: true};
+if (q(9) !== 9) throw new Error('chromatic not identity');
+"""
+                r = subprocess.run([node, "-e", script],
+                                   capture_output=True, text=True, timeout=15)
+                if r.returncode != 0:
+                    fails.append("node q() table: "
+                                 + (r.stderr.strip() or r.stdout.strip()))
 
         # ---- #45: whole-studio patches ----------------------------------
         pname = "smoke test"
