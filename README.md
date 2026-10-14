@@ -166,10 +166,21 @@ scripts/presets.sh song funk --bpm 116 --bars 8 --out funk.mp3 --play
 make presets   # renders all FX presets + genre songs into build/presets/
 ```
 
-`scripts/studio.py` (`make studio`) serves an interactive browser
-16-step sequencer, 6-channel stem mixer (with per-channel volume, stereo
-pan, pitch, dry/wet A/B, mute/solo), custom phrase/pedal renderer, and
-MP3 exporter on `http://127.0.0.1:8765/`.
+`scripts/studio.py` (`make studio`) serves an interactive browser studio
+on `http://127.0.0.1:8765/` — four pages over the same six stems, linked
+by a nav bar:
+
+- `/` **SEQ+MIX** — 16-step sequencer, 6-channel stem mixer (per-channel
+  volume, stereo pan, pitch, dry/wet A/B, mute/solo), custom
+  phrase/pedal renderer, and MP3 exporter.
+- `/mixer` **DESK** — console-desk skin: vertical channel strips with VU
+  meters, gain/pan/pitch, mute/solo/dry, per-channel TAP and LOOP, plus
+  a master bus with scope and panic button.
+- `/pads` **MPC** — 16 finger-drum pads (keys `1-4` / `QWER` / `ASDF` /
+  `ZXCV`); click height sets velocity and same-stem hits choke the tail.
+- `/library` **CRATES** — every rendered MP3/WAV in `build/presets/` and
+  `recordings/` as a card with a drawn waveform, playhead, and kind
+  filters.
 
 ## Testing
 

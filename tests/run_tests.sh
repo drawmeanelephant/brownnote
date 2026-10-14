@@ -934,6 +934,21 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (ac) studio.py smoke test: all four pages serve HTML, /api/state
+#      answers JSON (200, or 503 when stems can't build here), and an
+#      unknown POST endpoint 404s as JSON
+# ------------------------------------------------------------------
+if [ "$have_python" = 1 ] && [ -f scripts/studio.py ]; then
+	verdict=$(python3 tests/studio_smoke.py 2>&1)
+	case "$verdict" in
+	ok:*) ok "(ac) studio pages: $verdict" ;;
+	*)   bad "(ac) studio pages: $verdict" ;;
+	esac
+else
+	skip "(ac) studio pages: python3 or scripts/studio.py absent"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then
