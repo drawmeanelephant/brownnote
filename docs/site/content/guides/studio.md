@@ -2,14 +2,14 @@
 title: Presets and Studio Sequencer
 parent: guides/index
 status: published
-summary: Render signature pedal chains, multi-track genre songs, and jam in the browser 16-step sequencer and stem mixer.
+summary: Render signature pedal chains, multi-track genre songs, and jam in the four-page browser studio (sequencer, desk, pads, crates).
 ---
 
 # Presets, multi-track songs, and the 16-step Studio
 
 Beyond single-file piping, brownnote ships with a CLI preset and song
-generator (`scripts/presets.sh`) and a local browser 16-step sequencer and
-6-channel stem mixer (`scripts/studio.py`).
+generator (`scripts/presets.sh`) and a local browser studio
+(`scripts/studio.py`) with four pages over the same stems.
 
 ## Preset pedalboards (`scripts/presets.sh fx`)
 
@@ -53,7 +53,7 @@ make presets   # renders all 6 FX presets + all 4 genre songs into build/presets
 | `techno` | 132 BPM | four-on-the-floor sub-kick, offbeat crisp hi-hat farts, and 16th-note Auto-Wah + Flanger 303 acid sequence |
 | `doom` | 66 BPM | tectonic sub-bass power chords, stereo-widened sludge riffs, slow drums, and cathedral reverb |
 
-## Browser 16-step sequencer & stem mixer (`make studio`)
+## Browser studio (`make studio`)
 
 ```bash
 make studio
@@ -62,8 +62,11 @@ python3 scripts/studio.py
 ```
 
 `make studio` ensures the dry and pedaled stem WAVs are built in
-`build/tune/`, then serves the interactive studio interface on
-`http://127.0.0.1:8765/`:
+`build/tune/`, then serves the interactive studio on
+`http://127.0.0.1:8765/` — four pages over the same six stems, linked by
+the **SEQ+MIX · DESK · PADS · CRATES** nav bar at the top of each page.
+
+### `/` — SEQ+MIX (16-step sequencer & stem mixer)
 
 - **6-channel stem mixer**: Sub-Bass/Kick, Splat Snare, Crispy Hi-Hat,
   Auto-Wah Funk, Rat Fuzz Lead, and Brown-Note Bomb — each with volume,
@@ -75,6 +78,25 @@ python3 scripts/studio.py
 - **Server-side MP3 bounce & jukebox**: click **BARF SEQ TO MP3** to bounce
   the active sequence and mixer state to a 320 kbps stereo MP3, or trigger new
   custom Swahili phrase and genre renders straight from the browser.
+
+### `/mixer` — DESK (console strips)
+
+A vertical console-desk skin over the same stems: per-channel strips with
+gain (0–140%), pan (±100), pitch (−12…+18 st), mute/solo/dry, a VU meter,
+**TAP** (one-shot `fireSource`) and **LOOP** (retriggers the trimmed stem),
+plus a master fader, oscilloscope, and panic button.
+
+### `/pads` — MPC (finger drummer)
+
+A 4×4 pad grid mapped to keys `1-4` / `Q W E R` / `A S D F` / `Z X C V`.
+Click height on a pad sets velocity, and a hit on a stem chokes that
+stem's tail, so flams and stutters stay tight.
+
+### `/library` — CRATES (rendered library)
+
+Every MP3 and WAV in `build/presets/` and `recordings/` as a card with a
+drawn waveform, a playhead, and kind filters (songs, FX presets, custom
+renders, recordings).
 
 For the underlying CLI flags, see [[reference/cli|the command reference]] and
 [[reference/effects|effect aliases]].
