@@ -285,6 +285,7 @@ def check_sample_wav(body):
             width = w.getsampwidth()
             rate = w.getframerate()
             frames = w.getnframes()
+            raw = w.readframes(frames)
     except Exception as e:
         raise ValueError(f"not a readable PCM WAV: {e}")
     if (rate, ch, width) != (44100, 1, 2):
@@ -293,6 +294,10 @@ def check_sample_wav(body):
             f"(got {rate} Hz, {ch} channel(s), {width * 8}-bit)")
     if frames <= 0:
         raise ValueError("empty clip")
+    if len(raw) != frames * ch * width:
+        raise ValueError(
+            f"WAV holds {len(raw)} data bytes but the header declares "
+            f"{frames} frames ({frames * ch * width} bytes) — truncated?")
     return frames
 
 
@@ -354,6 +359,16 @@ LIB_BUCKETS = (
     ("library", os.path.join("build", "library"), "recorded"),
     ("user", os.path.join("build", "user"), "recorded"),
 )
+
+# The server is a ThreadingMixIn, so every manifest read-modify-write
+# below runs under one lock — an unlocked scan racing a delete could
+# write back a stale "retired" set and resurrect the stem.  Reentrant
+# because the mutators call scan_library() while holding it.
+LIB_LOCK = threading.RLock()
+
+
+class LibraryConflict(Exception):
+    """409 — the request collides with files another stem owns."""
 
 
 def lib_stem_defs():
@@ -478,6 +493,11 @@ def scan_library():
     conforming build/library/ drops into lib-* stems, then catalog every
     remaining WAV/MP3 in the buckets.  Cached stats carry over for files
     whose mtime+size are unchanged."""
+    with LIB_LOCK:
+        return _scan_library()
+
+
+def _scan_library():
     old = load_manifest()
     retired = set(old.get("retired") or [])
     prev = {}
@@ -505,7 +525,7 @@ def scan_library():
                 e.get("conform")
         conform = False
         dur = loud = None
-        if rel.endswith(".wav"):
+        if rel.lower().endswith(".wav"):
             fmt = _wav_format(p)
             if fmt:
                 conform = fmt[:3] == (44100, 1, 2) and fmt[3] > 0
@@ -523,16 +543,23 @@ def scan_library():
     if os.path.isdir(LIB_DIR):
         for fn in sorted(os.listdir(LIB_DIR)):
             rel = f"build/library/{fn}"
-            if not fn.endswith(".wav") or rel in claimed:
+            if not fn.lower().endswith(".wav") or rel in claimed:
                 continue
             p = os.path.join(ROOT, rel)
             fmt = _wav_format(p)
             if not fmt or fmt[:3] != (44100, 1, 2) or fmt[3] <= 0:
                 continue   # stays catalog-only; promote can normalize it
-            sid = f"lib-{lib_slug(fn[:-4])}"
+            base_sid = f"lib-{lib_slug(fn[:-4])}"
+            if base_sid in retired:
+                continue   # a retired id stays dead for this filename
+            # a same-slug sibling (a-b.wav vs a.b.wav) takes a suffix
+            sid = base_sid
+            n = 2
             def_path = os.path.join(LIB_DIR, sid + ".json")
-            if sid in retired or os.path.isfile(def_path):
-                continue
+            while sid in retired or os.path.isfile(def_path):
+                sid = f"{base_sid}-{n}"
+                n += 1
+                def_path = os.path.join(LIB_DIR, sid + ".json")
             stem_def = _lib_def(sid, fn[:-4], "/" + rel,
                                 round(fmt[3] / 44100.0, 3), "recorded")
             _atomic_write(def_path,
@@ -541,6 +568,7 @@ def scan_library():
             claimed[rel] = sid
 
     entries = []
+    used_ids = set()
     synth_ids = {s["id"] for s in STEM_DEFS}
     for sd in stem_defs():
         rel = sd["url"].lstrip("/")
@@ -565,13 +593,14 @@ def scan_library():
             "mtime": st.st_mtime if st else None,
             "sizeKb": round(st.st_size / 1024, 1) if st else None,
         })
+        used_ids.add(sd["id"])
 
     for bucket, rel_dir, kind in LIB_BUCKETS:
         d = os.path.join(ROOT, rel_dir)
         if not os.path.isdir(d):
             continue
         for fn in sorted(os.listdir(d)):
-            if not fn.endswith((".wav", ".mp3")):
+            if not fn.lower().endswith((".wav", ".mp3")):
                 continue
             rel = f"{rel_dir}/{fn}"
             if rel in claimed:
@@ -580,8 +609,16 @@ def scan_library():
             if got is None:
                 continue
             st, dur, loud, conform = got
+            # slug collisions (a-b.wav vs a.b.wav) get a numeric suffix
+            base_id = f"{bucket}-{lib_slug(fn)}"
+            eid = base_id
+            suffix = 2
+            while eid in used_ids:
+                eid = f"{base_id}-{suffix}"
+                suffix += 1
+            used_ids.add(eid)
             entries.append({
-                "id": f"{bucket}-{lib_slug(fn)}",
+                "id": eid,
                 "name": fn,
                 "file": rel,
                 "url": "/" + rel,
@@ -610,9 +647,10 @@ def scan_library():
 
 
 def get_manifest():
-    if os.path.isfile(LIB_MANIFEST):
-        return load_manifest()
-    return scan_library()
+    with LIB_LOCK:
+        if os.path.isfile(LIB_MANIFEST):
+            return load_manifest()
+        return scan_library()
 
 
 def resolve_default(manifest, stems):
@@ -631,6 +669,11 @@ def promote_entry(entry_id, name=None):
     the rest get normalized into build/library/lib-<slug>.wav.  Returns
     the stem id; raises KeyError for an unknown entry, ValueError for a
     400 reply."""
+    with LIB_LOCK:
+        return _promote_entry(entry_id, name)
+
+
+def _promote_entry(entry_id, name=None):
     if not isinstance(entry_id, str) or not entry_id:
         raise ValueError("missing entry 'id'")
     manifest = scan_library()
@@ -641,7 +684,7 @@ def promote_entry(entry_id, name=None):
     if entry.get("stem"):
         return entry["stem"]
     rel = entry["file"]
-    if not rel.endswith(".wav"):
+    if not rel.lower().endswith(".wav"):
         raise ValueError("only WAV material promotes — transcode MP3s first")
     src = os.path.join(ROOT, rel)
     if name is None:
@@ -685,15 +728,16 @@ def promote_entry(entry_id, name=None):
 
 
 def set_default_stem(stem_id):
-    m = get_manifest()
-    if stem_id is None:
-        m["default"] = None
-    else:
-        if stem_id not in {s["id"] for s in stem_defs()}:
-            raise ValueError(f"'{stem_id}' is not a playable stem")
-        m["default"] = stem_id
-    save_manifest(m)
-    return resolve_default(m, stem_defs())
+    with LIB_LOCK:
+        m = get_manifest()
+        if stem_id is None:
+            m["default"] = None
+        else:
+            if stem_id not in {s["id"] for s in stem_defs()}:
+                raise ValueError(f"'{stem_id}' is not a playable stem")
+            m["default"] = stem_id
+        save_manifest(m)
+        return resolve_default(m, stem_defs())
 
 
 def delete_stem(stem_id):
@@ -702,53 +746,71 @@ def delete_stem(stem_id):
     is retired so intake never resurrects it."""
     if not isinstance(stem_id, str):
         return False
-    for d in (USER_DIR, LIB_DIR):
-        if not os.path.isdir(d):
-            continue
-        for fn in sorted(os.listdir(d)):
-            if not fn.endswith(".json"):
+    with LIB_LOCK:
+        for d in (USER_DIR, LIB_DIR):
+            if not os.path.isdir(d):
                 continue
-            p = os.path.join(d, fn)
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    doc = json.load(f)
-            except Exception:
-                continue
-            if not isinstance(doc, dict) or doc.get("id") != stem_id:
-                continue
-            os.unlink(p)
-            wav = os.path.join(os.path.dirname(p), fn[:-5] + ".wav")
-            if os.path.isfile(wav):
-                os.unlink(wav)
-            m = load_manifest()
-            m["retired"] = sorted(set(m.get("retired") or []) | {stem_id})
-            save_manifest(m)
-            scan_library()   # drop the stale stem pointer from its entry
-            return True
+            for fn in sorted(os.listdir(d)):
+                if not fn.endswith(".json"):
+                    continue
+                p = os.path.join(d, fn)
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        doc = json.load(f)
+                except Exception:
+                    continue
+                if not isinstance(doc, dict) or doc.get("id") != stem_id:
+                    continue
+                # tombstone BEFORE unlinking: a crash between the two
+                # must not let intake resurrect the stem
+                m = load_manifest()
+                m["retired"] = sorted(
+                    set(m.get("retired") or []) | {stem_id})
+                save_manifest(m)
+                os.unlink(p)
+                wav = os.path.join(os.path.dirname(p), fn[:-5] + ".wav")
+                if os.path.isfile(wav):
+                    os.unlink(wav)
+                scan_library()   # drop the stale stem pointer from its entry
+                return True
     return False
 
 
 def intake_sample(name, body):
     """HTTP intake: a conforming WAV -> build/library/<slug>.wav, which
     the rescan below turns into a lib-* stem.  Raises ValueError for a
-    400 reply."""
+    400 reply, LibraryConflict for a 409."""
     if not isinstance(name, str) or not SAMPLE_NAME_RE.match(name):
         raise ValueError("bad sample name (want [A-Za-z0-9 _-], 1-48 chars)")
     check_sample_wav(body)
     slug = lib_slug(user_slug(name))
     sid = f"lib-{slug}"
-    wav_path = os.path.join(LIB_DIR, slug + ".wav")
-    _atomic_write(wav_path, body)
-    def_path = os.path.join(LIB_DIR, sid + ".json")
-    if os.path.isfile(def_path):
-        os.unlink(def_path)   # rewrite so trimSec tracks the new take
-    m = load_manifest()
-    retired = set(m.get("retired") or [])
-    if sid in retired:
-        retired.discard(sid)
-        m["retired"] = sorted(retired)
-        save_manifest(m)
-    scan_library()
+    wav_rel = f"build/library/{slug}.wav"
+    with LIB_LOCK:
+        # never let an intake overwrite the wav another stem owns — a
+        # claimed <slug>.wav under a different id is a name collision
+        for sd in stem_defs():
+            if sd["id"] == sid:
+                continue   # the same stem retaking in place
+            for k in ("url", "dryUrl"):
+                if (sd.get(k) or "").lstrip("/") == wav_rel:
+                    raise LibraryConflict(
+                        f"{wav_rel} already backs stem '{sd['id']}' — "
+                        "pick another name")
+        _atomic_write(os.path.join(LIB_DIR, slug + ".wav"), body)
+        def_path = os.path.join(LIB_DIR, sid + ".json")
+        if os.path.isfile(def_path):
+            os.unlink(def_path)   # rewrite so trimSec tracks the new take
+        m = load_manifest()
+        retired = set(m.get("retired") or [])
+        if sid in retired:
+            retired.discard(sid)
+            m["retired"] = sorted(retired)
+            save_manifest(m)
+        scan_library()
+        if sid not in {s["id"] for s in stem_defs()}:
+            raise RuntimeError(
+                f"intake wrote {wav_rel} but rescan made no stem '{sid}'")
     return sid
 
 
@@ -1329,13 +1391,22 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 return self._send_json(503, {"ok": False, "error": str(e)})
             stems = stem_defs()
+            try:
+                default = resolve_default(get_manifest(), stems)
+            except Exception:
+                # the manifest pick is advisory — a broken scan must not
+                # take down every page that boots off /api/state
+                default = resolve_default({}, stems)
             return self._send_json(200, {
                 "stems": stems,
                 "tracks": list_tracks(),
-                "default": resolve_default(get_manifest(), stems),
+                "default": default,
             })
         if parsed.path == "/api/library":
-            m = get_manifest()
+            try:
+                m = get_manifest()
+            except Exception as e:
+                return self._send_json(503, {"ok": False, "error": str(e)})
             return self._send_json(200, {
                 "ok": True,
                 "v": m.get("v", 1),
@@ -1456,9 +1527,17 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
         name = urllib.parse.parse_qs(parsed.query).get("name", [""])[0]
         try:
             sid = intake_sample(name, raw_body)
+        except LibraryConflict as e:
+            return self._send_json(409, {"ok": False, "error": str(e)})
         except ValueError as e:
             return self._send_json(400, {"ok": False, "error": str(e)})
+        except Exception as e:
+            return self._send_json(500, {"ok": False, "error": str(e)})
         stem = next((s for s in stem_defs() if s["id"] == sid), None)
+        if stem is None:
+            return self._send_json(500, {
+                "ok": False,
+                "error": f"intake produced no stem '{sid}'"})
         return self._send_json(200, {"ok": True, "stem": stem})
 
     def do_POST(self):
@@ -5091,7 +5170,10 @@ async function exportLoop() {
   for (const l of layers) {
     if (l.muted) continue;
     for (const ev of l.events) {
-      const t = tracks[ev.stemId];
+      // live playback resolves a deleted stem through stemById's default
+      // fallback — the bounce must land the event on the same stem
+      const st = stemById(ev.stemId);
+      const t = st && tracks[st.id];
       if (!t) continue;
       t.steps[ev.step] = quantVel(ev.vel);
       t.stepPitches[ev.step] = qStem(ev.stemId, ev.semi);
@@ -5349,8 +5431,18 @@ async function decodePeaks(url) {
   return out;
 }
 
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+// for values spliced into inline handlers: JS-quote via JSON, then
+// HTML-escape for the attribute (drop-dir filenames are untrusted input)
+function jsq(s) { return esc(JSON.stringify(String(s))); }
+
 function drawWave(url, progress) {
-  const cv = document.querySelector(`canvas[data-url="${cssEscape(url)}"]`);
+  const cv = [...document.querySelectorAll('canvas.wave')]
+    .find(c => c.dataset.url === url);
   if (!cv) return;
   const ctx = cv.getContext('2d');
   ctx.fillStyle = '#0b0908';
@@ -5370,8 +5462,6 @@ function drawWave(url, progress) {
     ctx.fillRect(i * w, (cv.height - h) / 2, Math.max(1, w - 0.5), h);
   }
 }
-
-function cssEscape(s) { return s.replace(/"/g, '\\"'); }
 
 async function toggleTrack(url) {
   ensureAudio();
@@ -5446,24 +5536,24 @@ function renderCrates() {
       (e.stem === LIB.default ? ' is-default' : '');
     el.dataset.url = e.url;
     const isDef = e.stem && e.stem === LIB.default;
-    const promoteBtn = (!e.stem && e.file.endsWith('.wav'))
-      ? `<button class="mini-btn" onclick="promoteEntry('${e.id}')">＋ STEM</button>` : '';
+    const promoteBtn = (!e.stem && /\.wav$/i.test(e.file || ''))
+      ? `<button class="mini-btn" onclick="promoteEntry(${jsq(e.id)})">＋ STEM</button>` : '';
     const starBtn = (e.stem && !isDef)
-      ? `<button class="mini-btn" title="make THE default fart" onclick="setDefault('${e.stem}')">★</button>` : '';
+      ? `<button class="mini-btn" title="make THE default fart" onclick="setDefault(${jsq(e.stem)})">★</button>` : '';
     const stemTag = e.stem
       ? `<span class="tag">${isDef ? '<span class="def-star">★ DEFAULT</span>' : 'STEM'}</span>` : '';
     el.innerHTML = `
       <div class="crate-top">
-        <span class="crate-name" title="${e.name}">${e.name}</span>
-        <span class="tag">${e.kind}</span>${stemTag}
+        <span class="crate-name" title="${esc(e.name)}">${esc(e.name)}</span>
+        <span class="tag">${esc(e.kind)}</span>${stemTag}
       </div>
-      <canvas class="wave" data-url="${e.url}" width="300" height="44"></canvas>
+      <canvas class="wave" data-url="${esc(e.url)}" width="300" height="44"></canvas>
       <div class="crate-top">
-        <div class="crate-meta"><span>${metaLine(e)}</span></div>
+        <div class="crate-meta"><span>${esc(metaLine(e))}</span></div>
         <div class="crate-btns">
           ${promoteBtn}${starBtn}
-          <button class="mini-btn play-btn" onclick="toggleTrack('${e.url}')">▶</button>
-          <a href="${e.url}" download>⬇</a>
+          <button class="mini-btn play-btn" onclick="toggleTrack(${jsq(e.url)})">▶</button>
+          <a href="${esc(e.url)}" download>⬇</a>
         </div>
       </div>
     `;

@@ -887,6 +887,18 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
         bwav_norm = os.path.join(lib_dir, "lib-smoke-bad.wav")
         iwav = os.path.join(lib_dir, "smoke-intake.wav")
         idef = os.path.join(lib_dir, "lib-smoke-intake.json")
+        cwav = os.path.join(lib_dir, "smoke_clobber.wav")
+        zwav = os.path.join(lib_dir, "lib-zep-take.wav")
+        zdef = os.path.join(lib_dir, "lib-zep-take.json")
+        twav = os.path.join(ROOT, "build", "user", "smoke_trunc.wav")
+        tdef = os.path.join(ROOT, "build", "user", "smoke_trunc.json")
+        lib_files = (lwav, bwav, ldef, bdef, bwav_norm, iwav, idef,
+                     cwav, zwav, zdef, twav, tdef)
+
+        def unretired(r):
+            return not str(r).startswith("lib-smoke-") \
+                and r != "lib-zep-take"
+
         prev_default = None
         lib_manifest = os.path.join(ROOT, "build", "library.json")
 
@@ -911,7 +923,7 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
                 prev_default = man.get("defaultSet")
             # retire tombstones persist in the manifest — clear ours so a
             # previous run can't poison this one
-            for p in (lwav, bwav, ldef, bdef, bwav_norm, iwav, idef):
+            for p in lib_files:
                 try:
                     os.unlink(p)
                 except OSError:
@@ -920,8 +932,7 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
                 with open(lib_manifest, "r", encoding="utf-8") as f:
                     m0 = json.load(f)
                 m0["retired"] = [
-                    r for r in m0.get("retired") or []
-                    if not str(r).startswith("lib-smoke-")]
+                    r for r in m0.get("retired") or [] if unretired(r)]
                 with open(lib_manifest, "w", encoding="utf-8") as f:
                     f.write(json.dumps(m0))
             except Exception:
@@ -1039,6 +1050,25 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
             e = find_entry(man, file="build/library/smoke_drop.wav")
             if e and e.get("stem") is not None:
                 fails.append("rescan resurrected a retired stem")
+            # the tombstone must persist on disk, and a same-name drop
+            # afterwards still can't resurrect the retired id
+            try:
+                with open(lib_manifest, "r", encoding="utf-8") as f:
+                    mm = json.load(f)
+                if "lib-smoke-drop" not in (mm.get("retired") or []):
+                    fails.append("deleted stem id missing from manifest "
+                                 "retired set")
+            except Exception as ex:
+                fails.append(f"manifest unreadable after delete: {ex}")
+            with open(lwav, "wb") as f:
+                f.write(wav_bytes())
+            post("/api/library/rescan")
+            _, man = lib_entries()
+            e = find_entry(man, file="build/library/smoke_drop.wav")
+            if e and e.get("stem") is not None:
+                fails.append("same-name drop resurrected a retired stem")
+            if os.path.isfile(ldef):
+                fails.append("retired stem def recreated by rescan")
 
             # HTTP intake: conforming WAV -> stem, bad shapes 400
             status, _, body = post_typed(
@@ -1065,13 +1095,58 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
             if status != 400:
                 fails.append(f"intake pathy name: status {status} (want 400)")
 
+            # a WAV whose header lies about the frame count is a 400 on
+            # both upload surfaces — never a broken stem
+            trunc = wav_bytes()[:-256]
+            for path in ("/api/upload-sample?name=smoke-trunc",
+                         "/api/library/intake?name=smoke-trunc"):
+                status, _, _ = post_typed(path, trunc, "audio/wav")
+                if status != 400:
+                    fails.append(f"truncated wav {path}: status {status} "
+                                 "(want 400)")
+
+            # intake must not clobber a stem-owned wav: promote a
+            # non-conforming drop so its normalized file sits at
+            # lib-zep-take.wav, then an intake named "lib zep take"
+            # targets that same path under a different stem id
+            with open(cwav, "wb") as f:
+                f.write(wav_bytes(rate=48000, ch=2))
+            post("/api/library/rescan")
+            _, man = lib_entries()
+            e = find_entry(man, file="build/library/smoke_clobber.wav")
+            if not e:
+                fails.append("clobber setup: non-conforming drop not "
+                             "cataloged")
+            else:
+                status, _, body = post("/api/library/promote", json.dumps(
+                    {"id": e["id"], "name": "zep take"}).encode())
+                payload = json.loads(body) if body else {}
+                if status != 200 or (payload.get("stem") or {}).get("id") \
+                        != "lib-zep-take":
+                    fails.append(f"clobber setup promote: {status} "
+                                 f"{payload!r}")
+                else:
+                    with open(zwav, "rb") as f:
+                        owned = f.read()
+                    status, _, body = post_typed(
+                        "/api/library/intake?name=lib+zep+take",
+                        wav_bytes(), "audio/wav")
+                    payload = json.loads(body) if body else {}
+                    if status != 409 or payload.get("ok") is not False:
+                        fails.append(f"intake onto owned slug: status "
+                                     f"{status} {payload!r} (want 409)")
+                    with open(zwav, "rb") as f:
+                        if f.read() != owned:
+                            fails.append("intake clobbered a stem-owned "
+                                         "wav")
+
             # the pads page boots pad 1 off the manifest default
             status, _, body = get("/pads")
             if status == 200 and b"studioPadsBoot" not in body:
                 fails.append("GET /pads: manifest default not wired into "
                              "boot")
         finally:
-            for p in (lwav, bwav, ldef, bdef, bwav_norm, iwav, idef):
+            for p in lib_files:
                 try:
                     os.unlink(p)
                 except OSError:
@@ -1083,8 +1158,7 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
                 with open(lib_manifest, "r", encoding="utf-8") as f:
                     m0 = json.load(f)
                 m0["retired"] = [
-                    r for r in m0.get("retired") or []
-                    if not str(r).startswith("lib-smoke-")]
+                    r for r in m0.get("retired") or [] if unretired(r)]
                 with open(lib_manifest, "w", encoding="utf-8") as f:
                     f.write(json.dumps(m0))
             except Exception:
