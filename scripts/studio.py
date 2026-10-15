@@ -54,6 +54,7 @@ Extra views over the same stems (every page carries the same page-nav bar):
 """
 import http.server
 import io
+import ipaddress
 import json
 import math
 import os
@@ -76,6 +77,31 @@ import zlib
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 PORT = int(os.environ.get("STUDIO_PORT", "8765"))
 HOST = os.environ.get("STUDIO_HOST", "127.0.0.1")
+# Serving off-loopback exposes a mutating API to the LAN; it stays
+# refused unless the user opts in with STUDIO_ALLOW_REMOTE=1 (#65).
+ALLOW_REMOTE = os.environ.get("STUDIO_ALLOW_REMOTE") == "1"
+
+
+def _is_loopback_host(h):
+    """Host header/bind host is a loopback address."""
+    h = (h or "").strip().lower()
+    if h == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
+def _finite(x, default):
+    """float(x) when finite, else `default` — NaN/inf/garbage from JSON
+    must never reach a range()/int()/list alloc (#64)."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return default
+    return v if math.isfinite(v) else default
+
 
 STEM_DEFS = [
     {"id": "kick",  "name": "Sub-Bass / Kick", "phrase": "bubu",                "effect": "Pitch Oct=22 + Klon + Cab", "url": "/build/tune/stem_bass_sub.wav",  "dryUrl": "/build/tune/stem_bass_dry.wav",  "color": "#ff6b35", "trimSec": 0.34, "defaultGain": 0.95, "defaultPan": 0.0,   "defaultPitch": 0},
@@ -87,19 +113,26 @@ STEM_DEFS = [
 ]
 
 
+# ensure_stems can spawn a presets.sh render; one lock so concurrent
+# /api/state requests can't race the same stem build (#71).
+STEMS_LOCK = threading.Lock()
+
+
 def ensure_stems():
-    tune_dir = os.path.join(ROOT, "build", "tune")
-    needed = [
-        "stem_bass_sub.wav", "stem_bass_dry.wav",
-        "stem_snare.wav", "stem_snare_dry.wav",
-        "stem_funk_wah.wav", "stem_funk_dry.wav",
-        "stem_lead_fuzz.wav", "stem_lead_dry.wav",
-        "stem_bomb.wav", "stem_bomb_dry.wav",
-    ]
-    if all(os.path.isfile(os.path.join(tune_dir, f)) for f in needed):
-        return
-    presets_sh = os.path.join(ROOT, "scripts", "presets.sh")
-    subprocess.run([presets_sh, "stems", "--out-dir", tune_dir], cwd=ROOT, check=True)
+    with STEMS_LOCK:
+        tune_dir = os.path.join(ROOT, "build", "tune")
+        needed = [
+            "stem_bass_sub.wav", "stem_bass_dry.wav",
+            "stem_snare.wav", "stem_snare_dry.wav",
+            "stem_funk_wah.wav", "stem_funk_dry.wav",
+            "stem_lead_fuzz.wav", "stem_lead_dry.wav",
+            "stem_bomb.wav", "stem_bomb_dry.wav",
+        ]
+        if all(os.path.isfile(os.path.join(tune_dir, f)) for f in needed):
+            return
+        presets_sh = os.path.join(ROOT, "scripts", "presets.sh")
+        subprocess.run([presets_sh, "stems", "--out-dir", tune_dir],
+                       cwd=ROOT, check=True)
 
 def list_tracks():
     tracks = []
@@ -150,6 +183,9 @@ PATCHES_DIR = os.path.join(ROOT, "build", "patches")
 PATCH_NAME_RE = re.compile(r"^[A-Za-z0-9 _+\-]{1,64}$")
 PATCH_MAX_BYTES = 256 * 1024
 PATCH_KEYS = {"v", "name", "seq", "desk", "pads", "key", "seed"}
+# #66: pad labels render on /pads — a stored patch can't smuggle HTML
+# through this charset cap even if a render path forgot to escape.
+PAD_LABEL_RE = re.compile(r"^[^<>&\"'\\]{0,64}$")
 
 
 def patch_path(name):
@@ -193,6 +229,30 @@ def save_patch(name, patch):
         except OSError:
             pass
         raise
+
+
+def validate_patch_pads(pads):
+    """-> error string or None.  Pad labels land on /pads via innerHTML,
+    so their charset/length is capped server-side too (#66)."""
+    for i, p in enumerate(pads):
+        if not isinstance(p, dict):
+            return f"patch.pads[{i}] must be an object"
+        label = p.get("label")
+        if label is not None and (not isinstance(label, str)
+                                  or not PAD_LABEL_RE.match(label)):
+            return (f"patch.pads[{i}].label must be a string, "
+                    "<=64 chars, no <>&\"'\\")
+        stem = p.get("stem")
+        if stem is not None and not isinstance(stem, str):
+            return f"patch.pads[{i}].stem must be a string"
+        semi = p.get("semi")
+        if semi is not None and not isinstance(semi, (int, float)):
+            return f"patch.pads[{i}].semi must be a number"
+        key = p.get("key")
+        if key is not None and (not isinstance(key, str)
+                                or len(key) > 8):
+            return f"patch.pads[{i}].key must be a short string"
+    return None
 
 
 # User samples (#43): recorded in the browser, uploaded as 44.1 kHz mono
@@ -268,6 +328,22 @@ def _atomic_write(path, data):
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_copy(src, dst):
+    """Same mkstemp+os.replace pattern as _atomic_write, for file data."""
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dst), prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "wb") as f, open(src, "rb") as s:
+            shutil.copyfileobj(s, f)
+        os.replace(tmp, dst)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -814,6 +890,14 @@ def intake_sample(name, body):
     return sid
 
 
+# #64: the mix below is pure-Python per-sample work — bars and total
+# seconds are clamped so a POST can't pin a thread for days or allocate
+# multi-hundred-MB sample lists.
+SEQ_MAX_BARS = 64
+SEQ_MAX_SEC = 120.0
+SEQ_RENDER_LOCK = threading.Lock()
+
+
 def _sequence_mix(payload, tail_sec):
     """Mix the sequencer grid to stereo float buffers -> (L, R, SR).
 
@@ -823,10 +907,13 @@ def _sequence_mix(payload, tail_sec):
     out-of-range steps read as silent.  `tail_sec` pads the render past the
     last bar so ring-out isn't cut.
     """
-    bpm = float(payload.get("bpm", 116))
-    bars = int(payload.get("bars", 4))
-    swing = float(payload.get("swing", 0.0))
+    bpm = max(40.0, min(240.0, _finite(payload.get("bpm", 116), 116.0)))
+    bars = max(1, min(SEQ_MAX_BARS,
+                      int(_finite(payload.get("bars", 4), 4))))
+    swing = max(-1.0, min(1.0, _finite(payload.get("swing", 0.0), 0.0)))
     tracks_cfg = payload.get("tracks", {})
+    if not isinstance(tracks_cfg, dict):
+        tracks_cfg = {}
     SR = 44100
 
     def load_wav(rel_url):
@@ -857,10 +944,10 @@ def _sequence_mix(payload, tail_sec):
                 out[i] = buf[idx]
         return out
 
-    beat_sec = 60.0 / max(40.0, min(240.0, bpm))
+    beat_sec = 60.0 / bpm
     step_sec = beat_sec / 4.0
     bar_sec = beat_sec * 4.0
-    total_sec = bars * bar_sec + tail_sec
+    total_sec = min(bars * bar_sec + tail_sec, SEQ_MAX_SEC)
     N = int(total_sec * SR)
     L = [0.0] * N
     R = [0.0] * N
@@ -878,18 +965,29 @@ def _sequence_mix(payload, tail_sec):
         use_dry = bool(tcfg.get("useDry", False))
         src_url = sd["dryUrl"] if use_dry else sd["url"]
         raw = load_wav(src_url)
-        trim_len = min(len(raw), int(float(tcfg.get("trimSec", sd["trimSec"])) * SR))
+        trim_sec = max(0.0, min(8.0, _finite(
+            tcfg.get("trimSec", sd["trimSec"]), sd["trimSec"])))
+        trim_len = min(len(raw), int(trim_sec * SR))
         trimmed = raw[:trim_len]
         # Short 8 ms fade-out on trimmed slice so rapid steps don't click
         fade_n = min(len(trimmed), int(0.008 * SR))
         for i in range(fade_n):
             trimmed[len(trimmed) - 1 - i] *= (i / max(1, fade_n))
 
-        base_pitch = float(tcfg.get("pitch", sd["defaultPitch"]))
-        gain = float(tcfg.get("gain", sd["defaultGain"]))
-        pan = max(-1.0, min(1.0, float(tcfg.get("pan", sd["defaultPan"]))))
+        # every numeric out of the JSON is finite + clamped — a hostile
+        # payload can't turn pitch_shift into a huge allocation (#64)
+        base_pitch = max(-48.0, min(48.0, _finite(
+            tcfg.get("pitch", sd["defaultPitch"]), sd["defaultPitch"])))
+        gain = max(0.0, min(2.0, _finite(
+            tcfg.get("gain", sd["defaultGain"]), sd["defaultGain"])))
+        pan = max(-1.0, min(1.0, _finite(
+            tcfg.get("pan", sd["defaultPan"]), sd["defaultPan"])))
         steps = tcfg.get("steps", [0] * 16)
+        if not isinstance(steps, list):
+            steps = []
         step_pitches = tcfg.get("stepPitches", [0] * 16)
+        if not isinstance(step_pitches, list):
+            step_pitches = []
 
         def grid_val(arr, s, i):
             if len(arr) == 16:
@@ -908,8 +1006,8 @@ def _sequence_mix(payload, tail_sec):
                 if not vel:
                     continue
                 vel_scale = 1.0 if vel == 1 else (1.25 if vel == 2 else 0.65)
-                sp = grid_val(step_pitches, s, i)
-                semi = base_pitch + sp
+                sp = _finite(grid_val(step_pitches, s, i), 0.0)
+                semi = max(-48.0, min(48.0, base_pitch + sp))
                 if semi not in shifted_cache:
                     shifted_cache[semi] = pitch_shift(trimmed, semi)
                 buf = shifted_cache[semi]
@@ -938,35 +1036,65 @@ def _s16_stereo(L, R):
 
 def render_sequence_to_mp3(payload):
     """Render the current 16-step sequencer grid + stem mixer settings to a stereo WAV & 320k MP3."""
-    bpm = float(payload.get("bpm", 116))
-    L, R, SR = _sequence_mix(payload, tail_sec=1.8)
+    # bpm is clamped before it ever reaches a filename — int(1e300)
+    # builds a ~300-digit name and OSErrors the request (#73).
+    bpm = max(40.0, min(240.0, _finite(payload.get("bpm", 116), 116.0)))
+    bpm_i = int(bpm)
+    with SEQ_RENDER_LOCK:
+        L, R, SR = _sequence_mix(payload, tail_sec=1.8)
     out_pcm = _s16_stereo(L, R)
     N = len(L)
 
     presets_dir = os.path.join(ROOT, "build", "presets")
     os.makedirs(presets_dir, exist_ok=True)
     ts = int(time.time())
-    wav_name = f"custom_seq_{int(bpm)}bpm.wav"
-    mp3_name = f"custom_seq_{int(bpm)}bpm.mp3"
+    wav_name = f"custom_seq_{bpm_i}bpm.wav"
+    mp3_name = f"custom_seq_{bpm_i}bpm.mp3"
     wav_path = os.path.join(presets_dir, wav_name)
     mp3_path = os.path.join(presets_dir, mp3_name)
 
-    with wave.open(wav_path, "wb") as w:
-        w.setnchannels(2)
-        w.setsampwidth(2)
-        w.setframerate(SR)
-        w.writeframes(bytes(out_pcm))
+    # fixed names + concurrent renders: every write lands via
+    # mkstemp + os.replace, never a half-written file (#71)
+    fd, wav_tmp = tempfile.mkstemp(dir=presets_dir,
+                                  prefix=".tmp-", suffix=".wav")
+    os.close(fd)
+    try:
+        with wave.open(wav_tmp, "wb") as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(SR)
+            w.writeframes(bytes(out_pcm))
+        os.replace(wav_tmp, wav_path)
+    except BaseException:
+        try:
+            os.unlink(wav_tmp)
+        except OSError:
+            pass
+        raise
 
     if shutil.which("ffmpeg"):
-        subprocess.run([
-            "ffmpeg", "-y", "-loglevel", "error", "-i", wav_path,
-            "-codec:a", "libmp3lame", "-b:a", "320k",
-            "-metadata", f"title=Brownnote Custom Sequence ({int(bpm)} BPM)",
-            "-metadata", "artist=kujamba x GuitarPedal",
-            mp3_path
-        ], check=True)
+        fd, mp3_tmp = tempfile.mkstemp(dir=presets_dir,
+                                      prefix=".tmp-", suffix=".mp3")
+        os.close(fd)
+        try:
+            subprocess.run([
+                "ffmpeg", "-y", "-loglevel", "error", "-i", wav_path,
+                "-codec:a", "libmp3lame", "-b:a", "320k",
+                "-metadata",
+                f"title=Brownnote Custom Sequence ({bpm_i} BPM)",
+                "-metadata", "artist=kujamba x GuitarPedal",
+                mp3_tmp
+            ], check=True)
+            os.replace(mp3_tmp, mp3_path)
+        except BaseException:
+            try:
+                os.unlink(mp3_tmp)
+            except OSError:
+                pass
+            raise
         # Also copy to workspace root so user can grab it easily
-        shutil.copyfile(mp3_path, os.path.join(ROOT, "brownnote_custom_groove.mp3"))
+        _atomic_copy(mp3_path,
+                     os.path.join(ROOT, "brownnote_custom_groove.mp3"))
         return {
             "ok": True,
             "url": f"/build/presets/{mp3_name}?t={ts}",
@@ -1161,8 +1289,16 @@ def _jam_line(proc, line, secret):
             _jam_config(proc, float(bpm.group(1)), int(bpi.group(1)))
         return
     if "RESULT" in line:
-        kv = {k: v for k, v in JAM_KV_RE.findall(line)
-              if "pass" not in k.lower() and "secret" not in k.lower()}
+        # keys named *pass*/*secret* are dropped AND any value carrying
+        # the password is masked — a server echoing it back under
+        # another key must not leak it through /api/jam (#70)
+        kv = {}
+        for k, v in JAM_KV_RE.findall(line):
+            if "pass" in k.lower() or "secret" in k.lower():
+                continue
+            if secret and secret in v:
+                v = v.replace(secret, "***")
+            kv[k] = v
         safe_line = JAM_KV_RE.sub(
             lambda m: m.group(1) + "=***"
             if "pass" in m.group(1).lower()
@@ -1354,12 +1490,184 @@ def jam_stop():
         _jam_clean_dir()
 
 
+def _run_group(cmd, timeout):
+    """subprocess.run for a child that spawns grandchildren: it runs in
+    its own session so a timeout kills the whole process group — the
+    presets.sh python3 song-mix grandchild must not outlive it (#69).
+    -> (rc, stdout, stderr); rc is None on timeout."""
+    proc = subprocess.Popen(
+        cmd, cwd=ROOT, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return proc.returncode, out, err
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+        out, err = proc.communicate()
+        return None, out, err
+
+
+def _sweep_render_tmp():
+    """Remove mktemp dirs (brownnote.* under $TMPDIR) orphaned by
+    presets.sh runs that were SIGKILLed mid-render (#69).  Only dirs
+    older than a render's worst case are touched so a concurrent
+    presets.sh in flight is left alone."""
+    tmpdir = tempfile.gettempdir()
+    try:
+        names = os.listdir(tmpdir)
+    except OSError:
+        return
+    cutoff = time.time() - 120
+    for fn in names:
+        if not fn.startswith("brownnote."):
+            continue
+        p = os.path.join(tmpdir, fn)
+        try:
+            if os.path.getmtime(p) < cutoff:
+                shutil.rmtree(p, ignore_errors=True)
+        except OSError:
+            pass
+
+
+# ---- 2026-10-14 audit hardening (#63-#73) ----------------------------
+# Only audio files under these dirs may ever be read off disk; every
+# other static path — dotfiles, listings, source, the manifest — is a
+# 404 (#65).
+SERVE_DIRS = ("build/tune", "build/presets", "build/user",
+              "build/library", "recordings")
+SERVE_EXTS = (".wav", ".mp3")
+SERVE_SENTINEL = os.path.join(ROOT, ".no-such-file")
+# /api/* requires this custom header, which the served pages' fetch
+# wrapper sets — cross-site 'simple requests' can't add headers and
+# this server never answers a CORS preflight (#63).
+CSRF_HEADER = "X-Studio-Client"
+# Hardening headers on every response (#72): no sniffing, no framing,
+# and a CSP pinning loads to same-origin (the pages are fully inline,
+# so script/style keep 'unsafe-inline').
+CSP = ("default-src 'self'; script-src 'unsafe-inline'; "
+       "style-src 'unsafe-inline'; img-src 'self' data:; "
+       "media-src 'self'; connect-src 'self'; font-src 'self'; "
+       "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; "
+       "form-action 'self'")
+# Per-endpoint POST body caps; anything unlisted (incl. both render
+# endpoints and unknown paths) gets the shared cap (#68).
+BODY_MAX_BYTES = 1024 * 1024
+POST_CAPS = {
+    "/api/patch": PATCH_MAX_BYTES,
+    "/api/jam": JAM_MAX_BYTES,
+    "/api/library/rescan": PATCH_MAX_BYTES,
+    "/api/library/promote": PATCH_MAX_BYTES,
+    "/api/library/default": PATCH_MAX_BYTES,
+}
+PRESET_NAME_RE = re.compile(r"^[a-z0-9-]{1,32}$")
+
+
+def _cap_label(cap):
+    return (f"{cap // (1024 * 1024)} MiB" if cap % (1024 * 1024) == 0
+            else f"{cap // 1024} KiB")
+
+
 class StudioHandler(http.server.SimpleHTTPRequestHandler):
+    # Bound every socket op so a client that stalls mid-request can't
+    # pin a handler thread forever (#68).
+    timeout = 30
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[studio] " + (fmt % args) + "\n")
+
+    def end_headers(self):
+        # #72: baseline hardening headers on every response,
+        # send_error replies included.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", CSP)
+        super().end_headers()
+
+    # ---- #63/#65 request gate ---------------------------------------
+
+    def _host_name(self):
+        """Host header value with any :port stripped."""
+        host = (self.headers.get("Host") or "").strip()
+        if host.startswith("[") and "]" in host:
+            return host[1:host.index("]")]
+        if host.count(":") == 1:
+            host = host.split(":", 1)[0]
+        return host
+
+    def _blocked(self):
+        """True when the request was rejected.  Host must be loopback
+        (DNS-rebinding killswitch), a present Origin/Referer must be
+        same-origin (browser CSRF), and /api/* needs the CSRF_HEADER
+        only the served pages send (#63)."""
+        if not ALLOW_REMOTE and not _is_loopback_host(self._host_name()):
+            self._send_json(403, {"ok": False,
+                                  "error": "Host must be loopback"})
+            return True
+        host = (self.headers.get("Host") or "").strip().lower()
+        for h in ("Origin", "Referer"):
+            v = (self.headers.get(h) or "").strip()
+            if not v:
+                continue
+            try:
+                netloc = urllib.parse.urlsplit(v).netloc
+            except ValueError:
+                netloc = ""
+            if netloc.lower() != host:
+                self._send_json(403, {
+                    "ok": False,
+                    "error": "cross-site request rejected"})
+                return True
+        if self.path.split("?", 1)[0].startswith("/api/") and \
+                self.headers.get(CSRF_HEADER) != "1":
+            self._send_json(403, {
+                "ok": False,
+                "error": f"missing {CSRF_HEADER} header"})
+            return True
+        return False
+
+    def translate_path(self, path):
+        """#65: the served root is a whitelist, not the repo — only
+        audio under SERVE_DIRS plus the jam loop resolves.  Dotfiles,
+        dot-dirs, non-audio files, directory listings, and symlink
+        escapes all collapse to a path that never exists -> 404."""
+        real_root = os.path.realpath(ROOT)
+        p = os.path.realpath(super().translate_path(path))
+        rel = os.path.relpath(p, real_root)
+        parts = rel.split(os.sep)
+        ok = rel == os.path.join("build", "jam", "loop.wav") or (
+            len(parts) >= 2
+            and os.sep.join(parts[:2]) in SERVE_DIRS
+            and parts[-1].lower().endswith(SERVE_EXTS)
+            and not any(part.startswith(".") for part in parts))
+        return p if ok else SERVE_SENTINEL
+
+    def _read_body(self, cap, what="body"):
+        """-> (bytes, None) or (None, (status, msg)) — one guarded
+        Content-Length parse + size cap for every endpoint (#68)."""
+        if self.headers.get("Transfer-Encoding"):
+            return None, (400, "chunked bodies not supported")
+        raw = self.headers.get("Content-Length")
+        if raw is None:
+            return b"", None
+        try:
+            length = int(raw)
+        except ValueError:
+            return None, (400, "bad Content-Length")
+        if length < 0:
+            return None, (400, "bad Content-Length")
+        if length > cap:
+            return None, (413, f"{what} over the {_cap_label(cap)} cap")
+        body = self.rfile.read(length)
+        if len(body) != length:
+            return None, (400, "truncated body")
+        return body, None
 
     def _send_json(self, code, data):
         body = json.dumps(data).encode("utf-8")
@@ -1379,7 +1687,14 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_HEAD(self):
+        if self._blocked():
+            return
+        return super().do_HEAD()
+
     def do_GET(self):
+        if self._blocked():
+            return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path in ("/", "/index.html"):
             return self._send_html(STUDIO_HTML)
@@ -1446,11 +1761,10 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def _handle_upload_sample(self, parsed):
-        length = int(self.headers.get("Content-Length", "0"))
-        if length > SAMPLE_MAX_BYTES:
-            return self._send_json(413, {
-                "ok": False, "error": "sample body over the 10 MiB cap"})
-        raw_body = self.rfile.read(length) if length > 0 else b""
+        raw_body, err = self._read_body(SAMPLE_MAX_BYTES, "sample body")
+        if err:
+            return self._send_json(err[0],
+                                   {"ok": False, "error": err[1]})
         ctype = (self.headers.get("Content-Type") or "")
         ctype = ctype.split(";")[0].strip().lower()
 
@@ -1513,11 +1827,10 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                      "{seq} to push a new loop, or {stop: true} to leave"})
 
     def _handle_library_intake(self, parsed):
-        length = int(self.headers.get("Content-Length", "0"))
-        if length > SAMPLE_MAX_BYTES:
-            return self._send_json(413, {
-                "ok": False, "error": "sample body over the 10 MiB cap"})
-        raw_body = self.rfile.read(length) if length > 0 else b""
+        raw_body, err = self._read_body(SAMPLE_MAX_BYTES, "sample body")
+        if err:
+            return self._send_json(err[0],
+                                   {"ok": False, "error": err[1]})
         ctype = (self.headers.get("Content-Type") or "")
         ctype = ctype.split(";")[0].strip().lower()
         if ctype not in USER_WAV_TYPES:
@@ -1541,25 +1854,24 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
         return self._send_json(200, {"ok": True, "stem": stem})
 
     def do_POST(self):
+        if self._blocked():
+            return
         parsed = urllib.parse.urlparse(self.path)
-        length = int(self.headers.get("Content-Length", "0"))
         if parsed.path == "/api/upload-sample":
             return self._handle_upload_sample(parsed)
         if parsed.path == "/api/library/intake":
             return self._handle_library_intake(parsed)
-        if parsed.path == "/api/patch" and length > PATCH_MAX_BYTES:
-            return self._send_json(400, {"ok": False, "error": "patch body over the 256 KiB cap"})
-        if parsed.path == "/api/jam" and length > JAM_MAX_BYTES:
-            return self._send_json(400, {"ok": False, "error": "jam body over the 64 KiB cap"})
-        if parsed.path in ("/api/library/rescan",
-                           "/api/library/promote", "/api/library/default") \
-                and length > PATCH_MAX_BYTES:
-            return self._send_json(400, {"ok": False, "error": "body over the 256 KiB cap"})
-        raw_body = self.rfile.read(length) if length > 0 else b"{}"
+        raw_body, err = self._read_body(
+            POST_CAPS.get(parsed.path, BODY_MAX_BYTES))
+        if err:
+            return self._send_json(err[0], {"ok": False, "error": err[1]})
         try:
-            payload = json.loads(raw_body.decode("utf-8"))
+            payload = json.loads((raw_body or b"{}").decode("utf-8"))
         except Exception as e:
             return self._send_json(400, {"ok": False, "error": str(e)})
+        if not isinstance(payload, dict):
+            return self._send_json(400, {
+                "ok": False, "error": "expected a JSON object"})
 
         try:
             if parsed.path == "/api/render-sequence":
@@ -1573,29 +1885,56 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
             if parsed.path == "/api/render-preset":
                 mode = payload.get("mode", "fx")
                 name = payload.get("name", "doom")
-                phrase = payload.get("phrase", "").strip()
-                bpm = str(int(payload.get("bpm", 120)))
-                bars = str(int(payload.get("bars", 6)))
-                seed = str(int(payload.get("seed", 42)))
+                # #73: the --out path is built from `name` here, so the
+                # name is validated here too — presets.sh's picky case
+                # statement isn't the load wall anymore.
+                if not isinstance(name, str) \
+                        or not PRESET_NAME_RE.match(name):
+                    return self._send_json(400, {
+                        "ok": False,
+                        "error": "bad preset/genre name "
+                                 "(want [a-z0-9-], 1-32 chars)"})
+                if mode not in ("fx", "song"):
+                    return self._send_json(400, {
+                        "ok": False,
+                        "error": "bad mode (want 'fx' or 'song')"})
+                phrase = payload.get("phrase", "")
+                phrase = phrase.strip() if isinstance(phrase, str) else ""
+                bpm = str(int(max(40, min(240,
+                    _finite(payload.get("bpm", 120), 120)))))
+                bars = str(int(max(1, min(SEQ_MAX_BARS,
+                    _finite(payload.get("bars", 6), 6)))))
+                seed = str(int(max(-2**31, min(2**31 - 1,
+                    _finite(payload.get("seed", 42), 42)))))
 
                 presets_sh = os.path.join(ROOT, "scripts", "presets.sh")
                 if mode == "song":
                     out_rel = f"build/presets/song_{name}.mp3"
-                    cmd = [presets_sh, "song", name, "--bpm", bpm, "--bars", bars, "--seed", seed, "--out", os.path.join(ROOT, out_rel)]
+                    cmd = [presets_sh, "song", name, "--bpm", bpm,
+                           "--bars", bars, "--seed", seed,
+                           "--out", os.path.join(ROOT, out_rel)]
                 else:
                     out_rel = f"build/presets/fx_{name}.mp3"
-                    cmd = [presets_sh, "fx", name, "--seed", seed, "--out", os.path.join(ROOT, out_rel)]
+                    cmd = [presets_sh, "fx", name, "--seed", seed,
+                           "--out", os.path.join(ROOT, out_rel)]
                     if phrase:
                         cmd += ["--phrase", phrase]
 
-                proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=45)
-                if proc.returncode != 0:
-                    return self._send_json(500, {"ok": False, "error": proc.stderr or proc.stdout})
+                # #69: own process group + hard timeout so the python3
+                # song-mix grandchild dies with presets.sh.
+                rc, out, errtxt = _run_group(cmd, timeout=45)
+                if rc is None:
+                    _sweep_render_tmp()
+                    return self._send_json(504, {
+                        "ok": False, "error": "render timed out"})
+                if rc != 0:
+                    return self._send_json(500, {
+                        "ok": False, "error": errtxt or out})
                 ts = int(time.time())
                 return self._send_json(200, {
                     "ok": True,
                     "url": f"/{out_rel}?t={ts}",
-                    "log": proc.stdout.strip(),
+                    "log": out.strip(),
                     "tracks": list_tracks(),
                 })
 
@@ -1627,6 +1966,11 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                     if sect in patch and patch[sect] is not None \
                             and not isinstance(patch[sect], kind):
                         return self._send_json(400, {"ok": False, "error": f"patch.{sect} must be a {kind.__name__}"})
+                if isinstance(patch.get("pads"), list):
+                    pads_err = validate_patch_pads(patch["pads"])
+                    if pads_err:
+                        return self._send_json(400, {
+                            "ok": False, "error": pads_err})
                 save_patch(name, patch)
                 return self._send_json(200, {"ok": True, "name": name, "patches": list_patches()})
 
@@ -1669,6 +2013,7 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
 
 class ReusableTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
+    daemon_threads = True   # a hung request can't block shutdown (#68)
 
 
 # Shared whole-studio state: one localStorage object, brownnote.studio.v1,
@@ -1676,8 +2021,37 @@ class ReusableTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 # desk (/mixer), pads (/pads), key (the #47 studio key: scale/root/q),
 # seed (reserved for #46).  A missing section means "keep this page's
 # defaults", so partial patches still load.
-STUDIO_JS = r"""
+# #63 CSRF hardening: the server requires X-Studio-Client on every
+# /api/* call.  Cross-site "simple requests" can't set a custom header
+# and the server never answers a CORS preflight, so drive-by POSTs and
+# side-effect GETs never reach a handler.  The served pages stamp it
+# via this fetch wrapper.
+CSRF_JS = r"""
+(function () {
+  const _fetch = window.fetch.bind(window);
+  window.fetch = (url, opts) => {
+    if (typeof url === 'string' && url.indexOf('/api/') === 0) {
+      opts = Object.assign({}, opts);
+      const h = new Headers(opts.headers || {});
+      h.set('X-Studio-Client', '1');
+      opts.headers = h;
+    }
+    return _fetch(url, opts);
+  };
+})();
+"""
+
+STUDIO_JS = CSRF_JS + r"""
 const STUDIO_LS_KEY = 'brownnote.studio.v1';
+
+// #66/#67: file-derived names (library drops, recordings, patch labels)
+// are untrusted — esc() for HTML text/attributes, jsq() (JSON-quote then
+// HTML-escape) for values spliced into inline handlers.
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+function jsq(s) { return esc(JSON.stringify(String(s))); }
 
 const PADS_DEFAULT = [
   { stem: 'bomb',  semi: 0,   key: '1', label: 'BROWN BOMB' },
@@ -1743,7 +2117,8 @@ function studioPadsBoot(stems, defId) {
   if (d) {
     pads[0].stem = d.id;
     pads[0].semi = 0;
-    pads[0].label = String(d.name || d.id).toUpperCase().slice(0, 14);
+    pads[0].label = String(d.name || d.id)
+      .replace(/[<>&"'\\]/g, '').toUpperCase().slice(0, 14);
   }
   return pads;
 }
@@ -2624,34 +2999,34 @@ function buildTracksUI() {
     info.className = 'track-info';
     info.innerHTML = `
       <div class="track-top">
-        <div class="track-name-wrap" onclick="triggerOneShot('${stem.id}')" title="Click to audition stem">
-          <span class="stem-dot" style="background:${stem.color}"></span>
+        <div class="track-name-wrap" onclick="triggerOneShot(${jsq(stem.id)})" title="Click to audition stem">
+          <span class="stem-dot" style="background:${esc(stem.color)}"></span>
           <div>
-            <div class="track-name">${stem.name}</div>
-            <div class="track-sub">"${stem.phrase}" · ${stem.effect}</div>
+            <div class="track-name">${esc(stem.name)}</div>
+            <div class="track-sub">"${esc(stem.phrase)}" · ${esc(stem.effect)}</div>
           </div>
         </div>
         <div class="track-btns">
-          <button class="mini-btn ${st.useDry ? 'dry-on' : ''}" id="btn-dry-${stem.id}" onclick="toggleDry('${stem.id}')" title="Toggle Dry vs Pedaled stem">DRY</button>
-          <button class="mini-btn ${st.mute ? 'mute-on' : ''}" id="btn-mute-${stem.id}" onclick="toggleMute('${stem.id}')">M</button>
-          <button class="mini-btn ${st.solo ? 'solo-on' : ''}" id="btn-solo-${stem.id}" onclick="toggleSolo('${stem.id}')">S</button>
+          <button class="mini-btn ${st.useDry ? 'dry-on' : ''}" id="btn-dry-${esc(stem.id)}" onclick="toggleDry(${jsq(stem.id)})" title="Toggle Dry vs Pedaled stem">DRY</button>
+          <button class="mini-btn ${st.mute ? 'mute-on' : ''}" id="btn-mute-${esc(stem.id)}" onclick="toggleMute(${jsq(stem.id)})">M</button>
+          <button class="mini-btn ${st.solo ? 'solo-on' : ''}" id="btn-solo-${esc(stem.id)}" onclick="toggleSolo(${jsq(stem.id)})">S</button>
         </div>
       </div>
       <div class="track-Sliders">
         <div class="mini-slider">
-          <span>VOL <b id="lbl-gain-${stem.id}">${Math.round(st.gain * 100)}%</b></span>
+          <span>VOL <b id="lbl-gain-${esc(stem.id)}">${Math.round(st.gain * 100)}%</b></span>
           <input type="range" min="0" max="140" value="${Math.round(st.gain * 100)}"
-            oninput="setTrackParam('${stem.id}','gain',this.value/100)" />
+            oninput="setTrackParam(${jsq(stem.id)},'gain',this.value/100)" />
         </div>
         <div class="mini-slider">
-          <span>PAN <b id="lbl-pan-${stem.id}">${formatPan(st.pan)}</b></span>
+          <span>PAN <b id="lbl-pan-${esc(stem.id)}">${formatPan(st.pan)}</b></span>
           <input type="range" min="-100" max="100" value="${Math.round(st.pan * 100)}"
-            oninput="setTrackParam('${stem.id}','pan',this.value/100)" />
+            oninput="setTrackParam(${jsq(stem.id)},'pan',this.value/100)" />
         </div>
         <div class="mini-slider">
-          <span>PITCH <b id="lbl-pitch-${stem.id}">${st.pitch >= 0 ? '+'+st.pitch : st.pitch}st</b></span>
+          <span>PITCH <b id="lbl-pitch-${esc(stem.id)}">${st.pitch >= 0 ? '+'+st.pitch : st.pitch}st</b></span>
           <input type="range" min="-12" max="18" value="${st.pitch}"
-            oninput="setTrackParam('${stem.id}','pitch',parseInt(this.value,10))" />
+            oninput="setTrackParam(${jsq(stem.id)},'pitch',parseInt(this.value,10))" />
         </div>
       </div>
     `;
@@ -3281,7 +3656,7 @@ async function bounceSequenceToMp3() {
     return;
   }
   stText.textContent = `✓ Exported ${data.durationSec}s stereo MP3 (${bpm} BPM, ${bars} bars) -> ${data.rootFile || data.url}`;
-  stLink.innerHTML = `<a href="${data.url}" download style="color:var(--accent-hi);font-weight:700;">⬇ Download MP3</a>`;
+  stLink.innerHTML = `<a href="${esc(data.url)}" download style="color:var(--accent-hi);font-weight:700;">⬇ Download MP3</a>`;
   playInMasterPlayer(data.url);
   renderJukebox(data.tracks || []);
 }
@@ -3313,7 +3688,7 @@ async function renderServerPreset(mode) {
     return;
   }
   stText.textContent = `✓ ${data.log || 'Rendered MP3!'}`;
-  stLink.innerHTML = `<a href="${data.url}" download style="color:var(--accent-hi);font-weight:700;">⬇ Download MP3</a>`;
+  stLink.innerHTML = `<a href="${esc(data.url)}" download style="color:var(--accent-hi);font-weight:700;">⬇ Download MP3</a>`;
   playInMasterPlayer(data.url);
   renderJukebox(data.tracks || []);
 }
@@ -3333,15 +3708,18 @@ function renderJukebox(tracks) {
     item.className = 'jukebox-item';
     item.innerHTML = `
       <div class="jukebox-meta">
-        <span class="tag">${t.kind}</span>
-        <span style="font-weight:600; overflow:hidden; text-overflow:ellipsis;">${t.name}</span>
-        <span style="color:var(--muted); font-size:10px;">${t.sizeKb} KB</span>
+        <span class="tag">${esc(t.kind)}</span>
+        <span style="font-weight:600; overflow:hidden; text-overflow:ellipsis;">${esc(t.name)}</span>
+        <span style="color:var(--muted); font-size:10px;">${esc(t.sizeKb)} KB</span>
       </div>
       <div style="display:flex; gap:6px; align-items:center;">
-        <button class="mini-btn" onclick="playInMasterPlayer('${t.url}')">▶ Play</button>
-        <a href="${t.url}" download style="color:var(--accent-hi); text-decoration:none; font-size:10.5px;">⬇</a>
+        <button class="mini-btn" data-url="${esc(t.url)}">▶ Play</button>
+        <a href="${esc(t.url)}" download style="color:var(--accent-hi); text-decoration:none; font-size:10.5px;">⬇</a>
       </div>
     `;
+    // file-derived names/urls stay out of inline handlers (#67)
+    item.querySelector('button[data-url]').addEventListener(
+      'click', (ev) => playInMasterPlayer(ev.currentTarget.dataset.url));
     list.appendChild(item);
   }
 }
@@ -4044,31 +4422,31 @@ function buildStrips() {
     d.style.setProperty('--stem-color', stem.color);
     const panLbl = Math.abs(st.pan) < 0.05 ? 'C' : (st.pan < 0 ? `${Math.round(-st.pan*100)}L` : `${Math.round(st.pan*100)}R`);
     d.innerHTML = `
-      <div class="strip-name">${stem.id === DEFAULT_STEM ? '★ ' : ''}${stem.name}</div>
-      <div class="strip-sub">"${stem.phrase}"<br>${stem.effect}</div>
+      <div class="strip-name">${stem.id === DEFAULT_STEM ? '★ ' : ''}${esc(stem.name)}</div>
+      <div class="strip-sub">"${esc(stem.phrase)}"<br>${esc(stem.effect)}</div>
       <div class="strip-mid">
-        <input class="fader" id="gain-${stem.id}" type="range" orient="vertical" min="0" max="140" value="${Math.round(st.gain*100)}"
-          oninput="setParam('${stem.id}','gain',this.value/100)" />
-        <canvas class="vu" id="vu-${stem.id}" width="12" height="128"></canvas>
+        <input class="fader" id="gain-${esc(stem.id)}" type="range" orient="vertical" min="0" max="140" value="${Math.round(st.gain*100)}"
+          oninput="setParam(${jsq(stem.id)},'gain',this.value/100)" />
+        <canvas class="vu" id="vu-${esc(stem.id)}" width="12" height="128"></canvas>
       </div>
-      <div class="strip-slider"><span>VOL <b id="vlbl-${stem.id}">${Math.round(st.gain*100)}%</b></span></div>
+      <div class="strip-slider"><span>VOL <b id="vlbl-${esc(stem.id)}">${Math.round(st.gain*100)}%</b></span></div>
       <div class="strip-slider">
-        <span>PAN <b id="plbl-${stem.id}">${panLbl}</b></span>
-        <input id="pan-${stem.id}" type="range" min="-100" max="100" value="${Math.round(st.pan*100)}"
-          oninput="setParam('${stem.id}','pan',this.value/100)" />
+        <span>PAN <b id="plbl-${esc(stem.id)}">${panLbl}</b></span>
+        <input id="pan-${esc(stem.id)}" type="range" min="-100" max="100" value="${Math.round(st.pan*100)}"
+          oninput="setParam(${jsq(stem.id)},'pan',this.value/100)" />
       </div>
       <div class="strip-slider">
-        <span>PITCH <b id="tlbl-${stem.id}">${st.pitch >= 0 ? '+'+st.pitch : st.pitch}st</b></span>
+        <span>PITCH <b id="tlbl-${esc(stem.id)}">${st.pitch >= 0 ? '+'+st.pitch : st.pitch}st</b></span>
         <input type="range" min="-12" max="18" value="${st.pitch}"
-          oninput="setParam('${stem.id}','pitch',parseInt(this.value,10))" />
+          oninput="setParam(${jsq(stem.id)},'pitch',parseInt(this.value,10))" />
       </div>
       <div class="strip-btns">
-        <button class="mini-btn ${st.useDry ? 'dry-on' : ''}" id="btn-useDry-${stem.id}" onclick="toggleFlag('${stem.id}','useDry','dry-on')">DRY</button>
-        <button class="mini-btn ${st.mute ? 'mute-on' : ''}" id="btn-mute-${stem.id}" onclick="toggleFlag('${stem.id}','mute','mute-on')">M</button>
-        <button class="mini-btn ${st.solo ? 'solo-on' : ''}" id="btn-solo-${stem.id}" onclick="toggleFlag('${stem.id}','solo','solo-on')">S</button>
+        <button class="mini-btn ${st.useDry ? 'dry-on' : ''}" id="btn-useDry-${esc(stem.id)}" onclick="toggleFlag(${jsq(stem.id)},'useDry','dry-on')">DRY</button>
+        <button class="mini-btn ${st.mute ? 'mute-on' : ''}" id="btn-mute-${esc(stem.id)}" onclick="toggleFlag(${jsq(stem.id)},'mute','mute-on')">M</button>
+        <button class="mini-btn ${st.solo ? 'solo-on' : ''}" id="btn-solo-${esc(stem.id)}" onclick="toggleFlag(${jsq(stem.id)},'solo','solo-on')">S</button>
       </div>
-      <button class="tap" id="tap-${stem.id}" onclick="tap('${stem.id}')">TAP</button>
-      <button class="mini-btn loop" id="loop-${stem.id}" onclick="toggleLoop('${stem.id}')">LOOP</button>
+      <button class="tap" id="tap-${esc(stem.id)}" onclick="tap(${jsq(stem.id)})">TAP</button>
+      <button class="mini-btn loop" id="loop-${esc(stem.id)}" onclick="toggleLoop(${jsq(stem.id)})">LOOP</button>
     `;
     wrap.appendChild(d);
   }
@@ -4409,7 +4787,10 @@ function applyPadsSlice(pads) {
     if (p.stem !== undefined && !STEMS.find(s => s.id === p.stem)) continue; // unknown stems ignored
     if (p.stem !== undefined) PADS[i].stem = p.stem;
     if (typeof p.semi === 'number') PADS[i].semi = p.semi;
-    if (p.label !== undefined) PADS[i].label = String(p.label);
+    // labels can also arrive via a hand-edited localStorage value —
+    // keep HTML-special chars out even off the server path (#66)
+    if (p.label !== undefined) PADS[i].label =
+      String(p.label).replace(/[<>&"'\\]/g, '').slice(0, 64);
   }
 }
 
@@ -4539,11 +4920,19 @@ function buildPads() {
     const subTxt = pad.semi
       ? `${pad.semi > 0 ? '+' : ''}${pad.semi}st` + (snapped !== pad.semi ? `→${snapped >= 0 ? '+' : ''}${snapped}` : '')
       : (snapped !== pad.semi ? `Q→${snapped >= 0 ? '+' : ''}${snapped}st` : '');
-    el.innerHTML = `
-      <span class="pad-label">${pad.label}</span>
-      <span class="pad-sub">${stem ? stem.name : pad.stem} ${subTxt}</span>
-      <span class="pad-key">${pad.key.toUpperCase()}</span>
-    `;
+    // labels + stem names are patch/file-derived — textContent only (#66/#67)
+    const lbl = document.createElement('span');
+    lbl.className = 'pad-label';
+    lbl.textContent = pad.label;
+    const sub = document.createElement('span');
+    sub.className = 'pad-sub';
+    sub.textContent = (stem ? stem.name : pad.stem) + ' ' + subTxt;
+    const key = document.createElement('span');
+    key.className = 'pad-key';
+    key.textContent = String(pad.key || '').toUpperCase();
+    el.appendChild(lbl);
+    el.appendChild(sub);
+    el.appendChild(key);
     el.addEventListener('pointerdown', (ev) => {
       const r = el.getBoundingClientRect();
       const frac = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height));
@@ -4802,8 +5191,18 @@ function renderUserSamples() {
     nameEl.textContent = s.name;
     nameEl.title = s.name;
     const sel = document.createElement('select');
-    sel.innerHTML = '<option value="">→ pad…</option>' +
-      PADS.map((p, i) => `<option value="${i}" ${p.stem === s.id ? 'selected' : ''}>${i + 1} · ${p.key.toUpperCase()} · ${p.label}</option>`).join('');
+    const opt0 = document.createElement('option');
+    opt0.value = '';
+    opt0.textContent = '→ pad…';
+    sel.appendChild(opt0);
+    // pad labels are patch-derived — build options by DOM, not HTML (#66)
+    PADS.forEach((p, i) => {
+      const o = document.createElement('option');
+      o.value = String(i);
+      o.textContent = `${i + 1} · ${String(p.key || '').toUpperCase()} · ${p.label}`;
+      if (p.stem === s.id) o.selected = true;
+      sel.appendChild(o);
+    });
     sel.onchange = () => assignSample(s.id, sel.value);
     const del = document.createElement('button');
     del.className = 'mini-btn';
@@ -5133,7 +5532,7 @@ function renderLayers() {
     el.innerHTML = layers.map(l => {
       const dots = [...new Set(l.events.map(e => e.stemId))].slice(0, 8).map(id => {
         const st = STEMS.find(s => s.id === id);
-        return `<span class="layer-dot" style="background:${st ? st.color : '#888'}"></span>`;
+        return `<span class="layer-dot" style="background:${st ? esc(st.color) : '#888'}"></span>`;
       }).join('');
       return `<div class="layer-row ${l.muted ? 'muted' : ''}">
         <span class="layer-dots">${dots}</span>
@@ -5190,7 +5589,7 @@ async function exportLoop() {
     const data = await res.json();
     if (!data.ok) { setStatus(`❌ export failed: ${data.error}`); return; }
     setStatus(`✓ loop bounced (${data.durationSec}s) -> ${data.rootFile || data.url} — lossy summary of the loop`);
-    stLink.innerHTML = `<a href="${data.url}" download style="color:var(--accent-hi);font-weight:700;">⬇ Download MP3</a>`;
+    stLink.innerHTML = `<a href="${esc(data.url)}" download style="color:var(--accent-hi);font-weight:700;">⬇ Download MP3</a>`;
   } catch (e) {
     setStatus(`❌ export failed: ${e}`);
   }
@@ -5391,6 +5790,7 @@ LIBRARY_HTML = r"""<!DOCTYPE html>
 <audio id="player" style="display:none"></audio>
 
 <script>
+""" + CSRF_JS + r"""
 const player = document.getElementById('player');
 let LIB = { entries: [], default: null, defaultSet: null };
 let filter = 'all';
@@ -5748,8 +6148,8 @@ function paintJam(st) {
   badge.textContent = (st.state || 'off').toUpperCase();
   badge.className = 'jam-badge ' + (st.state || 'off');
   const stats = [];
-  if (st.host) stats.push(`<span class="stat">server <b>${st.host}</b></span>`);
-  if (st.user) stats.push(`<span class="stat">user <b>${st.user}</b></span>`);
+  if (st.host) stats.push(`<span class="stat">server <b>${esc(st.host)}</b></span>`);
+  if (st.user) stats.push(`<span class="stat">user <b>${esc(st.user)}</b></span>`);
   if (st.bpm) stats.push(`<span class="stat">bpm <b>${st.bpm}</b></span>`);
   if (st.bpi) stats.push(`<span class="stat">bpi <b>${st.bpi}</b> (${st.bars} bars)</span>`);
   if (st.intervalSec) stats.push(`<span class="stat">interval <b>${st.intervalSec}s${st.intervalClamped ? ' (clamped)' : ''}</b></span>`);
@@ -5829,6 +6229,12 @@ EXTRA_PAGES = {
 
 
 if __name__ == "__main__":
+    # #65: the API mutates local state; serving it off-loopback is a
+    # deliberate opt-in, never an accident of env config.
+    if not ALLOW_REMOTE and not _is_loopback_host(HOST):
+        sys.exit(f"refusing to bind non-loopback STUDIO_HOST={HOST!r} "
+                 "— set STUDIO_ALLOW_REMOTE=1 to opt in")
+    _sweep_render_tmp()
     try:
         ensure_stems()
     except Exception as e:
