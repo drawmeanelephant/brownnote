@@ -23,6 +23,12 @@ Boots the studio server on a free loopback port, then checks:
   - SCALE QUANTIZE (#47): the shared JS block on / carries SCALES +
     q(); with node present its minor_penta table (incl. ties snapping
     down and octave wrap) is evaluated for real
+  - JAM BRIDGE (#49): POST /api/jam against a fake kujamba spawns the
+    child with creds in a 0600 config (not argv), tails its transcript
+    for CONFIG (bpm/bpi) and RESULT lines, swaps build/jam/loop.wav to
+    the server interval, rejects a second join, scrubs the password
+    from status, and stop kills the child + wipes build/jam/.  A second
+    server boot with a bogus KUJAMBA path must answer {ok:false}.
 
 Prints "ok: ..." / "bad: ..." so tests/run_tests.sh can case-match the
 verdict like the inline python3 heredocs do.  Exit 0 on pass, 1 on fail.
@@ -39,6 +45,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -47,6 +54,81 @@ import wave
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 BASE = None  # set in main()
+
+# Stand-in for `kujamba join` (fart-app#98): parses the documented argv,
+# reads creds from the --config file, writes a transcript (a CONFIG line,
+# then RESULT counters including a deliberate password leak to prove the
+# server scrubs its own status surfaces), then idles until killed.
+FAKE_KUJAMBA = r'''#!/usr/bin/env python3
+import os, re, sys, time
+
+argv = sys.argv[1:]
+
+def opt(flag):
+    return argv[argv.index(flag) + 1] if flag in argv else None
+
+# presets.sh also honors the KUJAMBA env var for stem synthesis — the
+# render subcommand just has to emit a valid WAV at --out and exit.
+if argv and argv[0] == "render":
+    out = opt("--out")
+    if out:
+        import math, struct, wave
+        with wave.open(out, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(44100)
+            w.writeframes(b"".join(
+                struct.pack("<h", int(8000 * math.sin(
+                    2 * math.pi * 220 * i / 44100)))
+                for i in range(4410)))
+    sys.exit(0)
+
+transcript = opt("--transcript") or "transcript.log"
+pidfile = os.environ.get("FAKE_KUJAMBA_PIDFILE")
+if pidfile:
+    with open(pidfile, "w") as f:
+        f.write(str(os.getpid()))
+
+pw = host = user = ""
+cfg = opt("--config")
+if cfg:
+    try:
+        with open(cfg) as f:
+            for ln in f:
+                m = re.match(r'\s*(\w+)\s*=\s*"(.*)"\s*$', ln)
+                if m:
+                    if m.group(1) == "host":
+                        host = m.group(2)
+                    elif m.group(1) == "user":
+                        user = m.group(2)
+                    elif m.group(1) == "pass":
+                        pw = m.group(2)
+    except OSError:
+        pass
+
+def log(line):
+    with open(transcript, "a") as f:
+        f.write(line + "\n")
+
+need = ("--wav", "--wav-reload", "--pattern", "--reconnect",
+        "--transcript", "--config")
+args_ok = bool(argv) and argv[0] == "join" and all(f in argv for f in need)
+argv_clean = bool(pw) and pw not in " ".join(argv)
+
+log("C>S hello user=%s host=%s" % (user, host))
+time.sleep(0.2)
+log("S>C 0x02 CONFIG bpm=120 bpi=8")
+time.sleep(0.3)
+log("S>C 0x07 RESULT args_ok=%d argv_clean=%d intervals=1 note=%s"
+    % (args_ok, argv_clean, pw))
+time.sleep(0.6)
+log("S>C 0x02 CONFIG bpm=120 bpi=6")
+time.sleep(0.3)
+log("S>C 0x07 RESULT args_ok=%d argv_clean=%d intervals=2 note=%s"
+    % (args_ok, argv_clean, pw))
+while True:
+    time.sleep(0.5)
+'''
 
 
 def free_port():
@@ -67,11 +149,23 @@ def get(path):
 
 
 def post(path, body=b"{}", timeout=10):
+    return post_to(BASE, path, body, timeout)
+
+
+def post_to(base, path, body=b"{}", timeout=10):
     req = urllib.request.Request(
-        BASE + path, data=body, method="POST",
+        base + path, data=body, method="POST",
         headers={"Content-Type": "application/json"})
     try:
         r = urllib.request.urlopen(req, timeout=timeout)
+        return r.status, r.headers.get("Content-Type", ""), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Content-Type", ""), e.read()
+
+
+def get_to(base, path, timeout=10):
+    try:
+        r = urllib.request.urlopen(base + path, timeout=timeout)
         return r.status, r.headers.get("Content-Type", ""), r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.headers.get("Content-Type", ""), e.read()
@@ -141,7 +235,14 @@ def main():
     global BASE
     port = free_port()
     BASE = f"http://127.0.0.1:{port}"
-    env = dict(os.environ, STUDIO_PORT=str(port), STUDIO_HOST="127.0.0.1")
+    fake_dir = tempfile.mkdtemp(prefix="fake-kujamba-")
+    fake_bin = os.path.join(fake_dir, "kujamba")
+    pidfile = os.path.join(fake_dir, "kujamba.pid")
+    with open(fake_bin, "w") as f:
+        f.write(FAKE_KUJAMBA)
+    os.chmod(fake_bin, 0o755)
+    env = dict(os.environ, STUDIO_PORT=str(port), STUDIO_HOST="127.0.0.1",
+               KUJAMBA=fake_bin, FAKE_KUJAMBA_PIDFILE=pidfile)
     proc = subprocess.Popen(
         [sys.executable, os.path.join(ROOT, "scripts", "studio.py")],
         cwd=ROOT, env=env,
@@ -154,7 +255,7 @@ def main():
 
         fails = []
 
-        for path in ("/", "/mixer", "/pads", "/library"):
+        for path in ("/", "/mixer", "/pads", "/library", "/jam"):
             status, ctype, body = get(path)
             if status != 200:
                 fails.append(f"GET {path}: status {status}")
@@ -186,7 +287,7 @@ def main():
         if status == 200:
             for marker in (b"randomizePatch", b"mulberry32",
                            b"I'M FEELING GASSY", b"gassyChaos",
-                           b"gassySave"):
+                           b"gassySave", b'href="/jam"'):
                 if marker not in body:
                     fails.append(f"GET /: missing {marker.decode()!r}")
 
@@ -538,15 +639,213 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
                 except OSError:
                     pass
 
+        # ---- #49: NINJAM jam bridge ----------------------------------
+        # The server was booted with KUJAMBA pointing at the fake (top of
+        # file); a second boot with a bogus path covers missing-binary.
+        jam_dir = os.path.join(ROOT, "build", "jam")
+        jam_cfg = os.path.join(jam_dir, "kujamba.toml")
+        jam_log = os.path.join(jam_dir, "transcript.log")
+        jam_wav = os.path.join(jam_dir, "loop.wav")
+        jam_pass = "s3cret!fart"
+
+        def jam_get(want=None, timeout=40):
+            """Poll GET /api/jam until want(payload) or the timeout."""
+            deadline = time.time() + timeout
+            last = {}
+            while time.time() < deadline:
+                scode, _, jb = get("/api/jam")
+                try:
+                    last = json.loads(jb)
+                except Exception:
+                    last = {}
+                if want is None or want(last):
+                    return last
+                time.sleep(0.3)
+            return last
+
+        status, _, body = get("/api/jam")
+        st = json.loads(body) if body else {}
+        if status != 200 or st.get("ok") is not True or \
+                st.get("state") != "off" or st.get("kujamba") is not True:
+            fails.append(f"GET /api/jam idle: {status} {st!r}")
+
+        # malformed joins 400 before anything is spawned or written
+        for label, jb in (
+            ("non-dict", b"[]"),
+            ("bad host", json.dumps(
+                {"host": "h;rm -rf", "user": "u", "pass": "p"}).encode()),
+            ("empty user", json.dumps(
+                {"host": "h", "user": "", "pass": "p"}).encode()),
+            ("non-string pass", json.dumps(
+                {"host": "h", "user": "u", "pass": 7}).encode()),
+            ("empty join", b"{}"),
+        ):
+            status, _, body = post("/api/jam", jb)
+            p = json.loads(body) if body else {}
+            if status != 400 or p.get("ok") is not False:
+                fails.append(f"jam {label}: status {status} {p!r}")
+        if os.path.exists(jam_cfg):
+            fails.append("jam: rejected joins still wrote kujamba.toml")
+
+        # join: spawns the child + the 0600 creds file
+        jam_seq = {"bpm": 116, "bars": 4, "swing": 0, "tracks": {
+            i: {"mute": True}
+            for i in ("kick", "snare", "hat", "wah", "lead", "bomb")}}
+        if "snare" in stem_ids:
+            jam_seq["tracks"]["snare"] = {
+                "mute": False, "steps": [1] + [0] * 15,
+                "stepPitches": [0] * 16,
+                "pitch": 0, "gain": 0.9, "pan": 0, "trimSec": 0.2}
+        status, _, body = post("/api/jam", json.dumps({
+            "host": "nin.example.org:2049", "user": "stinker",
+            "pass": jam_pass, "seq": jam_seq}).encode())
+        p = json.loads(body) if body else {}
+        if status != 200 or p.get("ok") is not True:
+            fails.append(f"jam join: status {status} {p!r}")
+        if jam_pass.encode() in body:
+            fails.append("jam join: response echoes the password")
+
+        st = jam_get(lambda s: s.get("state") == "live" and s.get("result"),
+                     timeout=30)
+        if st.get("bpm") != 120 or st.get("bpi") != 8:
+            fails.append(f"jam: CONFIG not tailed: {st!r}")
+        res = st.get("result") or {}
+        if res.get("args_ok") != "1":
+            fails.append(f"jam: fake kujamba argv wrong: {res!r}")
+        if res.get("argv_clean") != "1":
+            fails.append("jam: password found on the child's argv")
+        if res.get("note") != "***":
+            fails.append(f"jam: leaked password not scrubbed: {res!r}")
+        if jam_pass in json.dumps(st):
+            fails.append("jam: password in /api/jam status JSON")
+
+        # the creds file is the only place the password may persist
+        if not os.path.isfile(jam_cfg):
+            fails.append("jam: no 0600 kujamba.toml written")
+        else:
+            mode = os.stat(jam_cfg).st_mode & 0o777
+            if mode != 0o600:
+                fails.append(f"jam: kujamba.toml mode {mode:o} (want 600)")
+            cfg_txt = open(jam_cfg).read()
+            if jam_pass not in cfg_txt or "stinker" not in cfg_txt:
+                fails.append("jam: kujamba.toml missing creds")
+        for fn in (os.listdir(jam_dir) if os.path.isdir(jam_dir) else []):
+            if fn in ("kujamba.toml", "transcript.log"):
+                continue   # the transcript is kujamba's own log
+            pth = os.path.join(jam_dir, fn)
+            if os.path.isfile(pth) and \
+                    jam_pass.encode() in open(pth, "rb").read():
+                fails.append(f"jam: password in build/jam/{fn}")
+
+        # a second join while live must not spawn another child
+        status, _, body = post("/api/jam", json.dumps({
+            "host": "other:2049", "user": "x", "pass": "y"}).encode())
+        p = json.loads(body) if body else {}
+        if status != 409 or p.get("ok") is not False:
+            fails.append(f"jam duplicate join: status {status} {p!r}")
+
+        # loop.wav: 44.1 kHz stereo s16 sized to the interval — bpi=8 is
+        # 4.0 s; the fake's second CONFIG (bpi=6, not a multiple of 4)
+        # must re-render to exactly 3.0 s.
+        if stem_ids:
+            st = jam_get(lambda s: s.get("loopSec") == 4.0, timeout=60)
+            if st.get("loopSec") != 4.0 or not os.path.isfile(jam_wav):
+                fails.append(f"jam: no loop.wav after CONFIG: {st!r}")
+            else:
+                with wave.open(jam_wav, "rb") as w:
+                    if (w.getframerate(), w.getnchannels(),
+                            w.getsampwidth()) != (44100, 2, 2):
+                        fails.append("jam: loop.wav not 44.1k stereo s16")
+                    elif w.getnframes() != 176400:
+                        fails.append(f"jam: loop.wav {w.getnframes()} "
+                                     "frames (want 176400)")
+            st = jam_get(lambda s: s.get("loopSec") == 3.0, timeout=60)
+            if st.get("loopSec") != 3.0:
+                fails.append(f"jam: bpi=6 re-render missing: {st!r}")
+            else:
+                with wave.open(jam_wav, "rb") as w:
+                    if w.getnframes() != 132300:
+                        fails.append(f"jam: bpi=6 loop {w.getnframes()} "
+                                     "frames (want 132300)")
+            leftovers = [f for f in os.listdir(jam_dir)
+                         if f.startswith(".tmp-")]
+            if leftovers:
+                fails.append(f"jam: tmp files left behind: {leftovers}")
+
+        # pushing a new seq while live re-renders the loop
+        status, _, body = post("/api/jam", json.dumps(
+            {"seq": jam_seq}).encode(), timeout=60)
+        p = json.loads(body) if body else {}
+        if status != 200 or p.get("ok") is not True or \
+                p.get("state") != "live":
+            fails.append(f"jam seq push: status {status} {p!r}")
+
+        # stop: the child dies and build/jam/ is wiped incl. the creds file
+        status, _, body = post("/api/jam", b'{"stop": true}')
+        p = json.loads(body) if body else {}
+        if status != 200 or p.get("state") != "off":
+            fails.append(f"jam stop: status {status} {p!r}")
+        fake_pid = None
+        try:
+            fake_pid = int(open(pidfile).read().strip())
+        except Exception:
+            fails.append("jam: fake kujamba never wrote its pidfile")
+        if fake_pid:
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                try:
+                    os.kill(fake_pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.2)
+            else:
+                fails.append("jam: stop did not kill the kujamba child")
+        for gone in (jam_cfg, jam_log, jam_wav):
+            if os.path.exists(gone):
+                fails.append(f"jam stop: {os.path.basename(gone)} survived")
+
+        # missing binary: a separate boot with a bogus KUJAMBA path
+        port2 = free_port()
+        base2 = f"http://127.0.0.1:{port2}"
+        env2 = dict(os.environ, STUDIO_PORT=str(port2),
+                    STUDIO_HOST="127.0.0.1",
+                    KUJAMBA=os.path.join(fake_dir, "no-such-kujamba"))
+        proc2 = subprocess.Popen(
+            [sys.executable, os.path.join(ROOT, "scripts", "studio.py")],
+            cwd=ROOT, env=env2,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            if not wait_ready(proc2, port2):
+                fails.append("jam: missing-binary studio did not boot")
+            else:
+                status, _, body = post_to(base2, "/api/jam", json.dumps({
+                    "host": "h", "user": "u", "pass": "p"}).encode())
+                p = json.loads(body) if body else {}
+                if status != 503 or p.get("ok") is not False:
+                    fails.append(f"jam missing kujamba: {status} {p!r}")
+                status, _, body = get_to(base2, "/api/jam")
+                p = json.loads(body) if body else {}
+                if status != 200 or p.get("kujamba") is not False:
+                    fails.append(
+                        f"jam missing kujamba status: {status} {p!r}")
+        finally:
+            proc2.terminate()
+            try:
+                proc2.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc2.kill()
+                proc2.wait()
+
         if fails:
             for f in fails:
                 print(f"bad: {f}")
             return 1
-        print("ok: / /mixer /pads /library serve HTML; "
+        print("ok: / /mixer /pads /library /jam serve HTML; "
               "/api/state sane; unknown POST 404s; "
               "patch save/list/load/delete round-trip + bad names 400; "
               "sample upload/list/delete round-trip + bad WAVs 400, "
-              "over-cap 413; " + render_note)
+              "over-cap 413; jam join/CONFIG/RESULT/stop + missing-binary "
+              "clean against fake kujamba; " + render_note)
         return 0
     finally:
         proc.terminate()
@@ -555,6 +854,12 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+        # belt & suspenders: a leaked fake kujamba would idle forever
+        try:
+            os.kill(int(open(pidfile).read().strip()), 9)
+        except Exception:
+            pass
+        shutil.rmtree(fake_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
