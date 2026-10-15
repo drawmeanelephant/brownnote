@@ -14,13 +14,31 @@ Serves build/studio.html at `/` plus workspace audio files and JSON APIs:
   POST /api/upload-sample?name=<name>
                         -> Content-Type: audio/wav, raw 44.1 kHz mono s16
                            WAV body (10 MiB cap): saves build/user/<slug>.wav
-                           + a stem def and returns it; JSON {name, delete:
-                           true} removes both.  Anything but 44.1k/mono/s16
-                           PCM 400s — the browser resamples before sending.
+                           + a stem def and returns it; JSON {name|id,
+                           delete: true} removes both.  Anything but
+                           44.1k/mono/s16 PCM 400s — the browser resamples
+                           before sending.
   GET  /api/jam       -> NINJAM session status: state, bpm/bpi, last RESULT
   POST /api/jam       -> {host, user, pass[, seq]} spawns kujamba join and
                            feeds it build/jam/loop.wav; {seq} re-renders the
                            loop; {stop: true} leaves and wipes build/jam/
+
+Library (#53): build/library.json is the flatulence manifest — one catalog
+of every usable WAV/MP3 under build/{tune,presets,library,user} and
+recordings/, each entry flagged with the stem it backs when playable.
+build/library/ is the intake dir: a conforming 44.1 kHz mono s16 WAV
+dropped there becomes a lib-* stem on rescan; anything else is cataloged
+raw and can be normalized into a stem by promote.  The manifest's
+"default" names THE fart; /api/state resolves it, falling back to "bomb"
+then the first stem when it's gone.
+
+  GET  /api/library     -> {ok, entries, default, defaultSet}
+  POST /api/library/rescan   -> rebuild the manifest (runs intake)
+  POST /api/library/promote  -> {id, name?} makes a catalog WAV a stem
+  POST /api/library/default  -> {id|null} picks the canonical fart
+  POST /api/library/intake?name=<name>
+                        -> Content-Type: audio/wav — same rules as
+                           upload-sample, but lands in build/library/
 
 Extra views over the same stems (every page carries the same page-nav bar):
   /mixer    -> console desk with VU meters, tap/loop per strip (+ user stems)
@@ -209,27 +227,43 @@ def user_paths(name):
     return wav, js
 
 
-def user_stem_defs():
-    """Every build/user/*.json stem def, flagged user:true."""
+def _stem_defs_in(path, flag):
+    """Every <dir>/*.json stem def whose audio file still exists."""
     defs = []
-    if os.path.isdir(USER_DIR):
-        for fn in sorted(os.listdir(USER_DIR)):
+    if os.path.isdir(path):
+        for fn in sorted(os.listdir(path)):
             if not fn.endswith(".json"):
                 continue
             try:
-                with open(os.path.join(USER_DIR, fn), "r",
+                with open(os.path.join(path, fn), "r",
                           encoding="utf-8") as f:
                     d = json.load(f)
             except Exception:
                 continue   # a corrupt def file shouldn't break /api/state
-            if isinstance(d, dict) and d.get("id") and d.get("url"):
-                d["user"] = True
-                defs.append(d)
+            if not (isinstance(d, dict) and d.get("id") and d.get("url")):
+                continue
+            if not os.path.isfile(
+                    os.path.join(ROOT, d["url"].lstrip("/"))):
+                continue   # the audio is gone — don't offer a dead stem
+            d[flag] = True
+            defs.append(d)
     return defs
 
 
+def user_stem_defs():
+    """Every build/user/*.json stem def, flagged user:true."""
+    return _stem_defs_in(USER_DIR, "user")
+
+
+def stem_defs():
+    synth = [s for s in STEM_DEFS
+             if os.path.isfile(os.path.join(ROOT, s["url"].lstrip("/")))]
+    return synth + user_stem_defs() + lib_stem_defs()
+
+
 def _atomic_write(path, data):
-    fd, tmp = tempfile.mkstemp(dir=USER_DIR, prefix=".tmp-")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
@@ -242,13 +276,9 @@ def _atomic_write(path, data):
         raise
 
 
-def save_user_sample(name, body):
-    """Validate a raw WAV body + name, write build/user/<slug>.{wav,json},
-    and return the stem def.  Raises ValueError for a 400 reply."""
-    paths = user_paths(name)
-    if paths is None:
-        raise ValueError("bad sample name (want [A-Za-z0-9 _-], 1-48 chars)")
-    wav_path, def_path = paths
+def check_sample_wav(body):
+    """Raw WAV body -> frame count; raises ValueError unless it is the
+    44.1 kHz mono s16 shape the pages assume (#43)."""
     try:
         with wave.open(io.BytesIO(body), "rb") as w:
             ch = w.getnchannels()
@@ -263,6 +293,17 @@ def save_user_sample(name, body):
             f"(got {rate} Hz, {ch} channel(s), {width * 8}-bit)")
     if frames <= 0:
         raise ValueError("empty clip")
+    return frames
+
+
+def save_user_sample(name, body):
+    """Validate a raw WAV body + name, write build/user/<slug>.{wav,json},
+    and return the stem def.  Raises ValueError for a 400 reply."""
+    paths = user_paths(name)
+    if paths is None:
+        raise ValueError("bad sample name (want [A-Za-z0-9 _-], 1-48 chars)")
+    wav_path, def_path = paths
+    frames = check_sample_wav(body)
 
     slug = user_slug(name)
     stem_def = {
@@ -296,6 +337,419 @@ def delete_user_sample(name):
             os.unlink(p)
             gone = True
     return gone
+
+
+# Flatulence library (#53): build/library.json catalogs every WAV/MP3
+# under the buckets below.  Stem defs own their backing files; everything
+# else is a catalog-only entry until promote (or a conforming drop into
+# build/library/, which rescan turns into a lib-* stem automatically).
+# "retired" holds stem ids deleted on purpose so intake doesn't resurrect
+# them.
+LIB_DIR = os.path.join(ROOT, "build", "library")
+LIB_MANIFEST = os.path.join(ROOT, "build", "library.json")
+LIB_BUCKETS = (
+    ("tune", os.path.join("build", "tune"), "render"),
+    ("presets", os.path.join("build", "presets"), "render"),
+    ("recordings", "recordings", "recorded"),
+    ("library", os.path.join("build", "library"), "recorded"),
+    ("user", os.path.join("build", "user"), "recorded"),
+)
+
+
+def lib_stem_defs():
+    """Every build/library/*.json stem def, flagged lib:true."""
+    defs = _stem_defs_in(LIB_DIR, "lib")
+    for d in defs:
+        d["user"] = True   # playable on PADS/DESK like recorder samples
+    return defs
+
+
+def lib_slug(text):
+    """Any string -> a kebab-case slug safe for stem ids and filenames."""
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "clip"
+
+
+def _wav_format(path):
+    """-> (rate, channels, sampwidth, frames) for a PCM wav, else None."""
+    try:
+        with wave.open(path, "rb") as w:
+            return (w.getframerate(), w.getnchannels(),
+                    w.getsampwidth(), w.getnframes())
+    except Exception:
+        return None
+
+
+def _decode_wav(path):
+    """PCM wav -> (rate, mono floats).  Raises ValueError."""
+    try:
+        with wave.open(path, "rb") as w:
+            ch, width, rate = (w.getnchannels(), w.getsampwidth(),
+                               w.getframerate())
+            raw = w.readframes(w.getnframes())
+    except Exception as e:
+        raise ValueError(f"not a readable PCM WAV: {e}")
+    n = len(raw) // width
+    if width == 1:
+        vals = [(b - 128) / 128.0 for b in raw]
+    elif width == 2:
+        a = array.array("h")
+        a.frombytes(raw)
+        vals = [v / 32768.0 for v in a]
+    elif width == 3:
+        vals = [int.from_bytes(raw[3 * i:3 * i + 3], "little", signed=True)
+                / 8388608.0 for i in range(n)]
+    elif width == 4:
+        a = array.array("i")
+        a.frombytes(raw)
+        vals = [v / 2147483648.0 for v in a]
+    else:
+        raise ValueError(f"unsupported {width * 8}-bit PCM")
+    if ch > 1:
+        vals = [sum(vals[i:i + ch]) / ch for i in range(0, n - n % ch, ch)]
+    return rate, vals
+
+
+def normalize_wav(src, dst):
+    """Any readable PCM wav -> 44.1 kHz mono s16 at dst (linear interp).
+    Raises ValueError for a 400 reply."""
+    rate, vals = _decode_wav(src)
+    if not vals:
+        raise ValueError("empty clip")
+    if rate != 44100:
+        ratio = rate / 44100.0
+        n = len(vals)
+        out = []
+        for i in range(max(1, int(n / ratio))):
+            pos = i * ratio
+            j = int(pos)
+            frac = pos - j
+            if j + 1 < n:
+                out.append(vals[j] * (1.0 - frac) + vals[j + 1] * frac)
+            elif j < n:
+                out.append(vals[j])
+        vals = out
+    pcm = bytearray()
+    for v in vals:
+        pcm += struct.pack("<h", int(max(-1.0, min(1.0, v)) * 32767))
+    with wave.open(dst, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(44100)
+        w.writeframes(bytes(pcm))
+
+
+def load_manifest():
+    try:
+        with open(LIB_MANIFEST, "r", encoding="utf-8") as f:
+            m = json.load(f)
+        if isinstance(m, dict) and isinstance(m.get("entries"), list):
+            return m
+    except Exception:
+        pass
+    return {"v": 1, "default": None, "retired": [], "entries": []}
+
+
+def save_manifest(m):
+    _atomic_write(LIB_MANIFEST,
+                  (json.dumps(m, indent=2) + "\n").encode("utf-8"))
+
+
+def _lib_def(sid, name, url, dur, kind):
+    return {
+        "id": sid,
+        "name": name,
+        "phrase": "library",
+        "effect": "library WAV" if kind == "recorded" else "promoted render",
+        "url": url,
+        "dryUrl": url,
+        "color": USER_COLORS[zlib.crc32(sid.encode("utf-8")) % len(USER_COLORS)],
+        "trimSec": dur,
+        "defaultGain": 0.9,
+        "defaultPan": 0.0,
+        "defaultPitch": 0,
+        "user": True,
+        "lib": True,
+        "kind": kind,
+    }
+
+
+def scan_library():
+    """Rebuild build/library.json: claim files owned by stem defs, turn
+    conforming build/library/ drops into lib-* stems, then catalog every
+    remaining WAV/MP3 in the buckets.  Cached stats carry over for files
+    whose mtime+size are unchanged."""
+    old = load_manifest()
+    retired = set(old.get("retired") or [])
+    prev = {}
+    for e in old.get("entries") or []:
+        if isinstance(e, dict) and e.get("file"):
+            prev[e["file"]] = e
+
+    claimed = {}
+    for sd in stem_defs():
+        for k in ("url", "dryUrl"):
+            if sd.get(k):
+                claimed[sd[k].lstrip("/")] = sd["id"]
+
+    def probe(rel):
+        """-> (stat, durationSec, loudness, conform) or None."""
+        p = os.path.join(ROOT, rel)
+        try:
+            st = os.stat(p)
+        except OSError:
+            return None
+        e = prev.get(rel)
+        if e and e.get("mtime") == st.st_mtime \
+                and e.get("sizeKb") == round(st.st_size / 1024, 1):
+            return st, e.get("durationSec"), e.get("loudness"), \
+                e.get("conform")
+        conform = False
+        dur = loud = None
+        if rel.endswith(".wav"):
+            fmt = _wav_format(p)
+            if fmt:
+                conform = fmt[:3] == (44100, 1, 2) and fmt[3] > 0
+                try:
+                    rate, vals = _decode_wav(p)
+                except ValueError:
+                    vals = None
+                if vals is not None:
+                    dur = round(len(vals) / float(rate), 3)
+                    loud = round(
+                        max((abs(v) for v in vals), default=0.0), 3)
+        return st, dur, loud, conform
+
+    # intake: a conforming WAV dropped in build/library/ becomes playable
+    if os.path.isdir(LIB_DIR):
+        for fn in sorted(os.listdir(LIB_DIR)):
+            rel = f"build/library/{fn}"
+            if not fn.endswith(".wav") or rel in claimed:
+                continue
+            p = os.path.join(ROOT, rel)
+            fmt = _wav_format(p)
+            if not fmt or fmt[:3] != (44100, 1, 2) or fmt[3] <= 0:
+                continue   # stays catalog-only; promote can normalize it
+            sid = f"lib-{lib_slug(fn[:-4])}"
+            def_path = os.path.join(LIB_DIR, sid + ".json")
+            if sid in retired or os.path.isfile(def_path):
+                continue
+            stem_def = _lib_def(sid, fn[:-4], "/" + rel,
+                                round(fmt[3] / 44100.0, 3), "recorded")
+            _atomic_write(def_path,
+                          (json.dumps(stem_def, indent=2) + "\n")
+                          .encode("utf-8"))
+            claimed[rel] = sid
+
+    entries = []
+    synth_ids = {s["id"] for s in STEM_DEFS}
+    for sd in stem_defs():
+        rel = sd["url"].lstrip("/")
+        got = probe(rel)
+        st, dur, loud, _ = got if got else (None, None, None, None)
+        kind = "synth" if sd["id"] in synth_ids else sd.get("kind",
+                                                           "recorded")
+        entries.append({
+            "id": sd["id"],
+            "name": sd.get("name") or sd["id"],
+            "file": rel,
+            "url": sd["url"],
+            "kind": kind,
+            "stem": sd["id"],
+            "conform": True,
+            "durationSec": dur,
+            "trimSec": sd.get("trimSec"),
+            "loudness": loud,
+            "tags": [kind],
+            "user": bool(sd.get("user")),
+            "createdAt": st.st_mtime if st else None,
+            "mtime": st.st_mtime if st else None,
+            "sizeKb": round(st.st_size / 1024, 1) if st else None,
+        })
+
+    for bucket, rel_dir, kind in LIB_BUCKETS:
+        d = os.path.join(ROOT, rel_dir)
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith((".wav", ".mp3")):
+                continue
+            rel = f"{rel_dir}/{fn}"
+            if rel in claimed:
+                continue
+            got = probe(rel)
+            if got is None:
+                continue
+            st, dur, loud, conform = got
+            entries.append({
+                "id": f"{bucket}-{lib_slug(fn)}",
+                "name": fn,
+                "file": rel,
+                "url": "/" + rel,
+                "kind": kind,
+                "stem": None,
+                "conform": conform,
+                "durationSec": dur,
+                "trimSec": dur,
+                "loudness": loud,
+                "tags": [bucket],
+                "user": False,
+                "createdAt": st.st_mtime,
+                "mtime": st.st_mtime,
+                "sizeKb": round(st.st_size / 1024, 1),
+            })
+
+    manifest = {
+        "v": 1,
+        "builtAt": round(time.time(), 3),
+        "default": old.get("default"),
+        "retired": sorted(retired),
+        "entries": entries,
+    }
+    save_manifest(manifest)
+    return manifest
+
+
+def get_manifest():
+    if os.path.isfile(LIB_MANIFEST):
+        return load_manifest()
+    return scan_library()
+
+
+def resolve_default(manifest, stems):
+    """The manifest's pick when it's still playable, else 'bomb', else
+    the first stem — a dead default must never produce a dead pad."""
+    ids = [s["id"] for s in stems]
+    if manifest.get("default") in ids:
+        return manifest["default"]
+    if "bomb" in ids:
+        return "bomb"
+    return ids[0] if ids else None
+
+
+def promote_entry(entry_id, name=None):
+    """Catalog entry -> lib-* stem.  Conforming WAVs promote in place;
+    the rest get normalized into build/library/lib-<slug>.wav.  Returns
+    the stem id; raises KeyError for an unknown entry, ValueError for a
+    400 reply."""
+    if not isinstance(entry_id, str) or not entry_id:
+        raise ValueError("missing entry 'id'")
+    manifest = scan_library()
+    entry = next((e for e in manifest["entries"]
+                  if e["id"] == entry_id), None)
+    if entry is None:
+        raise KeyError(entry_id)
+    if entry.get("stem"):
+        return entry["stem"]
+    rel = entry["file"]
+    if not rel.endswith(".wav"):
+        raise ValueError("only WAV material promotes — transcode MP3s first")
+    src = os.path.join(ROOT, rel)
+    if name is None:
+        base = os.path.basename(rel).rsplit(".", 1)[0]
+        name = base if SAMPLE_NAME_RE.match(base) else lib_slug(base)
+    if not isinstance(name, str) or not SAMPLE_NAME_RE.match(name):
+        raise ValueError("bad stem name (want [A-Za-z0-9 _-], 1-48 chars)")
+
+    sid = f"lib-{lib_slug(name)}"
+    def_path = os.path.join(LIB_DIR, sid + ".json")
+    if os.path.isfile(def_path):
+        try:
+            with open(def_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            existing = {}
+        if existing.get("url") == entry["url"]:
+            return sid
+        raise ValueError(f"stem id '{sid}' already backs "
+                         f"{existing.get('url')!r} — pass another name")
+
+    os.makedirs(LIB_DIR, exist_ok=True)
+    if entry.get("conform"):
+        url = entry["url"]
+        dur = entry.get("durationSec") or 0
+    else:
+        wav_rel = f"build/library/{sid}.wav"
+        normalize_wav(src, os.path.join(ROOT, wav_rel))
+        url = "/" + wav_rel
+        fmt = _wav_format(os.path.join(ROOT, wav_rel))
+        dur = round(fmt[3] / 44100.0, 3) if fmt else 0
+    stem_def = _lib_def(sid, name.strip(), url, dur, entry["kind"])
+    _atomic_write(def_path,
+                  (json.dumps(stem_def, indent=2) + "\n").encode("utf-8"))
+    scan_library()
+    m = load_manifest()
+    if sid in set(m.get("retired") or []):
+        m["retired"] = sorted(set(m["retired"]) - {sid})
+        save_manifest(m)
+    return sid
+
+
+def set_default_stem(stem_id):
+    m = get_manifest()
+    if stem_id is None:
+        m["default"] = None
+    else:
+        if stem_id not in {s["id"] for s in stem_defs()}:
+            raise ValueError(f"'{stem_id}' is not a playable stem")
+        m["default"] = stem_id
+    save_manifest(m)
+    return resolve_default(m, stem_defs())
+
+
+def delete_stem(stem_id):
+    """Remove a stem def by id (user or library) plus any audio file the
+    def owns — a WAV sharing the def's basename in the same dir.  The id
+    is retired so intake never resurrects it."""
+    if not isinstance(stem_id, str):
+        return False
+    for d in (USER_DIR, LIB_DIR):
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".json"):
+                continue
+            p = os.path.join(d, fn)
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    doc = json.load(f)
+            except Exception:
+                continue
+            if not isinstance(doc, dict) or doc.get("id") != stem_id:
+                continue
+            os.unlink(p)
+            wav = os.path.join(os.path.dirname(p), fn[:-5] + ".wav")
+            if os.path.isfile(wav):
+                os.unlink(wav)
+            m = load_manifest()
+            m["retired"] = sorted(set(m.get("retired") or []) | {stem_id})
+            save_manifest(m)
+            scan_library()   # drop the stale stem pointer from its entry
+            return True
+    return False
+
+
+def intake_sample(name, body):
+    """HTTP intake: a conforming WAV -> build/library/<slug>.wav, which
+    the rescan below turns into a lib-* stem.  Raises ValueError for a
+    400 reply."""
+    if not isinstance(name, str) or not SAMPLE_NAME_RE.match(name):
+        raise ValueError("bad sample name (want [A-Za-z0-9 _-], 1-48 chars)")
+    check_sample_wav(body)
+    slug = lib_slug(user_slug(name))
+    sid = f"lib-{slug}"
+    wav_path = os.path.join(LIB_DIR, slug + ".wav")
+    _atomic_write(wav_path, body)
+    def_path = os.path.join(LIB_DIR, sid + ".json")
+    if os.path.isfile(def_path):
+        os.unlink(def_path)   # rewrite so trimSec tracks the new take
+    m = load_manifest()
+    retired = set(m.get("retired") or [])
+    if sid in retired:
+        retired.discard(sid)
+        m["retired"] = sorted(retired)
+        save_manifest(m)
+    scan_library()
+    return sid
 
 
 def _sequence_mix(payload, tail_sec):
@@ -874,9 +1328,21 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                 ensure_stems()
             except Exception as e:
                 return self._send_json(503, {"ok": False, "error": str(e)})
+            stems = stem_defs()
             return self._send_json(200, {
-                "stems": STEM_DEFS + user_stem_defs(),
+                "stems": stems,
                 "tracks": list_tracks(),
+                "default": resolve_default(get_manifest(), stems),
+            })
+        if parsed.path == "/api/library":
+            m = get_manifest()
+            return self._send_json(200, {
+                "ok": True,
+                "v": m.get("v", 1),
+                "builtAt": m.get("builtAt"),
+                "default": resolve_default(m, stem_defs()),
+                "defaultSet": m.get("default"),
+                "entries": m["entries"],
             })
         if parsed.path == "/api/jam":
             return self._send_json(200, jam_status())
@@ -937,6 +1403,12 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                 "ok": False,
                 "error": "POST raw WAV with Content-Type: audio/wav, or "
                          "JSON {\"name\": ..., \"delete\": true}"})
+        sid = payload.get("id")
+        if sid is not None:
+            if not delete_stem(sid):
+                return self._send_json(404, {
+                    "ok": False, "error": f"no stem with id '{sid}'"})
+            return self._send_json(200, {"ok": True, "deleted": sid})
         name = payload.get("name")
         if user_paths(name) is None:
             return self._send_json(400, {
@@ -969,15 +1441,41 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
             "error": "expected {host, user, pass[, seq]} to join, "
                      "{seq} to push a new loop, or {stop: true} to leave"})
 
+    def _handle_library_intake(self, parsed):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length > SAMPLE_MAX_BYTES:
+            return self._send_json(413, {
+                "ok": False, "error": "sample body over the 10 MiB cap"})
+        raw_body = self.rfile.read(length) if length > 0 else b""
+        ctype = (self.headers.get("Content-Type") or "")
+        ctype = ctype.split(";")[0].strip().lower()
+        if ctype not in USER_WAV_TYPES:
+            return self._send_json(400, {
+                "ok": False,
+                "error": "expected a WAV body (Content-Type: audio/wav)"})
+        name = urllib.parse.parse_qs(parsed.query).get("name", [""])[0]
+        try:
+            sid = intake_sample(name, raw_body)
+        except ValueError as e:
+            return self._send_json(400, {"ok": False, "error": str(e)})
+        stem = next((s for s in stem_defs() if s["id"] == sid), None)
+        return self._send_json(200, {"ok": True, "stem": stem})
+
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         length = int(self.headers.get("Content-Length", "0"))
         if parsed.path == "/api/upload-sample":
             return self._handle_upload_sample(parsed)
+        if parsed.path == "/api/library/intake":
+            return self._handle_library_intake(parsed)
         if parsed.path == "/api/patch" and length > PATCH_MAX_BYTES:
             return self._send_json(400, {"ok": False, "error": "patch body over the 256 KiB cap"})
         if parsed.path == "/api/jam" and length > JAM_MAX_BYTES:
             return self._send_json(400, {"ok": False, "error": "jam body over the 64 KiB cap"})
+        if parsed.path in ("/api/library/rescan",
+                           "/api/library/promote", "/api/library/default") \
+                and length > PATCH_MAX_BYTES:
+            return self._send_json(400, {"ok": False, "error": "body over the 256 KiB cap"})
         raw_body = self.rfile.read(length) if length > 0 else b"{}"
         try:
             payload = json.loads(raw_body.decode("utf-8"))
@@ -1053,6 +1551,38 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                 save_patch(name, patch)
                 return self._send_json(200, {"ok": True, "name": name, "patches": list_patches()})
 
+            if parsed.path == "/api/library/rescan":
+                m = scan_library()
+                return self._send_json(200, {
+                    "ok": True,
+                    "entries": len(m["entries"]),
+                    "default": resolve_default(m, stem_defs()),
+                })
+
+            if parsed.path == "/api/library/promote":
+                try:
+                    sid = promote_entry(payload.get("id"),
+                                        payload.get("name"))
+                except KeyError:
+                    return self._send_json(404, {
+                        "ok": False,
+                        "error": f"no library entry '{payload.get('id')}'"})
+                except ValueError as e:
+                    return self._send_json(400, {"ok": False, "error": str(e)})
+                stem = next((s for s in stem_defs() if s["id"] == sid), None)
+                return self._send_json(200, {"ok": True, "stem": stem})
+
+            if parsed.path == "/api/library/default":
+                sid = payload.get("id")
+                if sid is not None and not isinstance(sid, str):
+                    return self._send_json(400, {
+                        "ok": False, "error": "default 'id' must be a stem id or null"})
+                try:
+                    resolved = set_default_stem(sid)
+                except ValueError as e:
+                    return self._send_json(400, {"ok": False, "error": str(e)})
+                return self._send_json(200, {"ok": True, "default": resolved})
+
             return self._send_json(404, {"ok": False, "error": "unknown endpoint"})
         except Exception as e:
             return self._send_json(500, {"ok": False, "error": str(e)})
@@ -1124,6 +1654,25 @@ function studioDeskDefaults(stems) {
     };
   }
   return { master: 0.9, channels };
+}
+
+// #53: the manifest's canonical fart owns pad 1 on a fresh kit; pads and
+// loop events whose stem vanished fall back to it — never a dead pad.
+function studioPadsBoot(stems, defId) {
+  const pads = PADS_DEFAULT.map(p => Object.assign({}, p));
+  const d = (stems || []).find(s => s.id === defId) || (stems || [])[0];
+  if (d) {
+    pads[0].stem = d.id;
+    pads[0].semi = 0;
+    pads[0].label = String(d.name || d.id).toUpperCase().slice(0, 14);
+  }
+  return pads;
+}
+
+function studioStemById(stems, defId, id) {
+  return stems.find(s => s.id === id)
+      || stems.find(s => s.id === defId)
+      || stems[0] || null;
 }
 
 // ===== scale-quantize block start (#47) =====
@@ -2779,7 +3328,7 @@ async function refreshState() {
     // a complete whole-studio snapshot.
     const seed = {};
     if (!stored.desk) seed.desk = studioDeskDefaults(STEMS);
-    if (!stored.pads) seed.pads = studioPadsSerialize(PADS_DEFAULT);
+    if (!stored.pads) seed.pads = studioPadsSerialize(studioPadsBoot(data.stems, data.default));
     if (!('key' in stored)) seed.key = studioKeyDefault();
     if (!('seed' in stored)) seed.seed = null;
     if (Object.keys(seed).length) studioMerge(seed);
@@ -3208,6 +3757,7 @@ MIXER_HTML = r"""<!DOCTYPE html>
 <script>
 """ + STUDIO_JS + MIDI_JS + r"""
 let STEMS = [];
+let DEFAULT_STEM = null;
 let ch = {};
 let audioCtx = null;
 let masterGain = null, masterAnalyser = null;
@@ -3415,7 +3965,7 @@ function buildStrips() {
     d.style.setProperty('--stem-color', stem.color);
     const panLbl = Math.abs(st.pan) < 0.05 ? 'C' : (st.pan < 0 ? `${Math.round(-st.pan*100)}L` : `${Math.round(st.pan*100)}R`);
     d.innerHTML = `
-      <div class="strip-name">${stem.name}</div>
+      <div class="strip-name">${stem.id === DEFAULT_STEM ? '★ ' : ''}${stem.name}</div>
       <div class="strip-sub">"${stem.phrase}"<br>${stem.effect}</div>
       <div class="strip-mid">
         <input class="fader" id="gain-${stem.id}" type="range" orient="vertical" min="0" max="140" value="${Math.round(st.gain*100)}"
@@ -3490,6 +4040,7 @@ async function init() {
   const res = await fetch('/api/state');
   const data = await res.json();
   STEMS = data.stems;
+  DEFAULT_STEM = data.default || null;
   for (const s of STEMS) {
     ch[s.id] = {
       gain: s.defaultGain, pan: s.defaultPan, pitch: s.defaultPitch,
@@ -3769,6 +4320,7 @@ PADS_HTML = r"""<!DOCTYPE html>
 // The pad map is the 'pads' slice of brownnote.studio.v1 — serialized as
 // {stem, semi, label} per slot; 'key' stays a page-local default.
 let PADS = PADS_DEFAULT.map(p => Object.assign({}, p));
+let DEFAULT_STEM = null;
 
 function applyPadsSlice(pads) {
   if (!Array.isArray(pads)) return;
@@ -3801,6 +4353,10 @@ function setMidiBase(v) {
   try { localStorage.setItem('brownnote.midiBaseNote', String(midiBase)); } catch (e) {}
   document.getElementById('statusText').textContent =
     `🎹 MIDI base note ${midiBase} — listening on notes ${midiBase}–${midiBase + 15}, all channels.`;
+}
+
+function stemById(id) {
+  return studioStemById(STEMS, DEFAULT_STEM, id);
 }
 
 function ensureAudio() {
@@ -3845,7 +4401,7 @@ async function hitPad(i, vel) {
   ensureAudio();
   const tHit = audioCtx.currentTime;
   const pad = PADS[i];
-  const stem = STEMS.find(s => s.id === pad.stem);
+  const stem = stemById(pad.stem);
   if (!stem) return;
   if (loopRecording && take) {
     take.events.push({
@@ -3894,7 +4450,7 @@ function buildPads() {
   const grid = document.getElementById('padGrid');
   grid.innerHTML = '';
   PADS.forEach((pad, i) => {
-    const stem = STEMS.find(s => s.id === pad.stem);
+    const stem = stemById(pad.stem);
     const el = document.createElement('div');
     el.className = 'pad';
     el.id = `pad-${i}`;
@@ -4202,7 +4758,7 @@ async function deleteSample(stemId, name) {
     const res = await fetch('/api/upload-sample', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, delete: true }),
+      body: JSON.stringify({ id: stemId, name, delete: true }),
     });
     data = await res.json();
     if (!res.ok || !data.ok) {
@@ -4272,7 +4828,7 @@ function quantizeStep(t) {
 }
 
 function firePadEvent(ev, when) {
-  const stem = STEMS.find(s => s.id === ev.stemId);
+  const stem = stemById(ev.stemId);
   if (!stem) return;
   const buf = trimBufs[(allDry ? stem.dryUrl : stem.url) + '|' + stem.trimSec];
   if (!buf) { padBuffer(stem); return; }  // warm for the next pass
@@ -4628,6 +5184,8 @@ async function init() {
   const res = await fetch('/api/state');
   const data = await res.json();
   STEMS = data.stems;
+  DEFAULT_STEM = data.default || (STEMS[0] && STEMS[0].id) || null;
+  PADS = studioPadsBoot(STEMS, DEFAULT_STEM);
   const stored = studioRead();
   studioKeyApply();
   refreshKeyBadge();
@@ -4706,11 +5264,11 @@ LIBRARY_HTML = r"""<!DOCTYPE html>
   }
   .crate-btns { display: flex; align-items: center; gap: 6px; }
   .crate-btns a { color: var(--accent-hi); text-decoration: none; font-size: 10.5px; }
-  .kind-Song { --kind-color: #a855f7; }
-  .kind-FX-Preset { --kind-color: #e07a3c; }
-  .kind-Custom { --kind-color: #4ecdc4; }
-  .kind-Recording { --kind-color: #22c55e; }
-  .kind-Sample { --kind-color: #38bdf8; }
+  .crate.is-default { border-color: var(--yellow); box-shadow: 0 0 12px rgba(245,158,11,0.25); }
+  .def-star { color: var(--yellow); font-weight: 700; }
+  .kind-synth { --kind-color: #e07a3c; }
+  .kind-recorded { --kind-color: #22c55e; }
+  .kind-render { --kind-color: #4ecdc4; }
 </style>
 </head>
 <body>
@@ -4719,8 +5277,8 @@ LIBRARY_HTML = r"""<!DOCTYPE html>
   <div class="brand">
     <div class="logo-badge">💨</div>
     <div>
-      <h1>BROWNNOTE CRATES // RENDERED LIBRARY</h1>
-      <p>Every MP3 &amp; WAV in build/presets + recordings/ — waveforms drawn on first decode</p>
+      <h1>BROWNNOTE CRATES // FLATULENCE LIBRARY</h1>
+      <p>build/library.json — every usable WAV/MP3 cataloged. Drop a 44.1k mono s16 WAV in build/library/ and hit ↻ to make it a stem; other WAVs promote in one click.</p>
     </div>
   </div>
   <nav class="page-nav">
@@ -4736,13 +5294,13 @@ LIBRARY_HTML = r"""<!DOCTYPE html>
   <div class="card-header">
     <div class="filter-bar" id="filterBar">
       <button class="filter-btn active" data-kind="all" onclick="setFilter('all', this)">All</button>
-      <button class="filter-btn" data-kind="Song" onclick="setFilter('Song', this)">Songs</button>
-      <button class="filter-btn" data-kind="FX Preset" onclick="setFilter('FX Preset', this)">FX Presets</button>
-      <button class="filter-btn" data-kind="Custom" onclick="setFilter('Custom', this)">Custom</button>
-      <button class="filter-btn" data-kind="Recording" onclick="setFilter('Recording', this)">Recordings</button>
-      <button class="filter-btn" data-kind="Sample" onclick="setFilter('Sample', this)">Samples</button>
+      <button class="filter-btn" data-kind="stem" onclick="setFilter('stem', this)">Stems</button>
+      <button class="filter-btn" data-kind="synth" onclick="setFilter('synth', this)">Synth</button>
+      <button class="filter-btn" data-kind="recorded" onclick="setFilter('recorded', this)">Recorded</button>
+      <button class="filter-btn" data-kind="render" onclick="setFilter('render', this)">Renders</button>
+      <button class="filter-btn" data-kind="raw" onclick="setFilter('raw', this)">Raw</button>
     </div>
-    <button class="mini-btn" onclick="loadCrates()">↻ Refresh</button>
+    <button class="mini-btn" onclick="rescanLibrary()">↻ Rescan</button>
   </div>
   <div class="crate-grid" id="crateGrid"></div>
   <div class="status-banner" id="statusText">Digging the crates…</div>
@@ -4752,13 +5310,13 @@ LIBRARY_HTML = r"""<!DOCTYPE html>
 
 <script>
 const player = document.getElementById('player');
-let TRACKS = [];
+let LIB = { entries: [], default: null, defaultSet: null };
 let filter = 'all';
 let audioCtx = null;
 const peaks = {};   // url -> Float32Array of peaks 0..1
 let playingUrl = null;
 
-const KIND_CLASS = { 'Song': 'kind-Song', 'FX Preset': 'kind-FX-Preset', 'Custom': 'kind-Custom', 'Recording': 'kind-Recording', 'Sample': 'kind-Sample' };
+const KIND_CLASS = { synth: 'kind-synth', recorded: 'kind-recorded', render: 'kind-render' };
 
 function ensureAudio() {
   if (!audioCtx) {
@@ -4858,40 +5416,111 @@ function setFilter(kind, btn) {
   renderCrates();
 }
 
+function crateShown(e) {
+  if (filter === 'all') return true;
+  if (filter === 'stem') return !!e.stem;
+  if (filter === 'raw') return !e.stem;
+  return e.kind === filter;
+}
+
+function metaLine(e) {
+  const bits = [];
+  if (typeof e.durationSec === 'number') bits.push(`${e.durationSec}s`);
+  if (typeof e.sizeKb === 'number') bits.push(`${e.sizeKb} KB`);
+  if (typeof e.loudness === 'number') bits.push(`peak ${e.loudness}`);
+  if (!e.stem && !e.conform) bits.push('raw — promote normalizes');
+  return bits.join(' · ');
+}
+
 function renderCrates() {
   const grid = document.getElementById('crateGrid');
   grid.innerHTML = '';
-  const shown = TRACKS.filter(t => filter === 'all' || t.kind === filter);
+  const shown = LIB.entries.filter(crateShown);
+  const def = LIB.entries.find(e => e.stem === LIB.default);
   document.getElementById('statusText').textContent =
-    shown.length ? `${shown.length} record${shown.length === 1 ? '' : 's'} in the crate.` : 'Crate is empty — go render something on the SEQ page.';
-  for (const t of shown) {
+    (shown.length ? `${shown.length} record${shown.length === 1 ? '' : 's'} in the crate.` : 'Crate is empty — go render something on the SEQ page.')
+    + (def ? ` · THE fart: ★ ${def.name}` : ' · no default fart resolved');
+  for (const e of shown) {
     const el = document.createElement('div');
-    el.className = `crate ${KIND_CLASS[t.kind] || ''}`;
-    el.dataset.url = t.url;
+    el.className = `crate ${KIND_CLASS[e.kind] || ''}` +
+      (e.stem === LIB.default ? ' is-default' : '');
+    el.dataset.url = e.url;
+    const isDef = e.stem && e.stem === LIB.default;
+    const promoteBtn = (!e.stem && e.file.endsWith('.wav'))
+      ? `<button class="mini-btn" onclick="promoteEntry('${e.id}')">＋ STEM</button>` : '';
+    const starBtn = (e.stem && !isDef)
+      ? `<button class="mini-btn" title="make THE default fart" onclick="setDefault('${e.stem}')">★</button>` : '';
+    const stemTag = e.stem
+      ? `<span class="tag">${isDef ? '<span class="def-star">★ DEFAULT</span>' : 'STEM'}</span>` : '';
     el.innerHTML = `
       <div class="crate-top">
-        <span class="crate-name" title="${t.name}">${t.name}</span>
-        <span class="tag">${t.kind}</span>
+        <span class="crate-name" title="${e.name}">${e.name}</span>
+        <span class="tag">${e.kind}</span>${stemTag}
       </div>
-      <canvas class="wave" data-url="${t.url}" width="300" height="44"></canvas>
+      <canvas class="wave" data-url="${e.url}" width="300" height="44"></canvas>
       <div class="crate-top">
-        <div class="crate-meta"><span>${t.sizeKb} KB</span></div>
+        <div class="crate-meta"><span>${metaLine(e)}</span></div>
         <div class="crate-btns">
-          <button class="mini-btn play-btn" onclick="toggleTrack('${t.url}')">▶</button>
-          <a href="${t.url}" download>⬇</a>
+          ${promoteBtn}${starBtn}
+          <button class="mini-btn play-btn" onclick="toggleTrack('${e.url}')">▶</button>
+          <a href="${e.url}" download>⬇</a>
         </div>
       </div>
     `;
     grid.appendChild(el);
-    drawWave(t.url, 0);
+    drawWave(e.url, 0);
   }
   markPlaying();
 }
 
-async function loadCrates() {
-  const res = await fetch('/api/state');
+async function promoteEntry(id) {
+  const res = await fetch('/api/library/promote', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
   const data = await res.json();
-  TRACKS = data.tracks || [];
+  if (!res.ok || !data.ok) {
+    document.getElementById('statusText').textContent =
+      `❌ promote failed: ${data.error || `HTTP ${res.status}`}`;
+    return;
+  }
+  await loadCrates();
+  document.getElementById('statusText').textContent =
+    `✓ "${data.stem.name}" is a stem (${data.stem.id}) — playable on PADS/DESK.`;
+}
+
+async function setDefault(stemId) {
+  const res = await fetch('/api/library/default', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: stemId }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    document.getElementById('statusText').textContent =
+      `❌ default failed: ${data.error || `HTTP ${res.status}`}`;
+    return;
+  }
+  await loadCrates();
+}
+
+async function rescanLibrary() {
+  document.getElementById('statusText').textContent = 'Rescanning…';
+  const res = await fetch('/api/library/rescan', { method: 'POST' });
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    document.getElementById('statusText').textContent =
+      `❌ rescan failed: ${data.error || `HTTP ${res.status}`}`;
+    return;
+  }
+  await loadCrates();
+}
+
+async function loadCrates() {
+  const res = await fetch('/api/library');
+  const data = await res.json();
+  LIB = data.ok ? data : { entries: [], default: null };
   renderCrates();
 }
 
@@ -5114,7 +5743,6 @@ if __name__ == "__main__":
         ensure_stems()
     except Exception as e:
         print(f"warning: stem build failed ({e}); /api/state will retry and 503", file=sys.stderr)
-
     # A SIGKILLed previous run leaves its creds file + transcript behind.
     _jam_clean_dir()
 
@@ -5127,6 +5755,10 @@ if __name__ == "__main__":
     if hasattr(signal, "SIGHUP"):   # terminal close must not orphan the child
         signal.signal(signal.SIGHUP, _shutdown_jam)
 
+    try:
+        scan_library()
+    except Exception as e:
+        print(f"warning: library scan failed ({e}); /api/library will retry", file=sys.stderr)
     with ReusableTCPServer((HOST, PORT), StudioHandler) as httpd:
         print(f"Brownnote Studio listening on http://{HOST}:{PORT}", flush=True)
         print("  pages: / (seq+mixer)  /mixer (desk)  /pads (MPC)  /library (crates)  /jam (nin)", flush=True)
