@@ -15,6 +15,11 @@ Boots the studio server on a free loopback port, then checks:
     WAV + stem def under build/user/, /api/state lists it user:true,
     the wav is served, stereo/48 kHz/float/pathy/non-WAV uploads 400,
     over-cap bodies 413, and {name, delete:true} removes both files
+  - LIBRARY (#53): GET /api/library returns the manifest + a resolved
+    default; a conforming WAV dropped in build/library/ becomes a lib-*
+    stem on rescan; a non-conforming drop stays catalog-only until
+    promote normalizes it; intake 400s bad WAVs; deleting the default
+    falls back to a playable stem and rescan can't resurrect it
   - POST /api/render-sequence       -> when stems are available: a length-16
                                      steps grid repeats identically every
                                      bar, while a length-16*bars grid places
@@ -867,6 +872,298 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
                 proc2.kill()
                 proc2.wait()
 
+        # ---- #53: flatulence library -----------------------------------
+        # build/library.json is the catalog; build/library/ is the intake
+        # dir.  A conforming WAV dropped there becomes a lib-* stem on
+        # rescan, a non-conforming one is cataloged raw until promote
+        # normalizes it, and the manifest's default falls back cleanly
+        # when its stem is deleted.
+        lib_dir = os.path.join(ROOT, "build", "library")
+        os.makedirs(lib_dir, exist_ok=True)
+        lwav = os.path.join(lib_dir, "smoke_drop.wav")
+        bwav = os.path.join(lib_dir, "smoke_bad.wav")
+        ldef = os.path.join(lib_dir, "lib-smoke-drop.json")
+        bdef = os.path.join(lib_dir, "lib-smoke-bad.json")
+        bwav_norm = os.path.join(lib_dir, "lib-smoke-bad.wav")
+        iwav = os.path.join(lib_dir, "smoke-intake.wav")
+        idef = os.path.join(lib_dir, "lib-smoke-intake.json")
+        cwav = os.path.join(lib_dir, "smoke_clobber.wav")
+        zwav = os.path.join(lib_dir, "lib-zep-take.wav")
+        zdef = os.path.join(lib_dir, "lib-zep-take.json")
+        twav = os.path.join(ROOT, "build", "user", "smoke_trunc.wav")
+        tdef = os.path.join(ROOT, "build", "user", "smoke_trunc.json")
+        lib_files = (lwav, bwav, ldef, bdef, bwav_norm, iwav, idef,
+                     cwav, zwav, zdef, twav, tdef)
+
+        def unretired(r):
+            return not str(r).startswith("lib-smoke-") \
+                and r != "lib-zep-take"
+
+        prev_default = None
+        lib_manifest = os.path.join(ROOT, "build", "library.json")
+
+        def lib_entries():
+            st_, _, b_ = get("/api/library")
+            try:
+                m_ = json.loads(b_)
+            except Exception:
+                m_ = {}
+            return st_, m_
+
+        def find_entry(man, **kw):
+            for e in man.get("entries") or []:
+                if all(e.get(k) == v for k, v in kw.items()):
+                    return e
+            return None
+
+        try:
+            status, _, body = get("/api/library")
+            man = json.loads(body) if body else {}
+            if status == 200 and isinstance(man, dict):
+                prev_default = man.get("defaultSet")
+            # retire tombstones persist in the manifest — clear ours so a
+            # previous run can't poison this one
+            for p in lib_files:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+            try:
+                with open(lib_manifest, "r", encoding="utf-8") as f:
+                    m0 = json.load(f)
+                m0["retired"] = [
+                    r for r in m0.get("retired") or [] if unretired(r)]
+                with open(lib_manifest, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(m0))
+            except Exception:
+                pass
+
+            if status != 200 or man.get("ok") is not True \
+                    or not isinstance(man.get("entries"), list):
+                fails.append(f"GET /api/library: status {status} {man!r}")
+            else:
+                if stem_ids:
+                    by_stem = {e.get("stem") for e in man["entries"]}
+                    for sid in stem_ids:
+                        if sid not in by_stem:
+                            fails.append(f"/api/library: stem {sid!r} "
+                                         "not backed by an entry")
+                    if man.get("default") not in stem_ids:
+                        fails.append("/api/library: resolved default "
+                                     f"{man.get('default')!r} not playable")
+
+            # conforming WAV dropped into the intake dir -> stem on rescan
+            with open(lwav, "wb") as f:
+                f.write(wav_bytes())
+            status, _, body = post("/api/library/rescan")
+            payload = json.loads(body) if body else {}
+            if status != 200 or payload.get("ok") is not True:
+                fails.append(f"POST /api/library/rescan: status {status} "
+                             f"{payload!r}")
+            status, man = lib_entries()
+            e = find_entry(man, file="build/library/smoke_drop.wav")
+            if not e or e.get("stem") != "lib-smoke-drop":
+                fails.append(f"intake drop not promoted: {e!r}")
+            elif not os.path.isfile(ldef):
+                fails.append("intake: stem def file missing")
+            status, _, body = get("/api/state")
+            st = json.loads(body) if body else {}
+            if status == 200 and not any(
+                    s.get("id") == "lib-smoke-drop"
+                    for s in st.get("stems") or []):
+                fails.append("/api/state: intake stem not playable")
+
+            # non-conforming drop catalogs raw; promote normalizes it
+            with open(bwav, "wb") as f:
+                f.write(wav_bytes(rate=48000, ch=2))
+            post("/api/library/rescan")
+            _, man = lib_entries()
+            e = find_entry(man, file="build/library/smoke_bad.wav")
+            if not e or e.get("stem") is not None \
+                    or e.get("conform") is not False:
+                fails.append(f"non-conforming drop should stay raw: {e!r}")
+            else:
+                status, _, body = post("/api/library/promote", json.dumps(
+                    {"id": e["id"]}).encode())
+                payload = json.loads(body) if body else {}
+                stem = payload.get("stem") or {}
+                if status != 200 or stem.get("id") != "lib-smoke-bad":
+                    fails.append(f"promote: status {status} {payload!r}")
+                elif not os.path.isfile(bwav_norm) \
+                        or not os.path.isfile(bdef):
+                    fails.append("promote: normalized wav/def missing")
+                else:
+                    with wave.open(bwav_norm, "rb") as w:
+                        if (w.getframerate(), w.getnchannels(),
+                                w.getsampwidth()) != (44100, 1, 2):
+                            fails.append("promote: normalized wav not "
+                                         "44.1k/mono/s16")
+
+            # promote rejects unknown ids and keeps name validation
+            status, _, _ = post("/api/library/promote", json.dumps(
+                {"id": "no-such-entry"}).encode())
+            if status != 404:
+                fails.append(f"promote unknown: status {status} (want 404)")
+            _, man = lib_entries()
+            mp3 = next((x for x in man.get("entries") or []
+                        if x.get("file", "").endswith(".mp3")), None)
+            if mp3:
+                status, _, _ = post("/api/library/promote", json.dumps(
+                    {"id": mp3["id"]}).encode())
+                if status != 400:
+                    fails.append(f"promote mp3: status {status} (want 400)")
+
+            # pick the dropped fart as THE default; /api/state agrees
+            status, _, body = post("/api/library/default", json.dumps(
+                {"id": "lib-smoke-drop"}).encode())
+            payload = json.loads(body) if body else {}
+            if status != 200 or payload.get("default") != "lib-smoke-drop":
+                fails.append(f"set default: status {status} {payload!r}")
+            status, _, body = get("/api/state")
+            st = json.loads(body) if body else {}
+            if status == 200 and st.get("default") != "lib-smoke-drop":
+                fails.append("/api/state: default does not follow "
+                             f"manifest ({st.get('default')!r})")
+            status, _, _ = post("/api/library/default", json.dumps(
+                {"id": "not-a-stem"}).encode())
+            if status != 400:
+                fails.append(f"set default bogus: status {status} (want 400)")
+
+            # delete the default fart -> resolved default falls back,
+            # retired so rescan can't resurrect it, source wav cataloged
+            status, _, body = post("/api/upload-sample", json.dumps(
+                {"id": "lib-smoke-drop", "delete": True}).encode())
+            payload = json.loads(body) if body else {}
+            if status != 200 or payload.get("ok") is not True:
+                fails.append(f"stem delete by id: status {status} "
+                             f"{payload!r}")
+            _, man = lib_entries()
+            if man.get("default") == "lib-smoke-drop":
+                fails.append("deleted default still resolves")
+            elif stem_ids and man.get("default") not in stem_ids:
+                fails.append("fallback default is not a playable stem")
+            e = find_entry(man, file="build/library/smoke_drop.wav")
+            if e and e.get("stem") is not None:
+                fails.append("deleted stem still attached to its entry")
+            post("/api/library/rescan")
+            _, man = lib_entries()
+            e = find_entry(man, file="build/library/smoke_drop.wav")
+            if e and e.get("stem") is not None:
+                fails.append("rescan resurrected a retired stem")
+            # the tombstone must persist on disk, and a same-name drop
+            # afterwards still can't resurrect the retired id
+            try:
+                with open(lib_manifest, "r", encoding="utf-8") as f:
+                    mm = json.load(f)
+                if "lib-smoke-drop" not in (mm.get("retired") or []):
+                    fails.append("deleted stem id missing from manifest "
+                                 "retired set")
+            except Exception as ex:
+                fails.append(f"manifest unreadable after delete: {ex}")
+            with open(lwav, "wb") as f:
+                f.write(wav_bytes())
+            post("/api/library/rescan")
+            _, man = lib_entries()
+            e = find_entry(man, file="build/library/smoke_drop.wav")
+            if e and e.get("stem") is not None:
+                fails.append("same-name drop resurrected a retired stem")
+            if os.path.isfile(ldef):
+                fails.append("retired stem def recreated by rescan")
+
+            # HTTP intake: conforming WAV -> stem, bad shapes 400
+            status, _, body = post_typed(
+                "/api/library/intake?name=smoke+intake",
+                wav_bytes(), "audio/wav")
+            payload = json.loads(body) if body else {}
+            stem = payload.get("stem") or {}
+            if status != 200 or stem.get("id") != "lib-smoke-intake":
+                fails.append(f"intake wav: status {status} {payload!r}")
+            for label, blob in (
+                ("48 kHz", wav_bytes(rate=48000)),
+                ("stereo", wav_bytes(ch=2)),
+                ("not a WAV", b"definitely not riff data"),
+            ):
+                status, _, _ = post_typed(
+                    "/api/library/intake?name=bad-" + label.replace(" ", "-"),
+                    blob, "audio/wav")
+                if status != 400:
+                    fails.append(f"intake {label}: status {status} "
+                                 "(want 400)")
+            status, _, _ = post_typed(
+                "/api/library/intake?name=..%2Fx",
+                wav_bytes(), "audio/wav")
+            if status != 400:
+                fails.append(f"intake pathy name: status {status} (want 400)")
+
+            # a WAV whose header lies about the frame count is a 400 on
+            # both upload surfaces — never a broken stem
+            trunc = wav_bytes()[:-256]
+            for path in ("/api/upload-sample?name=smoke-trunc",
+                         "/api/library/intake?name=smoke-trunc"):
+                status, _, _ = post_typed(path, trunc, "audio/wav")
+                if status != 400:
+                    fails.append(f"truncated wav {path}: status {status} "
+                                 "(want 400)")
+
+            # intake must not clobber a stem-owned wav: promote a
+            # non-conforming drop so its normalized file sits at
+            # lib-zep-take.wav, then an intake named "lib zep take"
+            # targets that same path under a different stem id
+            with open(cwav, "wb") as f:
+                f.write(wav_bytes(rate=48000, ch=2))
+            post("/api/library/rescan")
+            _, man = lib_entries()
+            e = find_entry(man, file="build/library/smoke_clobber.wav")
+            if not e:
+                fails.append("clobber setup: non-conforming drop not "
+                             "cataloged")
+            else:
+                status, _, body = post("/api/library/promote", json.dumps(
+                    {"id": e["id"], "name": "zep take"}).encode())
+                payload = json.loads(body) if body else {}
+                if status != 200 or (payload.get("stem") or {}).get("id") \
+                        != "lib-zep-take":
+                    fails.append(f"clobber setup promote: {status} "
+                                 f"{payload!r}")
+                else:
+                    with open(zwav, "rb") as f:
+                        owned = f.read()
+                    status, _, body = post_typed(
+                        "/api/library/intake?name=lib+zep+take",
+                        wav_bytes(), "audio/wav")
+                    payload = json.loads(body) if body else {}
+                    if status != 409 or payload.get("ok") is not False:
+                        fails.append(f"intake onto owned slug: status "
+                                     f"{status} {payload!r} (want 409)")
+                    with open(zwav, "rb") as f:
+                        if f.read() != owned:
+                            fails.append("intake clobbered a stem-owned "
+                                         "wav")
+
+            # the pads page boots pad 1 off the manifest default
+            status, _, body = get("/pads")
+            if status == 200 and b"studioPadsBoot" not in body:
+                fails.append("GET /pads: manifest default not wired into "
+                             "boot")
+        finally:
+            for p in lib_files:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+            try:
+                post("/api/library/default", json.dumps(
+                    {"id": prev_default}).encode())
+                post("/api/library/rescan")
+                with open(lib_manifest, "r", encoding="utf-8") as f:
+                    m0 = json.load(f)
+                m0["retired"] = [
+                    r for r in m0.get("retired") or [] if unretired(r)]
+                with open(lib_manifest, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(m0))
+            except Exception:
+                pass
+
         if fails:
             for f in fails:
                 print(f"bad: {f}")
@@ -876,7 +1173,9 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
               "patch save/list/load/delete round-trip + bad names 400; "
               "sample upload/list/delete round-trip + bad WAVs 400, "
               "over-cap 413; jam join/CONFIG/RESULT/stop + missing-binary "
-              "clean against fake kujamba; " + render_note)
+              "clean against fake kujamba; library manifest/rescan/"
+              "intake/promote/default round-trip, retired stems stay "
+              "retired; " + render_note)
         return 0
     finally:
         proc.terminate()
