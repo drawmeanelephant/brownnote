@@ -8,11 +8,16 @@ Boots the studio server on a free loopback port, then checks:
                                      stem build cannot run on this machine
   - POST /api/no-such-endpoint      -> 404 JSON {"ok": false, ...}
   - AUDIT (#63-#73): no/foreign Origin+Referer and missing
-    X-Studio-Client 403 on GETs+POSTs, non-loopback Host 403s,
-    nosniff+CSP headers, .git/source/listings 404 behind the static
-    whitelist, over-cap/garbage/chunked bodies get 413/400 (not a
-    dropped connection), absurd bars clamp to 64, render-preset names
-    400, and a patch pad label carrying HTML 400s
+    X-Studio-Client 403 on /api GETs+POSTs (incl. absolute-form request
+    lines), while a cross-site Referer on plain page GETs is fine;
+    non-loopback Host 403s (incl. '[::1]junk'), nosniff+CSP headers,
+    .git/source/listings 404 behind the static whitelist while real
+    audio under build/tune/ and recordings/ serves 200 and a directory
+    named like audio still 404s, over-cap/garbage/chunked/conflicting
+    bodies get 413/400 (not a dropped connection), absurd bars clamp to
+    64, render-preset names 400, pad labels with '<' or a trailing
+    newline past the cap 400 while plain punctuation passes, and
+    HEAD matches GET on the in-memory pages
   - PATCHES (#45): POST /api/patch saves a v1 snapshot under
     build/patches/, GET /api/patches lists it, GET /api/patch?name=
     returns it, delete removes it, and pathy/oversized/empty names
@@ -507,11 +512,98 @@ def main():
                 fails.append(f"static whitelist GET {path}: {status} "
                              "(want 404)")
 
+        # the whitelist must also SERVE: a wav under a two-level dir and
+        # under recordings/ — a single-level SERVE_DIRS entry the first
+        # cut of the prefix check missed — both come back audio + 200
+        rec_dir = os.path.join(ROOT, "recordings")
+        rec_existed = os.path.isdir(rec_dir)
+        serve_wavs = ("build/tune/smoke_serve.wav",
+                      "recordings/smoke_serve.wav")
+        try:
+            for rel in serve_wavs:
+                wp = os.path.join(ROOT, rel)
+                os.makedirs(os.path.dirname(wp), exist_ok=True)
+                with open(wp, "wb") as f:
+                    f.write(wav_bytes())
+                status, ctype, body = get("/" + rel)
+                if status != 200 or not body.startswith(b"RIFF"):
+                    fails.append(f"serve whitelist GET /{rel}: {status} "
+                                 "(want 200 + wav)")
+                elif not ctype.startswith("audio/"):
+                    fails.append(f"serve whitelist GET /{rel}: "
+                                 f"content-type {ctype!r}")
+            # a DIRECTORY named like audio is not a file — no index.html,
+            # no listing (#65 regression: build/library/pack.wav/)
+            pack_dir = os.path.join(ROOT, "build", "library", "pack.wav")
+            os.makedirs(pack_dir, exist_ok=True)
+            try:
+                with open(os.path.join(pack_dir, "index.html"), "w") as f:
+                    f.write("<script>alert(1)</script>")
+                for path in ("/build/library/pack.wav/",
+                             "/build/library/pack.wav/index.html"):
+                    status, _, body = get(path)
+                    if status != 404:
+                        fails.append(f"dir-as-audio GET {path}: {status} "
+                                     "(want 404)")
+                    elif b"alert(1)" in body:
+                        fails.append(f"GET {path} served planted html")
+            finally:
+                shutil.rmtree(pack_dir, ignore_errors=True)
+        finally:
+            for rel in serve_wavs:
+                try:
+                    os.unlink(os.path.join(ROOT, rel))
+                except OSError:
+                    pass
+            if not rec_existed:
+                try:
+                    os.rmdir(rec_dir)
+                except OSError:
+                    pass
+
+        # the request gate reads the PARSED path — an absolute-form
+        # request line must not skip the /api header check
+        conn = http.client.HTTPConnection(host, int(sport), timeout=10)
+        conn.putrequest("GET", f"{BASE}/api/jam", skip_host=True)
+        conn.putheader("Host", f"{host}:{sport}")
+        conn.endheaders()
+        resp = conn.getresponse()
+        if resp.status != 403:
+            fails.append(f"absolute-form /api/jam: {resp.status} "
+                         "(want 403)")
+        resp.read()
+        conn.close()
+        # a cross-site Referer on a side-effect-free page GET is fine —
+        # the Origin/Referer check only guards /api/*
+        status, _, _ = raw("/", "GET", None,
+                           {"Referer": "http://evil.example/x"})
+        if status != 200:
+            fails.append(f"cross-site Referer GET /: {status} (want 200)")
+        # '[::1]junk' is not an IPv6 literal with a port — reject it
+        conn = http.client.HTTPConnection(host, int(sport), timeout=10)
+        conn.putrequest("GET", "/api/state", skip_host=True)
+        conn.putheader("Host", "[::1]junk")
+        conn.putheader("X-Studio-Client", "1")
+        conn.endheaders()
+        resp = conn.getresponse()
+        if resp.status != 403:
+            fails.append(f"Host '[::1]junk': {resp.status} (want 403)")
+        resp.read()
+        conn.close()
+        # HEAD answers like GET for the in-memory pages (sans body)
+        status, _, body = raw("/", "HEAD", None, {})
+        if status != 200:
+            fails.append(f"HEAD /: {status} (want 200)")
+        elif body:
+            fails.append("HEAD / returned a body")
+
         # #68: over-cap, garbage, and chunked bodies are answered, not
         # dropped; render endpoints carry the shared 1 MiB cap
         for label, hdrs_extra in (
             ("over-cap", {"Content-Length": str(1024 * 1024 + 1)}),
             ("bad length", {"Content-Length": "abc"}),
+            ("underscore length", {"Content-Length": "1_0"}),
+            ("signed length", {"Content-Length": "+2"}),
             ("chunked", {"Transfer-Encoding": "chunked"}),
         ):
             conn = http.client.HTTPConnection(host, int(sport), timeout=10)
@@ -535,6 +627,25 @@ def main():
                 fails.append(f"body gate {label}: no response ({e})")
             finally:
                 conn.close()
+
+        # duplicate Content-Length fields that disagree must 400
+        conn = http.client.HTTPConnection(host, int(sport), timeout=10)
+        conn.putrequest("POST", "/api/render-sequence")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("X-Studio-Client", "1")
+        conn.putheader("Content-Length", "2")
+        conn.putheader("Content-Length", "5")
+        conn.endheaders()
+        try:
+            resp = conn.getresponse()
+            if resp.status != 400:
+                fails.append(f"conflicting Content-Length: {resp.status} "
+                             "(want 400)")
+            resp.read()
+        except Exception as e:
+            fails.append(f"conflicting Content-Length: no response ({e})")
+        finally:
+            conn.close()
 
         # #64: an absurd bars is clamped, not honored — all-muted tracks
         # render silence so this exercises the clamp without the mix
@@ -568,6 +679,26 @@ def main():
         if status != 400:
             fails.append(f"patch pad html label: status {status} "
                          "(want 400)")
+        # labels render via textContent — plain punctuation is fine,
+        # but '<' still 400s and a trailing newline can't smuggle a
+        # 65th char past the cap (fullmatch, not $-anchored match)
+        for label_txt, want in (("R&B", 200), ("Mom's pad", 200),
+                                ("x" * 64, 200), ("x" * 64 + "\n", 400),
+                                ("a<b", 400)):
+            status, _, body = post("/api/patch", json.dumps({
+                "name": "smoke labels", "patch": {"v": 1, "pads": [
+                    {"stem": "bomb", "semi": 0,
+                     "label": label_txt}]}}).encode())
+            if status != want:
+                fails.append(f"patch pad label {label_txt!r}: {status} "
+                             f"(want {want})")
+        post("/api/patch", json.dumps(
+            {"name": "smoke labels", "delete": True}).encode())
+        try:
+            os.unlink(os.path.join(ROOT, "build", "patches",
+                                   "smoke labels.json"))
+        except OSError:
+            pass
 
         # ---- #47: scale quantize ------------------------------------
         # The q() helper lives in the shared STUDIO_JS block served on
@@ -883,17 +1014,22 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
         if jam_pass.encode() in body:
             fails.append("jam join: response echoes the password")
 
-        st = jam_get(lambda s: s.get("state") == "live" and s.get("result"),
-                     timeout=30)
+        st = jam_get(
+            lambda s: s.get("state") == "live" and s.get("resultLine"),
+            timeout=30)
         if st.get("bpm") != 120 or st.get("bpi") != 8:
             fails.append(f"jam: CONFIG not tailed: {st!r}")
-        res = st.get("result") or {}
-        if res.get("args_ok") != "1":
-            fails.append(f"jam: fake kujamba argv wrong: {res!r}")
-        if res.get("argv_clean") != "1":
+        # status exposes only the scrubbed RESULT line — no parsed
+        # 'result' dict the password could hide inside (#70)
+        if "result" in st:
+            fails.append("jam: status still carries a 'result' dict")
+        line = st.get("resultLine") or ""
+        if "args_ok=1" not in line:
+            fails.append(f"jam: fake kujamba argv wrong: {line!r}")
+        if "argv_clean=1" not in line:
             fails.append("jam: password found on the child's argv")
-        if res.get("note") != "***":
-            fails.append(f"jam: leaked password not scrubbed: {res!r}")
+        if "note=***" not in line:
+            fails.append(f"jam: leaked password not scrubbed: {line!r}")
         if jam_pass in json.dumps(st):
             fails.append("jam: password in /api/jam status JSON")
 
