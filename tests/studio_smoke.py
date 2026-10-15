@@ -190,6 +190,24 @@ def main():
                 if marker not in body:
                     fails.append(f"GET /: missing {marker.decode()!r}")
 
+        # ---- #44: Web MIDI input on /pads and /mixer -------------------
+        # Pure client-side; assert the served pages carry the shared
+        # wiring, the badge, and each page's note/CC map.
+        status, _, body = get("/pads")
+        if status == 200:
+            for marker in (b"requestMIDIAccess", b'midi-badge" id="midiBadge"',
+                           b"initMidi", b"midiBase", b"0x90",
+                           b"hitPad(row * 4 + col, vel / 127)"):
+                if marker not in body:
+                    fails.append(f"GET /pads: missing {marker.decode()!r}")
+        status, _, body = get("/mixer")
+        if status == 200:
+            for marker in (b"requestMIDIAccess", b'midi-badge" id="midiBadge"',
+                           b"initMidi", b"num - 20", b"num - 30",
+                           b"num === 7", b"hooks.cc"):
+                if marker not in body:
+                    fails.append(f"GET /mixer: missing {marker.decode()!r}")
+
         # issue #48: the /pads looper exports a flat 16*bars grid. Length-16
         # steps arrays must keep the legacy repeat-per-bar behaviour, and an
         # extended grid must place hits on their own steps.
