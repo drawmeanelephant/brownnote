@@ -51,6 +51,15 @@ Extra views over the same stems (every page carries the same page-nav bar):
   /library  -> crate-digger: every rendered MP3/WAV with drawn waveforms
   /jam      -> NINJAM bridge console (#49): join a server, stream the
                current sequence as the interval loop via kujamba
+
+Security posture (#63-#73): every /api/* call must carry the
+X-Studio-Client: 1 header the served pages' fetch wrapper stamps —
+cross-site 'simple requests' can't add it and no CORS preflight is
+ever answered.  The Host header must be a loopback address; with
+STUDIO_ALLOW_REMOTE=1 the studio binds off-loopback but Host must
+still be an IP literal or loopback name (DNS rebinding needs a name).
+Only audio under build/{tune,presets,user,library} and recordings/
+is ever read off disk; everything else is a 404.
 """
 import http.server
 import io
@@ -139,6 +148,10 @@ def list_tracks():
     presets_dir = os.path.join(ROOT, "build", "presets")
     if os.path.isdir(presets_dir):
         for fn in sorted(os.listdir(presets_dir)):
+            # ".tmp-*" render tempfiles sit in these dirs mid-write and
+            # forever if the server dies — never list them
+            if fn.startswith("."):
+                continue
             if fn.endswith((".mp3", ".wav")):
                 p = os.path.join(presets_dir, fn)
                 kind = "Song" if fn.startswith("song_") else ("Custom" if fn.startswith("custom_") else "FX Preset")
@@ -151,6 +164,8 @@ def list_tracks():
     rec_dir = os.path.join(ROOT, "recordings")
     if os.path.isdir(rec_dir):
         for fn in sorted(os.listdir(rec_dir)):
+            if fn.startswith("."):
+                continue
             if fn.endswith(".wav"):
                 p = os.path.join(rec_dir, fn)
                 tracks.append({
@@ -161,6 +176,8 @@ def list_tracks():
                 })
     if os.path.isdir(USER_DIR):
         for fn in sorted(os.listdir(USER_DIR)):
+            if fn.startswith("."):
+                continue
             if fn.endswith(".wav"):
                 p = os.path.join(USER_DIR, fn)
                 label = fn
@@ -183,9 +200,11 @@ PATCHES_DIR = os.path.join(ROOT, "build", "patches")
 PATCH_NAME_RE = re.compile(r"^[A-Za-z0-9 _+\-]{1,64}$")
 PATCH_MAX_BYTES = 256 * 1024
 PATCH_KEYS = {"v", "name", "seq", "desk", "pads", "key", "seed"}
-# #66: pad labels render on /pads — a stored patch can't smuggle HTML
-# through this charset cap even if a render path forgot to escape.
-PAD_LABEL_RE = re.compile(r"^[^<>&\"'\\]{0,64}$")
+# #66: pad labels render on /pads via textContent, so only '<'/'>' can
+# still smuggle markup — 'R&B'/'Mom's' are fine.  fullmatch pins the
+# length cap (a $-anchored match let a trailing newline slip a 65th
+# char past).
+PAD_LABEL_RE = re.compile(r"[^<>]{0,64}")
 
 
 def patch_path(name):
@@ -232,16 +251,17 @@ def save_patch(name, patch):
 
 
 def validate_patch_pads(pads):
-    """-> error string or None.  Pad labels land on /pads via innerHTML,
-    so their charset/length is capped server-side too (#66)."""
+    """-> error string or None.  Pad labels land on /pads via
+    textContent, but their charset/length stays capped server-side
+    in case a render path ever forgets (#66)."""
     for i, p in enumerate(pads):
         if not isinstance(p, dict):
             return f"patch.pads[{i}] must be an object"
         label = p.get("label")
         if label is not None and (not isinstance(label, str)
-                                  or not PAD_LABEL_RE.match(label)):
+                                  or not PAD_LABEL_RE.fullmatch(label)):
             return (f"patch.pads[{i}].label must be a string, "
-                    "<=64 chars, no <>&\"'\\")
+                    "<=64 chars, no <>")
         stem = p.get("stem")
         if stem is not None and not isinstance(stem, str):
             return f"patch.pads[{i}].stem must be a string"
@@ -619,6 +639,9 @@ def _scan_library():
     if os.path.isdir(LIB_DIR):
         for fn in sorted(os.listdir(LIB_DIR)):
             rel = f"build/library/{fn}"
+            # ".tmp-*" render tempfiles are mid-write / orphaned — skip
+            if fn.startswith("."):
+                continue
             if not fn.lower().endswith(".wav") or rel in claimed:
                 continue
             p = os.path.join(ROOT, rel)
@@ -676,7 +699,8 @@ def _scan_library():
         if not os.path.isdir(d):
             continue
         for fn in sorted(os.listdir(d)):
-            if not fn.lower().endswith((".wav", ".mp3")):
+            if fn.startswith(".") \
+                    or not fn.lower().endswith((".wav", ".mp3")):
                 continue
             rel = f"{rel_dir}/{fn}"
             if rel in claimed:
@@ -895,6 +919,16 @@ def intake_sample(name, body):
 # multi-hundred-MB sample lists.
 SEQ_MAX_BARS = 64
 SEQ_MAX_SEC = 120.0
+# The / page's pitch slider is -12..+18 st and stepPitches come from
+# PITCH_CYCLE/q() (|st| <= ~24) — a posted semi far outside that only
+# stretches pitch_shift's buffer by 2^(-semi/12) (#64).  Semitones are
+# rounded to ints so the per-track shift cache stays tiny, and the
+# cache is bounded anyway.
+SEQ_SEMI_RANGE = 24
+SEQ_SHIFT_CACHE_MAX = 32
+# Coarse wall-clock budget for the whole mix: a pitch-storm payload
+# degrades to a partial mix, never a pinned handler thread.
+SEQ_MIX_BUDGET_SEC = 30.0
 SEQ_RENDER_LOCK = threading.Lock()
 
 
@@ -916,6 +950,15 @@ def _sequence_mix(payload, tail_sec):
         tracks_cfg = {}
     SR = 44100
 
+    beat_sec = 60.0 / bpm
+    step_sec = beat_sec / 4.0
+    bar_sec = beat_sec * 4.0
+    total_sec = min(bars * bar_sec + tail_sec, SEQ_MAX_SEC)
+    N = int(total_sec * SR)
+    L = [0.0] * N
+    R = [0.0] * N
+    deadline = time.monotonic() + SEQ_MIX_BUDGET_SEC
+
     def load_wav(rel_url):
         p = os.path.join(ROOT, rel_url.lstrip("/"))
         with wave.open(p, "rb") as w:
@@ -931,7 +974,8 @@ def _sequence_mix(payload, tail_sec):
         if abs(semitones) < 1e-3:
             return buf
         ratio = 2.0 ** (semitones / 12.0)
-        out_len = max(1, int(len(buf) / ratio))
+        # nothing past N can ever land in the mix — don't allocate it
+        out_len = max(1, min(int(len(buf) / ratio), N))
         out = [0.0] * out_len
         n = len(buf)
         for i in range(out_len):
@@ -943,14 +987,6 @@ def _sequence_mix(payload, tail_sec):
             elif idx < n:
                 out[i] = buf[idx]
         return out
-
-    beat_sec = 60.0 / bpm
-    step_sec = beat_sec / 4.0
-    bar_sec = beat_sec * 4.0
-    total_sec = min(bars * bar_sec + tail_sec, SEQ_MAX_SEC)
-    N = int(total_sec * SR)
-    L = [0.0] * N
-    R = [0.0] * N
 
     any_solo = any(bool(tracks_cfg.get(sd["id"], {}).get("solo", False)) for sd in STEM_DEFS)
 
@@ -975,9 +1011,12 @@ def _sequence_mix(payload, tail_sec):
             trimmed[len(trimmed) - 1 - i] *= (i / max(1, fade_n))
 
         # every numeric out of the JSON is finite + clamped — a hostile
-        # payload can't turn pitch_shift into a huge allocation (#64)
-        base_pitch = max(-48.0, min(48.0, _finite(
-            tcfg.get("pitch", sd["defaultPitch"]), sd["defaultPitch"])))
+        # payload can't turn pitch_shift into a huge allocation (#64).
+        # Semitones are ints inside the UI's reachable range: distinct
+        # float keys would otherwise defeat the shift cache bound.
+        base_pitch = int(round(max(-SEQ_SEMI_RANGE, min(SEQ_SEMI_RANGE,
+            _finite(tcfg.get("pitch", sd["defaultPitch"]),
+                    sd["defaultPitch"])))))
         gain = max(0.0, min(2.0, _finite(
             tcfg.get("gain", sd["defaultGain"]), sd["defaultGain"])))
         pan = max(-1.0, min(1.0, _finite(
@@ -1005,21 +1044,27 @@ def _sequence_mix(payload, tail_sec):
                 vel = grid_val(steps, s, i)
                 if not vel:
                     continue
+                if time.monotonic() > deadline:
+                    return L, R, SR   # over budget: ship the partial mix
                 vel_scale = 1.0 if vel == 1 else (1.25 if vel == 2 else 0.65)
                 sp = _finite(grid_val(step_pitches, s, i), 0.0)
-                semi = max(-48.0, min(48.0, base_pitch + sp))
+                semi = int(round(max(-SEQ_SEMI_RANGE, min(
+                    SEQ_SEMI_RANGE, base_pitch + sp))))
                 if semi not in shifted_cache:
+                    if len(shifted_cache) >= SEQ_SHIFT_CACHE_MAX:
+                        shifted_cache.pop(next(iter(shifted_cache)))
                     shifted_cache[semi] = pitch_shift(trimmed, semi)
                 buf = shifted_cache[semi]
 
                 swing_offset = (swing * 0.35 * step_sec) if (s % 2 == 1) else 0.0
                 t0 = bar * bar_sec + s * step_sec + swing_offset
                 idx0 = int(t0 * SR)
-                for i, val in enumerate(buf):
+                # only the slice of buf that can actually land in the
+                # mix — a hit fully past N costs nothing (#64)
+                for i in range(max(0, -idx0), min(len(buf), N - idx0)):
                     idx = idx0 + i
-                    if 0 <= idx < N:
-                        L[idx] += val * gl * vel_scale
-                        R[idx] += val * gr * vel_scale
+                    L[idx] += buf[i] * gl * vel_scale
+                    R[idx] += buf[i] * gr * vel_scale
     return L, R, SR
 
 
@@ -1058,40 +1103,44 @@ def render_sequence_to_mp3(payload):
     fd, wav_tmp = tempfile.mkstemp(dir=presets_dir,
                                   prefix=".tmp-", suffix=".wav")
     os.close(fd)
+    mp3_tmp = None
+    have_ffmpeg = bool(shutil.which("ffmpeg"))
     try:
         with wave.open(wav_tmp, "wb") as w:
             w.setnchannels(2)
             w.setsampwidth(2)
             w.setframerate(SR)
             w.writeframes(bytes(out_pcm))
-        os.replace(wav_tmp, wav_path)
-    except BaseException:
-        try:
-            os.unlink(wav_tmp)
-        except OSError:
-            pass
-        raise
-
-    if shutil.which("ffmpeg"):
-        fd, mp3_tmp = tempfile.mkstemp(dir=presets_dir,
-                                      prefix=".tmp-", suffix=".mp3")
-        os.close(fd)
-        try:
+        if have_ffmpeg:
+            fd, mp3_tmp = tempfile.mkstemp(dir=presets_dir,
+                                          prefix=".tmp-", suffix=".mp3")
+            os.close(fd)
+            # encode from wav_tmp BEFORE the shared fixed-name replace —
+            # a concurrent same-bpm render may have swapped different
+            # audio into wav_path between our replace and this read (#71)
             subprocess.run([
-                "ffmpeg", "-y", "-loglevel", "error", "-i", wav_path,
+                "ffmpeg", "-y", "-loglevel", "error", "-i", wav_tmp,
                 "-codec:a", "libmp3lame", "-b:a", "320k",
                 "-metadata",
                 f"title=Brownnote Custom Sequence ({bpm_i} BPM)",
                 "-metadata", "artist=kujamba x GuitarPedal",
                 mp3_tmp
             ], check=True)
+        os.replace(wav_tmp, wav_path)
+        if mp3_tmp is not None:
             os.replace(mp3_tmp, mp3_path)
-        except BaseException:
+            mp3_tmp = None
+    except BaseException:
+        for t in (wav_tmp, mp3_tmp):
+            if t is None:
+                continue
             try:
-                os.unlink(mp3_tmp)
+                os.unlink(t)
             except OSError:
                 pass
-            raise
+        raise
+
+    if have_ffmpeg:
         # Also copy to workspace root so user can grab it easily
         _atomic_copy(mp3_path,
                      os.path.join(ROOT, "brownnote_custom_groove.mp3"))
@@ -1132,7 +1181,7 @@ JAM = {
     "host": None, "user": None, "seq": None,
     "bpm": None, "bpi": None, "bars": None,
     "intervalSec": None, "loopSec": None, "intervalClamped": False,
-    "result": {}, "resultLine": None, "error": None,
+    "resultLine": None, "error": None,
 }
 
 
@@ -1199,7 +1248,10 @@ def render_jam_loop(seq, bpm, bpi, out_path):
         "swing": float((seq or {}).get("swing", 0.0)),
         "tracks": (seq or {}).get("tracks") or {},
     }
-    L, R, SR = _sequence_mix(payload, tail_sec=0.0)
+    # the same whole-mix lock as /api/render-sequence: a jam loop and a
+    # manual render never allocate big sample buffers at once (#64)
+    with SEQ_RENDER_LOCK:
+        L, R, SR = _sequence_mix(payload, tail_sec=0.0)
     want = max(1, int(round(bpi * 60.0 / bpm * SR)))
     if len(L) > want:
         L, R = L[:want], R[:want]
@@ -1289,16 +1341,9 @@ def _jam_line(proc, line, secret):
             _jam_config(proc, float(bpm.group(1)), int(bpi.group(1)))
         return
     if "RESULT" in line:
-        # keys named *pass*/*secret* are dropped AND any value carrying
-        # the password is masked — a server echoing it back under
-        # another key must not leak it through /api/jam (#70)
-        kv = {}
-        for k, v in JAM_KV_RE.findall(line):
-            if "pass" in k.lower() or "secret" in k.lower():
-                continue
-            if secret and secret in v:
-                v = v.replace(secret, "***")
-            kv[k] = v
+        # the secret itself was already scrubbed above; keys named
+        # *pass*/*secret* are masked too so only the sanitized line
+        # reaches /api/jam — there is no parsed copy (#70)
         safe_line = JAM_KV_RE.sub(
             lambda m: m.group(1) + "=***"
             if "pass" in m.group(1).lower()
@@ -1306,7 +1351,6 @@ def _jam_line(proc, line, secret):
             else m.group(0), line)
         with JAM_LOCK:
             if JAM["proc"] is proc:
-                JAM["result"] = kv
                 JAM["resultLine"] = safe_line[:200]
 
 
@@ -1389,7 +1433,6 @@ def jam_status():
             "intervalSec": JAM["intervalSec"],
             "intervalClamped": JAM["intervalClamped"],
             "loopSec": JAM["loopSec"],
-            "result": dict(JAM["result"]),
             "resultLine": JAM["resultLine"],
             "error": JAM["error"],
         }
@@ -1446,7 +1489,7 @@ def jam_join(host, user, password, seq):
             "seq": seq or {},
             "bpm": None, "bpi": None, "bars": None,
             "intervalSec": None, "loopSec": None, "intervalClamped": False,
-            "result": {}, "resultLine": None, "error": None,
+            "resultLine": None, "error": None,
         })
         JAM["tail"] = threading.Thread(
             target=_jam_tail,
@@ -1483,14 +1526,36 @@ def jam_stop():
             "host": None, "user": None,
             "bpm": None, "bpi": None, "bars": None,
             "intervalSec": None, "loopSec": None, "intervalClamped": False,
-            "result": {}, "resultLine": None, "error": None,
+            "resultLine": None, "error": None,
         })
         if proc is not None:
             _jam_kill(proc)
         _jam_clean_dir()
 
 
-def _run_group(cmd, timeout):
+def _sweep_render_tmp():
+    """Remove orphaned per-request render tmpdirs (studio-render-*
+    under $TMPDIR) left by a SIGKILLed server (#69).  The prefix is
+    ours alone — a CLI presets.sh's brownnote.* dir never matches, and
+    the age cutoff leaves any render still in flight alone."""
+    tmpdir = tempfile.gettempdir()
+    try:
+        names = os.listdir(tmpdir)
+    except OSError:
+        return
+    cutoff = time.time() - 120
+    for fn in names:
+        if not fn.startswith("studio-render-"):
+            continue
+        p = os.path.join(tmpdir, fn)
+        try:
+            if os.path.getmtime(p) < cutoff:
+                shutil.rmtree(p, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def _run_group(cmd, timeout, env=None):
     """subprocess.run for a child that spawns grandchildren: it runs in
     its own session so a timeout kills the whole process group — the
     presets.sh python3 song-mix grandchild must not outlive it (#69).
@@ -1498,7 +1563,7 @@ def _run_group(cmd, timeout):
     proc = subprocess.Popen(
         cmd, cwd=ROOT, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, start_new_session=True)
+        text=True, start_new_session=True, env=env)
     try:
         out, err = proc.communicate(timeout=timeout)
         return proc.returncode, out, err
@@ -1509,28 +1574,6 @@ def _run_group(cmd, timeout):
             proc.kill()
         out, err = proc.communicate()
         return None, out, err
-
-
-def _sweep_render_tmp():
-    """Remove mktemp dirs (brownnote.* under $TMPDIR) orphaned by
-    presets.sh runs that were SIGKILLed mid-render (#69).  Only dirs
-    older than a render's worst case are touched so a concurrent
-    presets.sh in flight is left alone."""
-    tmpdir = tempfile.gettempdir()
-    try:
-        names = os.listdir(tmpdir)
-    except OSError:
-        return
-    cutoff = time.time() - 120
-    for fn in names:
-        if not fn.startswith("brownnote."):
-            continue
-        p = os.path.join(tmpdir, fn)
-        try:
-            if os.path.getmtime(p) < cutoff:
-                shutil.rmtree(p, ignore_errors=True)
-        except OSError:
-            pass
 
 
 # ---- 2026-10-14 audit hardening (#63-#73) ----------------------------
@@ -1595,21 +1638,45 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
     def _host_name(self):
         """Host header value with any :port stripped."""
         host = (self.headers.get("Host") or "").strip()
-        if host.startswith("[") and "]" in host:
-            return host[1:host.index("]")]
+        if host.startswith("["):
+            end = host.find("]")
+            if end == -1:
+                return host
+            rest = host[end + 1:]
+            # '[::1]junk' is not a v6 literal with a port — only an
+            # empty tail or ':<digits>' may follow the bracket (#65)
+            if rest and not (rest.startswith(":")
+                             and rest[1:].isdigit()):
+                return host
+            return host[1:end]
         if host.count(":") == 1:
             host = host.split(":", 1)[0]
         return host
 
     def _blocked(self):
         """True when the request was rejected.  Host must be loopback
-        (DNS-rebinding killswitch), a present Origin/Referer must be
-        same-origin (browser CSRF), and /api/* needs the CSRF_HEADER
-        only the served pages send (#63)."""
-        if not ALLOW_REMOTE and not _is_loopback_host(self._host_name()):
+        (DNS-rebinding killswitch — under STUDIO_ALLOW_REMOTE it still
+        has to be an IP literal, since rebinding needs a DNS name), and
+        /api/* needs a same-origin Origin/Referer plus the CSRF_HEADER
+        only the served pages send (#63).  Pages and audio GETs carry
+        no side effects, so the browser-CSRF checks stay off them."""
+        host_name = self._host_name()
+        host_ok = _is_loopback_host(host_name)
+        if not host_ok and ALLOW_REMOTE:
+            try:
+                ipaddress.ip_address(host_name)
+                host_ok = True
+            except ValueError:
+                pass
+        if not host_ok:
             self._send_json(403, {"ok": False,
                                   "error": "Host must be loopback"})
             return True
+        # gate on the PARSED path — raw self.path in absolute-form
+        # ('GET http://host/api/jam') would slip past a startswith test
+        path = urllib.parse.urlparse(self.path).path
+        if not path.startswith("/api/"):
+            return False
         host = (self.headers.get("Host") or "").strip().lower()
         for h in ("Origin", "Referer"):
             v = (self.headers.get(h) or "").strip()
@@ -1624,8 +1691,7 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                     "ok": False,
                     "error": "cross-site request rejected"})
                 return True
-        if self.path.split("?", 1)[0].startswith("/api/") and \
-                self.headers.get(CSRF_HEADER) != "1":
+        if self.headers.get(CSRF_HEADER) != "1":
             self._send_json(403, {
                 "ok": False,
                 "error": f"missing {CSRF_HEADER} header"})
@@ -1642,26 +1708,36 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
         rel = os.path.relpath(p, real_root)
         parts = rel.split(os.sep)
         ok = rel == os.path.join("build", "jam", "loop.wav") or (
-            len(parts) >= 2
-            and os.sep.join(parts[:2]) in SERVE_DIRS
+            any(rel.startswith(d + os.sep) for d in SERVE_DIRS)
             and parts[-1].lower().endswith(SERVE_EXTS)
             and not any(part.startswith(".") for part in parts))
-        return p if ok else SERVE_SENTINEL
+        # a directory merely *named* like audio (build/library/pack.wav/)
+        # passes the extension test — without the isfile check send_head
+        # serves its index.html or a listing (#65)
+        if not ok or not os.path.isfile(p):
+            return SERVE_SENTINEL
+        return p
+
+    def list_directory(self, path):
+        """Whitelist serving means no directory is ever listable."""
+        return self.send_error(404)
 
     def _read_body(self, cap, what="body"):
         """-> (bytes, None) or (None, (status, msg)) — one guarded
         Content-Length parse + size cap for every endpoint (#68)."""
         if self.headers.get("Transfer-Encoding"):
             return None, (400, "chunked bodies not supported")
-        raw = self.headers.get("Content-Length")
-        if raw is None:
+        # HTTP permits repeated Content-Length fields only when every
+        # value agrees; and int() accepted '1_0'/'+2' — ASCII digits
+        # only, one distinct value (#68)
+        raws = self.headers.get_all("Content-Length") or []
+        vals = [v.strip() for r in raws for v in r.split(",")]
+        if not vals:
             return b"", None
-        try:
-            length = int(raw)
-        except ValueError:
+        if any(not re.fullmatch(r"[0-9]+", v) for v in vals) \
+                or len(set(vals)) != 1:
             return None, (400, "bad Content-Length")
-        if length < 0:
-            return None, (400, "bad Content-Length")
+        length = int(vals[0])
         if length > cap:
             return None, (413, f"{what} over the {_cap_label(cap)} cap")
         body = self.rfile.read(length)
@@ -1690,7 +1766,17 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
     def do_HEAD(self):
         if self._blocked():
             return
-        return super().do_HEAD()
+        parsed = urllib.parse.urlparse(self.path)
+        page = (STUDIO_HTML if parsed.path in ("/", "/index.html")
+                else EXTRA_PAGES.get(parsed.path))
+        if page is None:
+            return super().do_HEAD()
+        body = page.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
 
     def do_GET(self):
         if self._blocked():
@@ -1921,15 +2007,24 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                         cmd += ["--phrase", phrase]
 
                 # #69: own process group + hard timeout so the python3
-                # song-mix grandchild dies with presets.sh.
-                rc, out, errtxt = _run_group(cmd, timeout=45)
-                if rc is None:
-                    _sweep_render_tmp()
-                    return self._send_json(504, {
-                        "ok": False, "error": "render timed out"})
-                if rc != 0:
-                    return self._send_json(500, {
-                        "ok": False, "error": errtxt or out})
+                # song-mix grandchild dies with presets.sh.  TMPDIR is a
+                # per-request dir removed in the finally — a killed
+                # render leaves no brownnote.* tempdir behind, and no
+                # age-based sweep can mistake a long-running CLI
+                # presets.sh dir for an orphan.
+                render_tmp = tempfile.mkdtemp(prefix="studio-render-")
+                try:
+                    rc, out, errtxt = _run_group(
+                        cmd, timeout=45,
+                        env=dict(os.environ, TMPDIR=render_tmp))
+                    if rc is None:
+                        return self._send_json(504, {
+                            "ok": False, "error": "render timed out"})
+                    if rc != 0:
+                        return self._send_json(500, {
+                            "ok": False, "error": errtxt or out})
+                finally:
+                    shutil.rmtree(render_tmp, ignore_errors=True)
                 ts = int(time.time())
                 return self._send_json(200, {
                     "ok": True,
@@ -2029,12 +2124,25 @@ class ReusableTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 CSRF_JS = r"""
 (function () {
   const _fetch = window.fetch.bind(window);
+  const stamp = (headers) => {
+    const h = new Headers(headers || {});
+    h.set('X-Studio-Client', '1');
+    return h;
+  };
   window.fetch = (url, opts) => {
     if (typeof url === 'string' && url.indexOf('/api/') === 0) {
       opts = Object.assign({}, opts);
-      const h = new Headers(opts.headers || {});
-      h.set('X-Studio-Client', '1');
-      opts.headers = h;
+      opts.headers = stamp(opts.headers);
+    } else if (url instanceof Request) {
+      // Request objects normalize to an absolute URL — same rule:
+      // stamp only same-origin /api/* targets
+      try {
+        const u = new URL(url.url);
+        if (u.origin === location.origin &&
+            u.pathname.indexOf('/api/') === 0) {
+          url = new Request(url, { headers: stamp(url.headers) });
+        }
+      } catch (e) {}
     }
     return _fetch(url, opts);
   };
@@ -2093,7 +2201,13 @@ function studioMerge(slice) {
 }
 
 function studioPadsSerialize(pads) {
-  return pads.map(p => ({ stem: p.stem, semi: p.semi, label: p.label }));
+  // labels are free text from localStorage and re-validated server-side —
+  // strip the only chars it rejects so a stale/hand-edited label can't
+  // brick every patch save with a 400 (#66)
+  return (Array.isArray(pads) ? pads : []).map(p => ({
+    stem: p.stem, semi: p.semi,
+    label: String(p.label ?? '').replace(/[<>]/g, '').slice(0, 64),
+  }));
 }
 
 // Default desk slice (the /mixer page owns this live, but / needs it to
@@ -2118,7 +2232,7 @@ function studioPadsBoot(stems, defId) {
     pads[0].stem = d.id;
     pads[0].semi = 0;
     pads[0].label = String(d.name || d.id)
-      .replace(/[<>&"'\\]/g, '').toUpperCase().slice(0, 14);
+      .replace(/[<>]/g, '').toUpperCase().slice(0, 14);
   }
   return pads;
 }
@@ -3507,7 +3621,12 @@ function applySeqSlice(seq) {
     if (!pt || typeof pt !== 'object') continue;   // unknown ids ignored
     const st = trackState[stem.id];
     for (const k of ['gain', 'pan', 'pitch']) {
-      if (typeof pt[k] === 'number') st[k] = pt[k];
+      if (typeof pt[k] !== 'number' || !isFinite(pt[k])) continue;
+      // pitch is the mixer's buffer-size lever — keep the slider's
+      // -12..+18 st range so a hostile patch can't reach the render
+      st[k] = k === 'pitch'
+        ? Math.max(-12, Math.min(18, Math.round(pt[k])))
+        : pt[k];
     }
     for (const k of ['mute', 'solo', 'useDry']) {
       if (k in pt) st[k] = !!pt[k];
@@ -3516,7 +3635,8 @@ function applySeqSlice(seq) {
       st.steps = Array.from({ length: 16 }, (_, i) => pt.steps[i] | 0);
     }
     if (Array.isArray(pt.stepPitches)) {
-      st.stepPitches = Array.from({ length: 16 }, (_, i) => pt.stepPitches[i] | 0);
+      st.stepPitches = Array.from({ length: 16 }, (_, i) =>
+        Math.max(-24, Math.min(24, pt.stepPitches[i] | 0)));
     }
   }
   buildTracksUI();
@@ -3529,7 +3649,8 @@ function buildPatch(name) {
     name,
     seq: seqSlice(),
     desk: base.desk || studioDeskDefaults(STEMS),
-    pads: base.pads || studioPadsSerialize(PADS_DEFAULT),
+    pads: studioPadsSerialize(
+      Array.isArray(base.pads) ? base.pads : PADS_DEFAULT),
     key: base.key ?? null,
     seed: base.seed ?? null,
   };
@@ -4790,7 +4911,7 @@ function applyPadsSlice(pads) {
     // labels can also arrive via a hand-edited localStorage value —
     // keep HTML-special chars out even off the server path (#66)
     if (p.label !== undefined) PADS[i].label =
-      String(p.label).replace(/[<>&"'\\]/g, '').slice(0, 64);
+      String(p.label).replace(/[<>]/g, '').slice(0, 64);
   }
 }
 

@@ -404,11 +404,15 @@ run_song() {
 	[ -x "$BN" ] || make -s -C "$ROOT"
 
 	# clamp render size: the python mixer allocates bars*bar*SR samples
-	# in pure python — unbounded --bars/--bpm is a DoS (#64)
+	# in pure python — unbounded --bars/--bpm is a DoS (#64).  A bare
+	# digit string above int64 still errors out of the arithmetic test
+	# ('integer expected'), so cap the length before comparing.
 	case "$bars" in *[!0-9]*|'') bars=8 ;; esac
+	[ "${#bars}" -gt 4 ] && bars=64
 	[ "$bars" -lt 1 ]  && bars=1
 	[ "$bars" -gt 64 ] && bars=64
 	case "$bpm" in *[!0-9]*|'') bpm=120 ;; esac
+	[ "${#bpm}" -gt 3 ] && bpm=240
 	[ "$bpm" -lt 40 ]  && bpm=40
 	[ "$bpm" -gt 240 ] && bpm=240
 
