@@ -39,6 +39,7 @@ import io
 import json
 import math
 import os
+import posixpath
 import re
 import shutil
 import signal
@@ -472,6 +473,9 @@ def render_sequence_to_mp3(payload):
 # never argv, URLs, or any status surface.
 JAM_DIR = os.path.join(ROOT, "build", "jam")
 JAM_MAX_BYTES = 64 * 1024
+# A hostile server can claim any bpm/bpi; cap the rendered interval so the
+# pure-Python mix can't be talked into a multi-minute, multi-hundred-MB loop.
+JAM_MAX_INTERVAL_SEC = 64.0
 JAM_HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,253}(:\d{1,5})?$")
 JAM_USER_RE = re.compile(r"^[A-Za-z0-9._@-]{1,64}$")
 JAM_CONFIG_RE = re.compile(r"S>C\s+0x02\s+CONFIG\b")
@@ -483,17 +487,28 @@ JAM = {
     "proc": None, "tail": None, "state": "off",
     "host": None, "user": None, "seq": None,
     "bpm": None, "bpi": None, "bars": None,
-    "intervalSec": None, "loopSec": None,
+    "intervalSec": None, "loopSec": None, "intervalClamped": False,
     "result": {}, "resultLine": None, "error": None,
 }
 
 
+# Resolved once: KUJAMBA is fixed at process start, and which() on every
+# 1s status poll is wasted work.
+_KUJAMBA_UNKNOWN = object()
+_kujamba_cache = _KUJAMBA_UNKNOWN
+
+
 def _kujamba_bin():
-    env = os.environ.get("KUJAMBA")
-    if env:
-        p = env if os.path.isabs(env) else os.path.join(ROOT, env)
-        return p if os.path.isfile(p) and os.access(p, os.X_OK) else None
-    return shutil.which("kujamba")
+    global _kujamba_cache
+    if _kujamba_cache is _KUJAMBA_UNKNOWN:
+        env = os.environ.get("KUJAMBA")
+        if env:
+            p = env if os.path.isabs(env) else os.path.join(ROOT, env)
+            _kujamba_cache = \
+                p if os.path.isfile(p) and os.access(p, os.X_OK) else None
+        else:
+            _kujamba_cache = shutil.which("kujamba")
+    return _kujamba_cache
 
 
 def _toml_str(s):
@@ -509,6 +524,8 @@ def _write_jam_config(path, host, user, password):
 
 
 def _jam_clean_dir():
+    """Remove the creds file, transcript, loop, and stray tmp renders.
+    Callers hold JAM_LOCK so the wipe can't land on a fresh session's files."""
     if not os.path.isdir(JAM_DIR):
         return
     for fn in os.listdir(JAM_DIR):
@@ -523,11 +540,14 @@ def _jam_clean_dir():
 def render_jam_loop(seq, bpm, bpi, out_path):
     """Render the sequencer state to a 44.1 kHz stereo s16 WAV exactly one
     NINJAM interval long (bpi beats at bpm).  The grid renders in whole
-    4/4 bars, so bars = ceil(bpi / 4) always covers the interval and the
-    PCM is truncated down — a 6-beat interval renders 2 bars and is cut at
-    beat 6; it is never padded past what the mix produced."""
+    4/4 bars, so bars = ceil(bpi / 4) always covers the interval: a longer
+    mix is truncated down (a 6-beat interval renders 2 bars, cut at beat
+    6) and a shorter one is zero-padded up.  bpm/bpi are clamped to sane
+    ranges and the interval to JAM_MAX_INTERVAL_SEC so a hostile CONFIG
+    can't force a minutes-long render."""
     bpm = max(40.0, min(240.0, float(bpm)))
     bpi = max(1, min(256, int(bpi)))
+    bpi = max(1, min(bpi, int(JAM_MAX_INTERVAL_SEC * bpm / 60.0)))
     bars = max(1, math.ceil(bpi / 4))
     payload = {
         "bpm": bpm,
@@ -595,6 +615,9 @@ def _jam_config(proc, bpm, bpi):
         return
     bpm = max(40.0, min(240.0, bpm))
     bpi = min(256, int(bpi))
+    clamped = bpi * 60.0 / bpm > JAM_MAX_INTERVAL_SEC
+    if clamped:
+        bpi = max(1, int(JAM_MAX_INTERVAL_SEC * bpm / 60.0))
     with JAM_LOCK:
         if JAM["proc"] is not proc:
             return
@@ -602,6 +625,7 @@ def _jam_config(proc, bpm, bpi):
         JAM["bpm"], JAM["bpi"] = bpm, bpi
         JAM["bars"] = max(1, math.ceil(bpi / 4))
         JAM["intervalSec"] = round(bpi * 60.0 / bpm, 3)
+        JAM["intervalClamped"] = clamped
         JAM["state"] = "live"
         seq = JAM["seq"]
     if changed:
@@ -623,10 +647,15 @@ def _jam_line(proc, line, secret):
     if "RESULT" in line:
         kv = {k: v for k, v in JAM_KV_RE.findall(line)
               if "pass" not in k.lower() and "secret" not in k.lower()}
+        safe_line = JAM_KV_RE.sub(
+            lambda m: m.group(1) + "=***"
+            if "pass" in m.group(1).lower()
+            or "secret" in m.group(1).lower()
+            else m.group(0), line)
         with JAM_LOCK:
             if JAM["proc"] is proc:
                 JAM["result"] = kv
-                JAM["resultLine"] = line[:200]
+                JAM["resultLine"] = safe_line[:200]
 
 
 def _jam_tail(proc, log_path, secret):
@@ -670,8 +699,7 @@ def _jam_tail(proc, log_path, secret):
                     JAM["proc"] = None
                     JAM["state"] = "error"
                     JAM["error"] = f"kujamba exited (rc {proc.returncode})"
-            if mine:
-                _jam_clean_dir()
+                    _jam_clean_dir()
             return
         time.sleep(0.2)
 
@@ -707,6 +735,7 @@ def jam_status():
             "bpi": JAM["bpi"],
             "bars": JAM["bars"],
             "intervalSec": JAM["intervalSec"],
+            "intervalClamped": JAM["intervalClamped"],
             "loopSec": JAM["loopSec"],
             "result": dict(JAM["result"]),
             "resultLine": JAM["resultLine"],
@@ -724,8 +753,10 @@ def jam_join(host, user, password, seq):
         raise ValueError("bad host (want host[:port], [A-Za-z0-9.-])")
     if not isinstance(user, str) or not JAM_USER_RE.match(user):
         raise ValueError("bad user (want [A-Za-z0-9._@-], 1-64 chars)")
-    if not isinstance(password, str) or len(password) > 128:
-        raise ValueError("bad pass (string, up to 128 chars)")
+    if not isinstance(password, str) or len(password) > 128 \
+            or any(ord(c) < 0x20 or ord(c) == 0x7f for c in password):
+        raise ValueError(
+            "bad pass (string, up to 128 chars, no control chars)")
     if seq is not None and not isinstance(seq, dict):
         raise ValueError("seq must be an object")
     binpath = _kujamba_bin()
@@ -762,7 +793,7 @@ def jam_join(host, user, password, seq):
             "proc": proc, "state": "starting", "host": host, "user": user,
             "seq": seq or {},
             "bpm": None, "bpi": None, "bars": None,
-            "intervalSec": None, "loopSec": None,
+            "intervalSec": None, "loopSec": None, "intervalClamped": False,
             "result": {}, "resultLine": None, "error": None,
         })
         JAM["tail"] = threading.Thread(
@@ -790,18 +821,21 @@ def jam_push_seq(seq):
 
 
 def jam_stop():
+    # Kill inside the lock too: a join that lands mid-stop must not have
+    # its fresh files wiped by this session's deferred clean, and the
+    # child must be dead before the wipe so it can't rewrite them after.
     with JAM_LOCK:
         proc = JAM["proc"]
         JAM.update({
             "proc": None, "state": "off", "seq": None,
             "host": None, "user": None,
             "bpm": None, "bpi": None, "bars": None,
-            "intervalSec": None, "loopSec": None,
+            "intervalSec": None, "loopSec": None, "intervalClamped": False,
             "result": {}, "resultLine": None, "error": None,
         })
-    if proc is not None:
-        _jam_kill(proc)
-    _jam_clean_dir()
+        if proc is not None:
+            _jam_kill(proc)
+        _jam_clean_dir()
 
 
 class StudioHandler(http.server.SimpleHTTPRequestHandler):
@@ -864,6 +898,14 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                     return self._send_json(200, json.load(f))
             except Exception as e:
                 return self._send_json(500, {"ok": False, "error": f"corrupt patch file: {e}"})
+        # build/jam/ holds the 0600 creds file and the child transcript;
+        # only the rendered loop may cross HTTP.  Normalize like
+        # translate_path does so %XX/case/dot variants can't slip past.
+        norm = posixpath.normpath(
+            urllib.parse.unquote(parsed.path)).lower()
+        if norm != "/build/jam/loop.wav" and \
+                (norm == "/build/jam" or norm.startswith("/build/jam/")):
+            return self.send_error(404)
         return super().do_GET()
 
     def _handle_upload_sample(self, parsed):
@@ -4991,7 +5033,7 @@ function paintJam(st) {
   if (st.user) stats.push(`<span class="stat">user <b>${st.user}</b></span>`);
   if (st.bpm) stats.push(`<span class="stat">bpm <b>${st.bpm}</b></span>`);
   if (st.bpi) stats.push(`<span class="stat">bpi <b>${st.bpi}</b> (${st.bars} bars)</span>`);
-  if (st.intervalSec) stats.push(`<span class="stat">interval <b>${st.intervalSec}s</b></span>`);
+  if (st.intervalSec) stats.push(`<span class="stat">interval <b>${st.intervalSec}s${st.intervalClamped ? ' (clamped)' : ''}</b></span>`);
   document.getElementById('jamStats').innerHTML = stats.join('');
   document.getElementById('jamResult').textContent = st.resultLine || '';
   const audio = document.getElementById('jamAudio');
@@ -5002,7 +5044,7 @@ function paintJam(st) {
     audio.style.display = 'none';
     audio.removeAttribute('src');
   }
-  if (st.state === 'error' && st.error) setStatus('⚠ ' + st.error);
+  if (st.error) setStatus('⚠ ' + st.error);
 }
 
 async function pollJam() {
@@ -5073,10 +5115,17 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"warning: stem build failed ({e}); /api/state will retry and 503", file=sys.stderr)
 
+    # A SIGKILLed previous run leaves its creds file + transcript behind.
+    _jam_clean_dir()
+
+    # Signals must not take JAM_LOCK here (it can be held mid-join, and
+    # the lock isn't reentrant) — bail out and let finally: jam_stop()
+    # below do the teardown on the main thread.
     def _shutdown_jam(*_):
-        jam_stop()
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, _shutdown_jam)
+    if hasattr(signal, "SIGHUP"):   # terminal close must not orphan the child
+        signal.signal(signal.SIGHUP, _shutdown_jam)
 
     with ReusableTCPServer((HOST, PORT), StudioHandler) as httpd:
         print(f"Brownnote Studio listening on http://{HOST}:{PORT}", flush=True)

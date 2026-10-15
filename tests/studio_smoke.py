@@ -243,6 +243,15 @@ def main():
     os.chmod(fake_bin, 0o755)
     env = dict(os.environ, STUDIO_PORT=str(port), STUDIO_HOST="127.0.0.1",
                KUJAMBA=fake_bin, FAKE_KUJAMBA_PIDFILE=pidfile)
+    # A SIGKILLed earlier run can leave creds/transcript behind; boot must
+    # wipe build/jam/ before it ever serves a byte.
+    jam_dir = os.path.join(ROOT, "build", "jam")
+    stale_cfg = os.path.join(jam_dir, "kujamba.toml")
+    stale_log = os.path.join(jam_dir, "transcript.log")
+    os.makedirs(jam_dir, exist_ok=True)
+    for p, txt in ((stale_cfg, 'pass = "stale"\n'), (stale_log, "stale\n")):
+        with open(p, "w") as f:
+            f.write(txt)
     proc = subprocess.Popen(
         [sys.executable, os.path.join(ROOT, "scripts", "studio.py")],
         cwd=ROOT, env=env,
@@ -254,6 +263,11 @@ def main():
             return 1
 
         fails = []
+
+        for p in (stale_cfg, stale_log):
+            if os.path.exists(p):
+                fails.append(
+                    f"boot did not wipe stale build/jam/{os.path.basename(p)}")
 
         for path in ("/", "/mixer", "/pads", "/library", "/jam"):
             status, ctype, body = get(path)
@@ -642,7 +656,6 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
         # ---- #49: NINJAM jam bridge ----------------------------------
         # The server was booted with KUJAMBA pointing at the fake (top of
         # file); a second boot with a bogus path covers missing-binary.
-        jam_dir = os.path.join(ROOT, "build", "jam")
         jam_cfg = os.path.join(jam_dir, "kujamba.toml")
         jam_log = os.path.join(jam_dir, "transcript.log")
         jam_wav = os.path.join(jam_dir, "loop.wav")
@@ -737,6 +750,20 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
                     jam_pass.encode() in open(pth, "rb").read():
                 fails.append(f"jam: password in build/jam/{fn}")
 
+        # build/jam/ is not served over HTTP: the creds file and the
+        # transcript exist on disk right now yet must 404 (incl. dot and
+        # %-encoded path tricks), while the rendered loop stays public.
+        for path in ("/build/jam/kujamba.toml",
+                     "/build/jam/transcript.log",
+                     "/build/jam",
+                     "/build/jam/../jam/kujamba.toml",
+                     "/%62uild/jam/kujamba.toml"):
+            status, _, body = get(path)
+            if status != 404:
+                fails.append(f"jam: GET {path} -> {status} (want 404)")
+            elif jam_pass.encode() in body:
+                fails.append(f"jam: GET {path} leaks the password")
+
         # a second join while live must not spawn another child
         status, _, body = post("/api/jam", json.dumps({
             "host": "other:2049", "user": "x", "pass": "y"}).encode())
@@ -767,6 +794,10 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
                     if w.getnframes() != 132300:
                         fails.append(f"jam: bpi=6 loop {w.getnframes()} "
                                      "frames (want 132300)")
+            if os.path.isfile(jam_wav):
+                status, _, body = get("/build/jam/loop.wav")
+                if status != 200 or not body.startswith(b"RIFF"):
+                    fails.append(f"jam: GET loop.wav -> {status}")
             leftovers = [f for f in os.listdir(jam_dir)
                          if f.startswith(".tmp-")]
             if leftovers:
