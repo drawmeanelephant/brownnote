@@ -17,6 +17,10 @@ Serves build/studio.html at `/` plus workspace audio files and JSON APIs:
                            + a stem def and returns it; JSON {name, delete:
                            true} removes both.  Anything but 44.1k/mono/s16
                            PCM 400s — the browser resamples before sending.
+  GET  /api/jam       -> NINJAM session status: state, bpm/bpi, last RESULT
+  POST /api/jam       -> {host, user, pass[, seq]} spawns kujamba join and
+                           feeds it build/jam/loop.wav; {seq} re-renders the
+                           loop; {stop: true} leaves and wipes build/jam/
 
 Extra views over the same stems (every page carries the same page-nav bar):
   /mixer    -> console desk with VU meters, tap/loop per strip (+ user stems)
@@ -27,19 +31,24 @@ Extra views over the same stems (every page carries the same page-nav bar):
               stacked takes, mute/clear per layer, bounce the loop to MP3
                (Web MIDI: notes base..base+15 hit pads, default base 36)
   /library  -> crate-digger: every rendered MP3/WAV with drawn waveforms
+  /jam      -> NINJAM bridge console (#49): join a server, stream the
+               current sequence as the interval loop via kujamba
 """
 import http.server
 import io
 import json
 import math
 import os
+import posixpath
 import re
 import shutil
+import signal
 import socketserver
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import wave
@@ -289,13 +298,14 @@ def delete_user_sample(name):
     return gone
 
 
-def render_sequence_to_mp3(payload):
-    """Render the current 16-step sequencer grid + stem mixer settings to a stereo WAV & 320k MP3.
+def _sequence_mix(payload, tail_sec):
+    """Mix the sequencer grid to stereo float buffers -> (L, R, SR).
 
     `steps`/`stepPitches` arrays of length 16 are a single bar repeated for
     every bar (the `/` sequencer's format). Any other length is treated as a
     flat `16 * bars` grid — the /pads looper's export format — with
-    out-of-range steps read as silent.
+    out-of-range steps read as silent.  `tail_sec` pads the render past the
+    last bar so ring-out isn't cut.
     """
     bpm = float(payload.get("bpm", 116))
     bars = int(payload.get("bars", 4))
@@ -334,7 +344,7 @@ def render_sequence_to_mp3(payload):
     beat_sec = 60.0 / max(40.0, min(240.0, bpm))
     step_sec = beat_sec / 4.0
     bar_sec = beat_sec * 4.0
-    total_sec = bars * bar_sec + 1.8
+    total_sec = bars * bar_sec + tail_sec
     N = int(total_sec * SR)
     L = [0.0] * N
     R = [0.0] * N
@@ -396,13 +406,26 @@ def render_sequence_to_mp3(payload):
                     if 0 <= idx < N:
                         L[idx] += val * gl * vel_scale
                         R[idx] += val * gr * vel_scale
+    return L, R, SR
 
+
+def _s16_stereo(L, R):
+    """Tanh-normalize stereo float buffers -> interleaved s16 PCM bytes."""
     peak = max(max((abs(x) for x in L), default=0.0), max((abs(x) for x in R), default=0.0), 1e-6)
     out_pcm = bytearray()
-    for i in range(N):
+    for i in range(len(L)):
         l = math.tanh((L[i] / peak) * 1.4) / math.tanh(1.4) * 0.94
         r = math.tanh((R[i] / peak) * 1.4) / math.tanh(1.4) * 0.94
         out_pcm += struct.pack("<hh", int(l * 32767), int(r * 32767))
+    return bytes(out_pcm)
+
+
+def render_sequence_to_mp3(payload):
+    """Render the current 16-step sequencer grid + stem mixer settings to a stereo WAV & 320k MP3."""
+    bpm = float(payload.get("bpm", 116))
+    L, R, SR = _sequence_mix(payload, tail_sec=1.8)
+    out_pcm = _s16_stereo(L, R)
+    N = len(L)
 
     presets_dir = os.path.join(ROOT, "build", "presets")
     os.makedirs(presets_dir, exist_ok=True)
@@ -441,6 +464,378 @@ def render_sequence_to_mp3(payload):
         "wavUrl": f"/build/presets/{wav_name}?t={ts}",
         "durationSec": round(N / SR, 2),
     }
+
+
+# NINJAM bridge (#49): kujamba (fart-app#98) owns the protocol; we spawn
+# `kujamba join` against build/jam/loop.wav, tail its transcript for the
+# server CONFIG (bpm/bpi), and atomically swap the loop to match the
+# interval.  Credentials go to the child only through a 0600 config file —
+# never argv, URLs, or any status surface.
+JAM_DIR = os.path.join(ROOT, "build", "jam")
+JAM_MAX_BYTES = 64 * 1024
+# A hostile server can claim any bpm/bpi; cap the rendered interval so the
+# pure-Python mix can't be talked into a multi-minute, multi-hundred-MB loop.
+JAM_MAX_INTERVAL_SEC = 64.0
+JAM_HOST_RE = re.compile(r"^[A-Za-z0-9.\-]{1,253}(:\d{1,5})?$")
+JAM_USER_RE = re.compile(r"^[A-Za-z0-9._@-]{1,64}$")
+JAM_CONFIG_RE = re.compile(r"S>C\s+0x02\s+CONFIG\b")
+JAM_KV_RE = re.compile(r"([A-Za-z_]\w*)=(\S+)")
+
+JAM_LOCK = threading.Lock()
+JAM_RENDER_LOCK = threading.Lock()
+JAM = {
+    "proc": None, "tail": None, "state": "off",
+    "host": None, "user": None, "seq": None,
+    "bpm": None, "bpi": None, "bars": None,
+    "intervalSec": None, "loopSec": None, "intervalClamped": False,
+    "result": {}, "resultLine": None, "error": None,
+}
+
+
+# Resolved once: KUJAMBA is fixed at process start, and which() on every
+# 1s status poll is wasted work.
+_KUJAMBA_UNKNOWN = object()
+_kujamba_cache = _KUJAMBA_UNKNOWN
+
+
+def _kujamba_bin():
+    global _kujamba_cache
+    if _kujamba_cache is _KUJAMBA_UNKNOWN:
+        env = os.environ.get("KUJAMBA")
+        if env:
+            p = env if os.path.isabs(env) else os.path.join(ROOT, env)
+            _kujamba_cache = \
+                p if os.path.isfile(p) and os.access(p, os.X_OK) else None
+        else:
+            _kujamba_cache = shutil.which("kujamba")
+    return _kujamba_cache
+
+
+def _toml_str(s):
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _write_jam_config(path, host, user, password):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(f"host = {_toml_str(host)}\n"
+                f"user = {_toml_str(user)}\n"
+                f"pass = {_toml_str(password)}\n")
+
+
+def _jam_clean_dir():
+    """Remove the creds file, transcript, loop, and stray tmp renders.
+    Callers hold JAM_LOCK so the wipe can't land on a fresh session's files."""
+    if not os.path.isdir(JAM_DIR):
+        return
+    for fn in os.listdir(JAM_DIR):
+        if fn in ("kujamba.toml", "transcript.log", "loop.wav") \
+                or fn.startswith(".tmp-"):
+            try:
+                os.unlink(os.path.join(JAM_DIR, fn))
+            except OSError:
+                pass
+
+
+def render_jam_loop(seq, bpm, bpi, out_path):
+    """Render the sequencer state to a 44.1 kHz stereo s16 WAV exactly one
+    NINJAM interval long (bpi beats at bpm).  The grid renders in whole
+    4/4 bars, so bars = ceil(bpi / 4) always covers the interval: a longer
+    mix is truncated down (a 6-beat interval renders 2 bars, cut at beat
+    6) and a shorter one is zero-padded up.  bpm/bpi are clamped to sane
+    ranges and the interval to JAM_MAX_INTERVAL_SEC so a hostile CONFIG
+    can't force a minutes-long render."""
+    bpm = max(40.0, min(240.0, float(bpm)))
+    bpi = max(1, min(256, int(bpi)))
+    bpi = max(1, min(bpi, int(JAM_MAX_INTERVAL_SEC * bpm / 60.0)))
+    bars = max(1, math.ceil(bpi / 4))
+    payload = {
+        "bpm": bpm,
+        "bars": bars,
+        "swing": float((seq or {}).get("swing", 0.0)),
+        "tracks": (seq or {}).get("tracks") or {},
+    }
+    L, R, SR = _sequence_mix(payload, tail_sec=0.0)
+    want = max(1, int(round(bpi * 60.0 / bpm * SR)))
+    if len(L) > want:
+        L, R = L[:want], R[:want]
+    elif len(L) < want:
+        L += [0.0] * (want - len(L))
+        R += [0.0] * (want - len(R))
+    pcm = _s16_stereo(L, R)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(out_path),
+                               prefix=".tmp-", suffix=".wav")
+    os.close(fd)
+    try:
+        with wave.open(tmp, "wb") as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(SR)
+            w.writeframes(pcm)
+        os.replace(tmp, out_path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return round(want / SR, 3)
+
+
+def _jam_render(proc, seq, bpm, bpi):
+    if not seq:
+        return
+    with JAM_RENDER_LOCK:
+        with JAM_LOCK:
+            if JAM["proc"] is not proc:
+                return
+        try:
+            sec = render_jam_loop(seq, bpm, bpi,
+                                  os.path.join(JAM_DIR, "loop.wav"))
+        except Exception as e:
+            with JAM_LOCK:
+                if JAM["proc"] is proc:
+                    JAM["error"] = f"loop render failed: {e}"
+            return
+        with JAM_LOCK:
+            if JAM["proc"] is not proc:
+                try:
+                    os.unlink(os.path.join(JAM_DIR, "loop.wav"))
+                except OSError:
+                    pass
+                return
+            JAM["loopSec"] = sec
+            if JAM["error"] and JAM["error"].startswith("loop render"):
+                JAM["error"] = None
+
+
+def _jam_config(proc, bpm, bpi):
+    if bpm <= 0 or bpi <= 0:
+        return
+    bpm = max(40.0, min(240.0, bpm))
+    bpi = min(256, int(bpi))
+    clamped = bpi * 60.0 / bpm > JAM_MAX_INTERVAL_SEC
+    if clamped:
+        bpi = max(1, int(JAM_MAX_INTERVAL_SEC * bpm / 60.0))
+    with JAM_LOCK:
+        if JAM["proc"] is not proc:
+            return
+        changed = JAM["bpm"] != bpm or JAM["bpi"] != bpi
+        JAM["bpm"], JAM["bpi"] = bpm, bpi
+        JAM["bars"] = max(1, math.ceil(bpi / 4))
+        JAM["intervalSec"] = round(bpi * 60.0 / bpm, 3)
+        JAM["intervalClamped"] = clamped
+        JAM["state"] = "live"
+        seq = JAM["seq"]
+    if changed:
+        _jam_render(proc, seq, bpm, bpi)
+
+
+def _jam_line(proc, line, secret):
+    line = line.strip()
+    if not line:
+        return
+    if secret and secret in line:
+        line = line.replace(secret, "***")
+    if JAM_CONFIG_RE.search(line):
+        bpm = re.search(r"\bbpm=(\d+(?:\.\d+)?)", line)
+        bpi = re.search(r"\bbpi=(\d+)", line)
+        if bpm and bpi:
+            _jam_config(proc, float(bpm.group(1)), int(bpi.group(1)))
+        return
+    if "RESULT" in line:
+        kv = {k: v for k, v in JAM_KV_RE.findall(line)
+              if "pass" not in k.lower() and "secret" not in k.lower()}
+        safe_line = JAM_KV_RE.sub(
+            lambda m: m.group(1) + "=***"
+            if "pass" in m.group(1).lower()
+            or "secret" in m.group(1).lower()
+            else m.group(0), line)
+        with JAM_LOCK:
+            if JAM["proc"] is proc:
+                JAM["result"] = kv
+                JAM["resultLine"] = safe_line[:200]
+
+
+def _jam_tail(proc, log_path, secret):
+    pos = 0
+    buf = b""
+
+    def drain():
+        nonlocal pos, buf
+        try:
+            size = os.path.getsize(log_path)
+        except OSError:
+            size = 0
+        if size < pos:
+            pos, buf = 0, b""
+        if size <= pos:
+            return
+        try:
+            with open(log_path, "rb") as f:
+                f.seek(pos)
+                chunk = f.read(size - pos)
+        except OSError:
+            return
+        pos += len(chunk)
+        buf += chunk
+        *lines, buf = buf.split(b"\n")
+        for raw in lines:
+            _jam_line(proc, raw.decode("utf-8", "replace"), secret)
+
+    while True:
+        drain()
+        with JAM_LOCK:
+            mine = JAM["proc"] is proc
+        if not mine:
+            return
+        if proc.poll() is not None:
+            time.sleep(0.1)
+            drain()
+            with JAM_LOCK:
+                mine = JAM["proc"] is proc
+                if mine:
+                    JAM["proc"] = None
+                    JAM["state"] = "error"
+                    JAM["error"] = f"kujamba exited (rc {proc.returncode})"
+                    _jam_clean_dir()
+            return
+        time.sleep(0.2)
+
+
+def _jam_kill(proc):
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except Exception:
+        proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            proc.kill()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def jam_status():
+    with JAM_LOCK:
+        st = {
+            "ok": True,
+            "state": JAM["state"],
+            "host": JAM["host"],
+            "user": JAM["user"],
+            "bpm": JAM["bpm"],
+            "bpi": JAM["bpi"],
+            "bars": JAM["bars"],
+            "intervalSec": JAM["intervalSec"],
+            "intervalClamped": JAM["intervalClamped"],
+            "loopSec": JAM["loopSec"],
+            "result": dict(JAM["result"]),
+            "resultLine": JAM["resultLine"],
+            "error": JAM["error"],
+        }
+    st["loopUrl"] = "/build/jam/loop.wav" if os.path.isfile(
+        os.path.join(JAM_DIR, "loop.wav")) else None
+    st["kujamba"] = bool(_kujamba_bin())
+    return st
+
+
+def jam_join(host, user, password, seq):
+    """-> (http code, response dict).  ValueError maps to a 400."""
+    if not isinstance(host, str) or not JAM_HOST_RE.match(host):
+        raise ValueError("bad host (want host[:port], [A-Za-z0-9.-])")
+    if not isinstance(user, str) or not JAM_USER_RE.match(user):
+        raise ValueError("bad user (want [A-Za-z0-9._@-], 1-64 chars)")
+    if not isinstance(password, str) or len(password) > 128 \
+            or any(ord(c) < 0x20 or ord(c) == 0x7f for c in password):
+        raise ValueError(
+            "bad pass (string, up to 128 chars, no control chars)")
+    if seq is not None and not isinstance(seq, dict):
+        raise ValueError("seq must be an object")
+    binpath = _kujamba_bin()
+    if not binpath:
+        return 503, {"ok": False,
+                     "error": "kujamba not found — install it or point the "
+                              "KUJAMBA env var at the binary"}
+    with JAM_LOCK:
+        proc = JAM["proc"]
+        if proc is not None and proc.poll() is None:
+            return 409, {"ok": False,
+                         "error": "a jam session is already live — "
+                                  "POST {stop: true} first"}
+        os.makedirs(JAM_DIR, exist_ok=True)
+        _jam_clean_dir()
+        cfg_rel = "build/jam/kujamba.toml"
+        _write_jam_config(os.path.join(JAM_DIR, "kujamba.toml"),
+                          host, user, password)
+        argv = [binpath, "join",
+                "--wav", "build/jam/loop.wav", "--wav-reload",
+                "--pattern", "1", "--reconnect",
+                "--transcript", "build/jam/transcript.log",
+                "--config", cfg_rel]
+        try:
+            proc = subprocess.Popen(
+                argv, cwd=ROOT,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True)
+        except Exception as e:
+            _jam_clean_dir()
+            return 500, {"ok": False,
+                         "error": f"could not spawn kujamba: {e}"}
+        JAM.update({
+            "proc": proc, "state": "starting", "host": host, "user": user,
+            "seq": seq or {},
+            "bpm": None, "bpi": None, "bars": None,
+            "intervalSec": None, "loopSec": None, "intervalClamped": False,
+            "result": {}, "resultLine": None, "error": None,
+        })
+        JAM["tail"] = threading.Thread(
+            target=_jam_tail,
+            args=(proc, os.path.join(JAM_DIR, "transcript.log"), password),
+            daemon=True)
+        JAM["tail"].start()
+    res = jam_status()
+    return 200, res
+
+
+def jam_push_seq(seq):
+    """Swap the loop source mid-session -> (http code, response dict)."""
+    if not isinstance(seq, dict):
+        raise ValueError("seq must be an object")
+    with JAM_LOCK:
+        proc = JAM["proc"]
+        if proc is None or proc.poll() is not None:
+            return 409, {"ok": False, "error": "no live jam session"}
+        JAM["seq"] = seq
+        bpm, bpi = JAM["bpm"], JAM["bpi"]
+    if bpm and bpi:
+        _jam_render(proc, seq, bpm, bpi)
+    return 200, jam_status()
+
+
+def jam_stop():
+    # Kill inside the lock too: a join that lands mid-stop must not have
+    # its fresh files wiped by this session's deferred clean, and the
+    # child must be dead before the wipe so it can't rewrite them after.
+    with JAM_LOCK:
+        proc = JAM["proc"]
+        JAM.update({
+            "proc": None, "state": "off", "seq": None,
+            "host": None, "user": None,
+            "bpm": None, "bpi": None, "bars": None,
+            "intervalSec": None, "loopSec": None, "intervalClamped": False,
+            "result": {}, "resultLine": None, "error": None,
+        })
+        if proc is not None:
+            _jam_kill(proc)
+        _jam_clean_dir()
 
 
 class StudioHandler(http.server.SimpleHTTPRequestHandler):
@@ -483,6 +878,8 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                 "stems": STEM_DEFS + user_stem_defs(),
                 "tracks": list_tracks(),
             })
+        if parsed.path == "/api/jam":
+            return self._send_json(200, jam_status())
         if parsed.path == "/api/patches":
             return self._send_json(200, list_patches())
         if parsed.path == "/api/patch":
@@ -501,6 +898,14 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                     return self._send_json(200, json.load(f))
             except Exception as e:
                 return self._send_json(500, {"ok": False, "error": f"corrupt patch file: {e}"})
+        # build/jam/ holds the 0600 creds file and the child transcript;
+        # only the rendered loop may cross HTTP.  Normalize like
+        # translate_path does so %XX/case/dot variants can't slip past.
+        norm = posixpath.normpath(
+            urllib.parse.unquote(parsed.path)).lower()
+        if norm != "/build/jam/loop.wav" and \
+                (norm == "/build/jam" or norm.startswith("/build/jam/")):
+            return self.send_error(404)
         return super().do_GET()
 
     def _handle_upload_sample(self, parsed):
@@ -542,6 +947,28 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                 "ok": False, "error": f"no sample named '{name}'"})
         return self._send_json(200, {"ok": True, "deleted": name})
 
+    def _handle_jam(self, payload):
+        if not isinstance(payload, dict):
+            return self._send_json(400, {
+                "ok": False, "error": "expected a JSON object"})
+        if payload.get("stop") is True:
+            jam_stop()
+            return self._send_json(200, jam_status())
+        try:
+            if any(k in payload for k in ("host", "user", "pass")):
+                code, res = jam_join(payload.get("host"), payload.get("user"),
+                                     payload.get("pass"), payload.get("seq"))
+                return self._send_json(code, res)
+            if "seq" in payload:
+                code, res = jam_push_seq(payload.get("seq"))
+                return self._send_json(code, res)
+        except ValueError as e:
+            return self._send_json(400, {"ok": False, "error": str(e)})
+        return self._send_json(400, {
+            "ok": False,
+            "error": "expected {host, user, pass[, seq]} to join, "
+                     "{seq} to push a new loop, or {stop: true} to leave"})
+
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         length = int(self.headers.get("Content-Length", "0"))
@@ -549,6 +976,8 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
             return self._handle_upload_sample(parsed)
         if parsed.path == "/api/patch" and length > PATCH_MAX_BYTES:
             return self._send_json(400, {"ok": False, "error": "patch body over the 256 KiB cap"})
+        if parsed.path == "/api/jam" and length > JAM_MAX_BYTES:
+            return self._send_json(400, {"ok": False, "error": "jam body over the 64 KiB cap"})
         raw_body = self.rfile.read(length) if length > 0 else b"{}"
         try:
             payload = json.loads(raw_body.decode("utf-8"))
@@ -560,6 +989,9 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                 res = render_sequence_to_mp3(payload)
                 res["tracks"] = list_tracks()
                 return self._send_json(200, res)
+
+            if parsed.path == "/api/jam":
+                return self._handle_jam(payload)
 
             if parsed.path == "/api/render-preset":
                 mode = payload.get("mode", "fx")
@@ -1331,6 +1763,7 @@ STUDIO_HTML = r"""<!DOCTYPE html>
     <a href="/mixer">DESK</a>
     <a href="/pads">PADS</a>
     <a href="/library">CRATES</a>
+    <a href="/jam">JAM</a>
   </nav>
 </header>
 
@@ -2751,6 +3184,7 @@ MIXER_HTML = r"""<!DOCTYPE html>
     <a href="/mixer" class="active">DESK</a>
     <a href="/pads">PADS</a>
     <a href="/library">CRATES</a>
+    <a href="/jam">JAM</a>
     <span class="midi-badge" id="midiBadge">MIDI: …</span>
   </nav>
 </header>
@@ -3252,6 +3686,7 @@ PADS_HTML = r"""<!DOCTYPE html>
     <a href="/mixer">DESK</a>
     <a href="/pads" class="active">PADS</a>
     <a href="/library">CRATES</a>
+    <a href="/jam">JAM</a>
     <span class="midi-badge" id="midiBadge">MIDI: …</span>
   </nav>
 </header>
@@ -4293,6 +4728,7 @@ LIBRARY_HTML = r"""<!DOCTYPE html>
     <a href="/mixer">DESK</a>
     <a href="/pads">PADS</a>
     <a href="/library" class="active">CRATES</a>
+    <a href="/jam">JAM</a>
   </nav>
 </header>
 
@@ -4466,10 +4902,210 @@ window.addEventListener('DOMContentLoaded', loadCrates);
 """
 
 
+JAM_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BROWNNOTE // NINJAM Jam Bridge</title>
+<style>""" + PAGE_CSS + r"""
+  .jam-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  @media (max-width: 900px) { .jam-grid { grid-template-columns: 1fr; } }
+  .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 9px; }
+  .field label { font-size: 9.5px; color: var(--muted); letter-spacing: 0.08em; }
+  .field input {
+    font-family: inherit;
+    font-size: 11px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 10px;
+  }
+  .stat-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .stat {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 10.5px;
+    color: var(--muted);
+  }
+  .stat b { color: var(--accent-hi); font-weight: 700; }
+  .jam-badge {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    padding: 5px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .jam-badge.live { color: var(--green); border-color: var(--green); }
+  .jam-badge.starting { color: var(--yellow); border-color: var(--yellow); }
+  .jam-badge.error { color: var(--red); border-color: var(--red); }
+  .result-line {
+    font-size: 10px;
+    color: var(--muted);
+    word-break: break-all;
+    min-height: 14px;
+  }
+  audio { width: 100%; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="logo-badge">💨</div>
+    <div>
+      <h1>BROWNNOTE JAM // NINJAM BRIDGE</h1>
+      <p>Jam farts with friends on the internet — your SEQ+MIX loop streams through kujamba</p>
+    </div>
+  </div>
+  <nav class="page-nav">
+    <a href="/">SEQ+MIX</a>
+    <a href="/mixer">DESK</a>
+    <a href="/pads">PADS</a>
+    <a href="/library">CRATES</a>
+    <a href="/jam" class="active">JAM</a>
+  </nav>
+</header>
+
+<div class="jam-grid">
+  <section class="card">
+    <div class="card-header">
+      <span class="card-title">Join a NINJAM server</span>
+    </div>
+    <div class="field">
+      <label for="jamHost">SERVER HOST[:PORT]</label>
+      <input id="jamHost" type="text" maxlength="255" placeholder="ninjam.example.org:2049" />
+    </div>
+    <div class="field">
+      <label for="jamUser">USER</label>
+      <input id="jamUser" type="text" maxlength="64" placeholder="stinker" />
+    </div>
+    <div class="field">
+      <label for="jamPass">PASSWORD — POST body only, handed to kujamba via a 0600 file, never argv or logs</label>
+      <input id="jamPass" type="password" maxlength="128" autocomplete="off" />
+    </div>
+    <button class="primary" onclick="joinJam()">💨 JOIN THE JAM</button>
+    <div class="status-banner" id="joinStatus">Your current SEQ+MIX pattern rides along as the loop. Friends monitor you in their own NINJAM client.</div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <span class="card-title">Session</span>
+      <span class="jam-badge" id="jamBadge">OFF</span>
+    </div>
+    <div class="stat-row" id="jamStats"></div>
+    <div class="result-line" id="jamResult"></div>
+    <audio id="jamAudio" controls style="display:none"></audio>
+    <div style="display:flex; gap:6px; margin-top:10px;">
+      <button onclick="pushLoop()" title="Re-render the current SEQ+MIX pattern into loop.wav">↻ PUSH CURRENT LOOP</button>
+      <button onclick="stopJam()">⏹ STOP</button>
+    </div>
+    <div class="status-banner" id="statusText">Idle.</div>
+  </section>
+</div>
+
+<script>
+""" + STUDIO_JS + r"""
+function seqPayload() {
+  const s = studioRead().seq;
+  return (s && typeof s === 'object') ? s : {};
+}
+
+function setStatus(msg) {
+  document.getElementById('statusText').textContent = msg;
+}
+
+function paintJam(st) {
+  const badge = document.getElementById('jamBadge');
+  badge.textContent = (st.state || 'off').toUpperCase();
+  badge.className = 'jam-badge ' + (st.state || 'off');
+  const stats = [];
+  if (st.host) stats.push(`<span class="stat">server <b>${st.host}</b></span>`);
+  if (st.user) stats.push(`<span class="stat">user <b>${st.user}</b></span>`);
+  if (st.bpm) stats.push(`<span class="stat">bpm <b>${st.bpm}</b></span>`);
+  if (st.bpi) stats.push(`<span class="stat">bpi <b>${st.bpi}</b> (${st.bars} bars)</span>`);
+  if (st.intervalSec) stats.push(`<span class="stat">interval <b>${st.intervalSec}s${st.intervalClamped ? ' (clamped)' : ''}</b></span>`);
+  document.getElementById('jamStats').innerHTML = stats.join('');
+  document.getElementById('jamResult').textContent = st.resultLine || '';
+  const audio = document.getElementById('jamAudio');
+  if (st.loopUrl) {
+    audio.style.display = '';
+    if (!audio.src.endsWith(st.loopUrl)) audio.src = st.loopUrl;
+  } else {
+    audio.style.display = 'none';
+    audio.removeAttribute('src');
+  }
+  if (st.error) setStatus('⚠ ' + st.error);
+}
+
+async function pollJam() {
+  try {
+    const res = await fetch('/api/jam');
+    paintJam(await res.json());
+  } catch (e) {}
+}
+
+async function joinJam() {
+  const host = document.getElementById('jamHost').value.trim();
+  const user = document.getElementById('jamUser').value.trim();
+  const pass = document.getElementById('jamPass').value;
+  document.getElementById('jamPass').value = '';
+  const res = await fetch('/api/jam', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ host, user, pass, seq: seqPayload() }),
+  });
+  const data = await res.json();
+  paintJam(data);
+  document.getElementById('joinStatus').textContent = data.ok
+    ? `✓ joining ${host} as ${user}…`
+    : `❌ ${data.error}`;
+}
+
+async function pushLoop() {
+  const res = await fetch('/api/jam', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seq: seqPayload() }),
+  });
+  const data = await res.json();
+  paintJam(data);
+  if (!data.ok) setStatus(`❌ ${data.error}`);
+}
+
+async function stopJam() {
+  const res = await fetch('/api/jam', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stop: true }),
+  });
+  const data = await res.json();
+  paintJam(data);
+  setStatus(data.ok ? 'Left the jam.' : `❌ ${data.error}`);
+}
+
+setInterval(pollJam, 1000);
+pollJam();
+</script>
+</body>
+</html>
+"""
+
+
 EXTRA_PAGES = {
     "/mixer": MIXER_HTML,
     "/pads": PADS_HTML,
     "/library": LIBRARY_HTML,
+    "/jam": JAM_HTML,
 }
 
 
@@ -4478,7 +5114,25 @@ if __name__ == "__main__":
         ensure_stems()
     except Exception as e:
         print(f"warning: stem build failed ({e}); /api/state will retry and 503", file=sys.stderr)
+
+    # A SIGKILLed previous run leaves its creds file + transcript behind.
+    _jam_clean_dir()
+
+    # Signals must not take JAM_LOCK here (it can be held mid-join, and
+    # the lock isn't reentrant) — bail out and let finally: jam_stop()
+    # below do the teardown on the main thread.
+    def _shutdown_jam(*_):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, _shutdown_jam)
+    if hasattr(signal, "SIGHUP"):   # terminal close must not orphan the child
+        signal.signal(signal.SIGHUP, _shutdown_jam)
+
     with ReusableTCPServer((HOST, PORT), StudioHandler) as httpd:
         print(f"Brownnote Studio listening on http://{HOST}:{PORT}", flush=True)
-        print("  pages: / (seq+mixer)  /mixer (desk)  /pads (MPC)  /library (crates)", flush=True)
-        httpd.serve_forever()
+        print("  pages: / (seq+mixer)  /mixer (desk)  /pads (MPC)  /library (crates)  /jam (nin)", flush=True)
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            jam_stop()
