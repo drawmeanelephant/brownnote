@@ -7,6 +7,12 @@ Boots the studio server on a free loopback port, then checks:
   - GET /api/state                  -> 200 with stems, or 503 JSON if the
                                      stem build cannot run on this machine
   - POST /api/no-such-endpoint      -> 404 JSON {"ok": false, ...}
+  - AUDIT (#63-#73): no/foreign Origin+Referer and missing
+    X-Studio-Client 403 on GETs+POSTs, non-loopback Host 403s,
+    nosniff+CSP headers, .git/source/listings 404 behind the static
+    whitelist, over-cap/garbage/chunked bodies get 413/400 (not a
+    dropped connection), absurd bars clamp to 64, render-preset names
+    400, and a patch pad label carrying HTML 400s
   - PATCHES (#45): POST /api/patch saves a v1 snapshot under
     build/patches/, GET /api/patches lists it, GET /api/patch?name=
     returns it, delete removes it, and pathy/oversized/empty names
@@ -144,23 +150,29 @@ def free_port():
     return port
 
 
-def get(path):
+def get(path, headers=None):
     """-> (status, content-type, body bytes); HTTPError still returns data."""
-    try:
-        r = urllib.request.urlopen(BASE + path, timeout=10)
-        return r.status, r.headers.get("Content-Type", ""), r.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.headers.get("Content-Type", ""), e.read()
+    return get_to(BASE, path, headers=headers)
 
 
-def post(path, body=b"{}", timeout=10):
-    return post_to(BASE, path, body, timeout)
+def post(path, body=b"{}", timeout=10, headers=None):
+    return post_to(BASE, path, body, timeout, headers)
 
 
-def post_to(base, path, body=b"{}", timeout=10):
+def _api_headers(extra):
+    """The studio's own pages stamp X-Studio-Client on /api/* calls;
+    the helpers send it everywhere so they behave like a same-origin
+    page (#63)."""
+    h = {"X-Studio-Client": "1"}
+    h.update(extra or {})
+    return h
+
+
+def post_to(base, path, body=b"{}", timeout=10, headers=None):
     req = urllib.request.Request(
         base + path, data=body, method="POST",
-        headers={"Content-Type": "application/json"})
+        headers=_api_headers({"Content-Type": "application/json",
+                              **(headers or {})}))
     try:
         r = urllib.request.urlopen(req, timeout=timeout)
         return r.status, r.headers.get("Content-Type", ""), r.read()
@@ -168,9 +180,11 @@ def post_to(base, path, body=b"{}", timeout=10):
         return e.code, e.headers.get("Content-Type", ""), e.read()
 
 
-def get_to(base, path, timeout=10):
+def get_to(base, path, timeout=10, headers=None):
+    req = urllib.request.Request(base + path,
+                                 headers=_api_headers(headers))
     try:
-        r = urllib.request.urlopen(base + path, timeout=timeout)
+        r = urllib.request.urlopen(req, timeout=timeout)
         return r.status, r.headers.get("Content-Type", ""), r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.headers.get("Content-Type", ""), e.read()
@@ -180,12 +194,24 @@ def post_typed(path, body, ctype):
     """POST with an explicit Content-Type (sample uploads are not JSON)."""
     req = urllib.request.Request(
         BASE + path, data=body, method="POST",
-        headers={"Content-Type": ctype})
+        headers=_api_headers({"Content-Type": ctype}))
     try:
         r = urllib.request.urlopen(req, timeout=10)
         return r.status, r.headers.get("Content-Type", ""), r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.headers.get("Content-Type", ""), e.read()
+
+
+def raw(path, method="GET", body=None, headers=None):
+    """-> (status, headers, body): a request with EXACTLY these headers —
+    for asserting the request gate rejects what's absent (#63)."""
+    req = urllib.request.Request(BASE + path, data=body, method=method,
+                                 headers=dict(headers or {}))
+    try:
+        r = urllib.request.urlopen(req, timeout=10)
+        return r.status, dict(r.headers), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
 
 
 def wav_bytes(rate=44100, ch=1, width=2, secs=0.5):
@@ -410,6 +436,139 @@ def main():
             fails.append("POST /api/no-such-endpoint: 404 but body is not "
                          '{"ok": false, ...}')
 
+        # ---- 2026-10-14 audit hardening (#63-#73) ---------------------
+        # #63 CSRF: a cross-site "simple request" (text/plain, no custom
+        # headers, foreign Origin) must 403 on POSTs AND on side-effect
+        # GETs like /api/state, while the served pages' stamped header
+        # passes.  urllib always sends a loopback Host here.
+        for label, path, method, body, headers in (
+            ("POST text/plain no hdr", "/api/patch", "POST",
+             b'{"name":"x","patch":{"v":1}}',
+             {"Content-Type": "text/plain"}),
+            ("POST json no hdr", "/api/patch", "POST",
+             b'{"name":"x","patch":{"v":1}}',
+             {"Content-Type": "application/json"}),
+            ("GET api no hdr", "/api/state", "GET", None, {}),
+            ("POST foreign Origin", "/api/jam", "POST", b'{"stop": true}',
+             {"Origin": "http://evil.example",
+              "X-Studio-Client": "1",
+              "Content-Type": "text/plain"}),
+            ("GET foreign Referer", "/api/state", "GET", None,
+             {"Referer": "http://evil.example/x",
+              "X-Studio-Client": "1"}),
+        ):
+            status, _, _ = raw(path, method, body, headers)
+            if status != 403:
+                fails.append(f"csrf gate {label}: status {status} "
+                             "(want 403)")
+        # the stamped header reaches the handler even over a "simple"
+        # request's text/plain body — the gate is the header, not the
+        # Content-Type (bad patch name -> 400, not 403)
+        status, _, _ = raw("/api/patch", "POST",
+                           b'{"name":"../x","patch":{"v":1}}',
+                           {"Content-Type": "text/plain",
+                            "X-Studio-Client": "1"})
+        if status != 400:
+            fails.append(f"csrf gate same-origin POST: status {status} "
+                         "(want 400)")
+        # same-origin Origin/Referer values pass the gate
+        status, _, _ = raw(
+            "/api/state", "GET", None,
+            {"Origin": BASE, "X-Studio-Client": "1"})
+        if status not in (200, 503):
+            fails.append(f"csrf gate same-origin Origin: {status}")
+        # a non-loopback Host (the DNS-rebinding shape) 403s everywhere
+        host, sport = BASE.split("://", 1)[1].split(":", 1)
+        conn = http.client.HTTPConnection(host, int(sport), timeout=10)
+        conn.putrequest("GET", "/api/state", skip_host=True)
+        conn.putheader("Host", "evil.example.com")
+        conn.putheader("X-Studio-Client", "1")
+        conn.endheaders()
+        resp = conn.getresponse()
+        if resp.status != 403:
+            fails.append(f"host gate: status {resp.status} (want 403)")
+        resp.read()
+        conn.close()
+        # #72: hardening headers ride on every response
+        _, hdrs, _ = raw("/", "GET", None, {})
+        if hdrs.get("X-Content-Type-Options") != "nosniff":
+            fails.append("GET /: missing X-Content-Type-Options nosniff")
+        if "default-src 'self'" not in \
+                (hdrs.get("Content-Security-Policy") or ""):
+            fails.append("GET /: missing Content-Security-Policy")
+
+        # #65: static serving is a whitelist — repo source, dotfiles,
+        # manifests, and directory listings must all 404
+        for path in ("/.git/config", "/.gitignore", "/scripts/studio.py",
+                     "/scripts/", "/docs/", "/build/library.json",
+                     "/build/tune/", "/Makefile", "/README.md"):
+            status, _, _ = get(path)
+            if status != 404:
+                fails.append(f"static whitelist GET {path}: {status} "
+                             "(want 404)")
+
+        # #68: over-cap, garbage, and chunked bodies are answered, not
+        # dropped; render endpoints carry the shared 1 MiB cap
+        for label, hdrs_extra in (
+            ("over-cap", {"Content-Length": str(1024 * 1024 + 1)}),
+            ("bad length", {"Content-Length": "abc"}),
+            ("chunked", {"Transfer-Encoding": "chunked"}),
+        ):
+            conn = http.client.HTTPConnection(host, int(sport), timeout=10)
+            conn.putrequest("POST", "/api/render-sequence")
+            conn.putheader("Content-Type", "application/json")
+            conn.putheader("X-Studio-Client", "1")
+            for k, v in hdrs_extra.items():
+                conn.putheader(k, v)
+            if "Content-Length" not in hdrs_extra:
+                conn.endheaders(b"0\r\n\r\n")
+            else:
+                conn.endheaders()
+            try:
+                resp = conn.getresponse()
+                want = 413 if label == "over-cap" else 400
+                if resp.status != want:
+                    fails.append(f"body gate {label}: {resp.status} "
+                                 f"(want {want})")
+                resp.read()
+            except Exception as e:
+                fails.append(f"body gate {label}: no response ({e})")
+            finally:
+                conn.close()
+
+        # #64: an absurd bars is clamped, not honored — all-muted tracks
+        # render silence so this exercises the clamp without the mix
+        status, _, body = post("/api/render-sequence", json.dumps({
+            "bpm": 240, "bars": 10000000, "swing": 0,
+            "tracks": {i: {"mute": True}
+                       for i in ("kick", "snare", "hat",
+                                 "wah", "lead", "bomb")},
+        }).encode(), timeout=60)
+        p = json.loads(body) if body else {}
+        want_sec = 64 * 1.0 + 1.8       # 64 bars @ 240 BPM + tail
+        if status != 200 or abs((p.get("durationSec") or 0) - want_sec) \
+                > 0.01:
+            fails.append(f"bars clamp: status {status} "
+                         f"durationSec {p.get('durationSec')!r} "
+                         f"(want {want_sec})")
+
+        # #73: render-preset names are validated before any path is built
+        for bad in ("../escape", "a/b", "UPPER", "funk;rm", "x" * 33):
+            status, _, body = post("/api/render-preset", json.dumps(
+                {"mode": "song", "name": bad}).encode())
+            if status != 400:
+                fails.append(f"render-preset name {bad!r}: {status} "
+                             "(want 400)")
+
+        # #66: stored XSS via a patch pad label 400s server-side
+        status, _, body = post("/api/patch", json.dumps({
+            "name": "xss pads", "patch": {"v": 1, "pads": [
+                {"stem": "bomb", "semi": 0,
+                 "label": "<img src=x onerror=alert(1)>"}]}}).encode())
+        if status != 400:
+            fails.append(f"patch pad html label: status {status} "
+                         "(want 400)")
+
         # ---- #47: scale quantize ------------------------------------
         # The q() helper lives in the shared STUDIO_JS block served on
         # every page; slice it out of / and run the issue's worked
@@ -617,6 +776,7 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
             conn = http.client.HTTPConnection(host, int(port), timeout=10)
             conn.putrequest("POST", "/api/upload-sample?name=toobig")
             conn.putheader("Content-Type", "audio/wav")
+            conn.putheader("X-Studio-Client", "1")
             conn.putheader("Content-Length", str(10 * 1024 * 1024 + 1))
             conn.endheaders()
             resp = conn.getresponse()

@@ -283,7 +283,11 @@ run_fx() {
 	fi
 
 	local tmp
-	tmp="$(mktemp -d)"
+	tmp="$(mktemp -d "${TMPDIR:-/tmp}/brownnote.XXXXXXXXXX")"
+	# a SIGKILLed parent can't run this, but TERM/clean exits can — the
+	# studio also sweeps stale brownnote.* dirs on boot (#69)
+	PRESET_TMP="$tmp"
+	trap 'rm -rf "$PRESET_TMP"' EXIT
 
 	synth_phrase "$phrase" "$def_voice" "$seed" "$tmp/dry.wav"
 	if [ "${#bn_args[@]}" -eq 0 ] || [ ! -x "$BENCH" ]; then
@@ -399,8 +403,21 @@ run_song() {
 
 	[ -x "$BN" ] || make -s -C "$ROOT"
 
+	# clamp render size: the python mixer allocates bars*bar*SR samples
+	# in pure python — unbounded --bars/--bpm is a DoS (#64)
+	case "$bars" in *[!0-9]*|'') bars=8 ;; esac
+	[ "$bars" -lt 1 ]  && bars=1
+	[ "$bars" -gt 64 ] && bars=64
+	case "$bpm" in *[!0-9]*|'') bpm=120 ;; esac
+	[ "$bpm" -lt 40 ]  && bpm=40
+	[ "$bpm" -gt 240 ] && bpm=240
+
 	local tmp
-	tmp="$(mktemp -d)"
+	tmp="$(mktemp -d "${TMPDIR:-/tmp}/brownnote.XXXXXXXXXX")"
+	# a SIGKILLed parent can't run this, but TERM/clean exits can — the
+	# studio also sweeps stale brownnote.* dirs on boot (#69)
+	PRESET_TMP="$tmp"
+	trap 'rm -rf "$PRESET_TMP"' EXIT
 
 	echo "⚙ Synthesizing & pedaling stems for '$genre' ($bpm BPM, $bars bars)..."
 
@@ -470,8 +487,10 @@ run_song() {
 import sys, os, wave, struct, math, array
 
 tmp_dir, genre, bpm_s, bars_s, out_wav = sys.argv[1:6]
-BPM = float(bpm_s)
-BARS = int(bars_s)
+# clamped here too (not just in the shell) — this mix allocates
+# bars*bar*SR float samples in pure python (#64)
+BPM = max(40.0, min(240.0, float(bpm_s)))
+BARS = max(1, min(64, int(bars_s)))
 SR = 44100
 
 def load_wav(name):
