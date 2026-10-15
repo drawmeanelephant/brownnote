@@ -58,8 +58,9 @@ cross-site 'simple requests' can't add it and no CORS preflight is
 ever answered.  The Host header must be a loopback address; with
 STUDIO_ALLOW_REMOTE=1 the studio binds off-loopback but Host must
 still be an IP literal or loopback name (DNS rebinding needs a name).
-Only audio under build/{tune,presets,user,library} and recordings/
-is ever read off disk; everything else is a 404.
+Only audio under build/{tune,presets,user,library}, recordings/, and
+the rendered build/jam/loop.wav is ever read off disk; everything else
+is a 404.
 """
 import http.server
 import io
@@ -154,6 +155,10 @@ def list_tracks():
                 continue
             if fn.endswith((".mp3", ".wav")):
                 p = os.path.join(presets_dir, fn)
+                # a dir merely named like audio lists here then 404s
+                # on play — files only
+                if not os.path.isfile(p):
+                    continue
                 kind = "Song" if fn.startswith("song_") else ("Custom" if fn.startswith("custom_") else "FX Preset")
                 tracks.append({
                     "name": fn,
@@ -168,6 +173,8 @@ def list_tracks():
                 continue
             if fn.endswith(".wav"):
                 p = os.path.join(rec_dir, fn)
+                if not os.path.isfile(p):
+                    continue
                 tracks.append({
                     "name": fn,
                     "kind": "Recording",
@@ -180,6 +187,8 @@ def list_tracks():
                 continue
             if fn.endswith(".wav"):
                 p = os.path.join(USER_DIR, fn)
+                if not os.path.isfile(p):
+                    continue
                 label = fn
                 try:
                     with open(os.path.join(USER_DIR, fn[:-4] + ".json"),
@@ -645,6 +654,8 @@ def _scan_library():
             if not fn.lower().endswith(".wav") or rel in claimed:
                 continue
             p = os.path.join(ROOT, rel)
+            if not os.path.isfile(p):
+                continue   # a dir merely named like a WAV can't intake
             fmt = _wav_format(p)
             if not fmt or fmt[:3] != (44100, 1, 2) or fmt[3] <= 0:
                 continue   # stays catalog-only; promote can normalize it
@@ -699,8 +710,11 @@ def _scan_library():
         if not os.path.isdir(d):
             continue
         for fn in sorted(os.listdir(d)):
+            # os.stat follows dirs — a dir named like audio would be
+            # cataloged then 404 on play; files only
             if fn.startswith(".") \
-                    or not fn.lower().endswith((".wav", ".mp3")):
+                    or not fn.lower().endswith((".wav", ".mp3")) \
+                    or not os.path.isfile(os.path.join(d, fn)):
                 continue
             rel = f"{rel_dir}/{fn}"
             if rel in claimed:
@@ -919,12 +933,15 @@ def intake_sample(name, body):
 # multi-hundred-MB sample lists.
 SEQ_MAX_BARS = 64
 SEQ_MAX_SEC = 120.0
-# The / page's pitch slider is -12..+18 st and stepPitches come from
-# PITCH_CYCLE/q() (|st| <= ~24) — a posted semi far outside that only
-# stretches pitch_shift's buffer by 2^(-semi/12) (#64).  Semitones are
-# rounded to ints so the per-track shift cache stays tiny, and the
-# cache is bounded anyway.
-SEQ_SEMI_RANGE = 24
+# The clamp below is the memory bound on pitch_shift: only NEGATIVE
+# semitones grow the shifted buffer (ratio 2^(-semi/12) < 1 upsamples,
+# capped again at N).  The UI legitimately reaches +30 st (slider +18
+# or the +14 hat default, plus a +12 PITCH_CYCLE step), so the positive
+# bound stays generous — it only ever shrinks the buffer (#64).
+# Semitones are rounded to ints so the per-track shift cache stays
+# tiny, and the cache is bounded anyway.
+SEQ_SEMI_MIN = -24
+SEQ_SEMI_MAX = 48
 SEQ_SHIFT_CACHE_MAX = 32
 # Coarse wall-clock budget for the whole mix: a pitch-storm payload
 # degrades to a partial mix, never a pinned handler thread.
@@ -933,7 +950,9 @@ SEQ_RENDER_LOCK = threading.Lock()
 
 
 def _sequence_mix(payload, tail_sec):
-    """Mix the sequencer grid to stereo float buffers -> (L, R, SR).
+    """Mix the sequencer grid to stereo float buffers -> (L, R, SR,
+    partial) — partial is True when the wall-clock budget cut the mix
+    short and later hits never landed.
 
     `steps`/`stepPitches` arrays of length 16 are a single bar repeated for
     every bar (the `/` sequencer's format). Any other length is treated as a
@@ -1014,7 +1033,7 @@ def _sequence_mix(payload, tail_sec):
         # payload can't turn pitch_shift into a huge allocation (#64).
         # Semitones are ints inside the UI's reachable range: distinct
         # float keys would otherwise defeat the shift cache bound.
-        base_pitch = int(round(max(-SEQ_SEMI_RANGE, min(SEQ_SEMI_RANGE,
+        base_pitch = int(round(max(SEQ_SEMI_MIN, min(SEQ_SEMI_MAX,
             _finite(tcfg.get("pitch", sd["defaultPitch"]),
                     sd["defaultPitch"])))))
         gain = max(0.0, min(2.0, _finite(
@@ -1038,6 +1057,7 @@ def _sequence_mix(payload, tail_sec):
         gr = gain * math.sin(angle)
 
         shifted_cache = {}
+        cache_samples = 0
         for bar in range(bars):
             for s in range(16):
                 i = bar * 16 + s
@@ -1045,15 +1065,24 @@ def _sequence_mix(payload, tail_sec):
                 if not vel:
                     continue
                 if time.monotonic() > deadline:
-                    return L, R, SR   # over budget: ship the partial mix
+                    # over budget: ship the partial mix, but say so —
+                    # silent truncation drops the late hits (#64)
+                    return L, R, SR, True
                 vel_scale = 1.0 if vel == 1 else (1.25 if vel == 2 else 0.65)
                 sp = _finite(grid_val(step_pitches, s, i), 0.0)
-                semi = int(round(max(-SEQ_SEMI_RANGE, min(
-                    SEQ_SEMI_RANGE, base_pitch + sp))))
+                semi = int(round(max(SEQ_SEMI_MIN, min(
+                    SEQ_SEMI_MAX, base_pitch + sp))))
                 if semi not in shifted_cache:
-                    if len(shifted_cache) >= SEQ_SHIFT_CACHE_MAX:
-                        shifted_cache.pop(next(iter(shifted_cache)))
-                    shifted_cache[semi] = pitch_shift(trimmed, semi)
+                    shifted = pitch_shift(trimmed, semi)
+                    # bound by total samples, not just entries — each
+                    # buf is a Python float list (~32 B/sample) up to N
+                    while shifted_cache and (
+                            len(shifted_cache) >= SEQ_SHIFT_CACHE_MAX
+                            or cache_samples + len(shifted) > 4 * N):
+                        old = shifted_cache.pop(next(iter(shifted_cache)))
+                        cache_samples -= len(old)
+                    shifted_cache[semi] = shifted
+                    cache_samples += len(shifted)
                 buf = shifted_cache[semi]
 
                 swing_offset = (swing * 0.35 * step_sec) if (s % 2 == 1) else 0.0
@@ -1065,7 +1094,7 @@ def _sequence_mix(payload, tail_sec):
                     idx = idx0 + i
                     L[idx] += buf[i] * gl * vel_scale
                     R[idx] += buf[i] * gr * vel_scale
-    return L, R, SR
+    return L, R, SR, False
 
 
 def _s16_stereo(L, R):
@@ -1086,7 +1115,7 @@ def render_sequence_to_mp3(payload):
     bpm = max(40.0, min(240.0, _finite(payload.get("bpm", 116), 116.0)))
     bpm_i = int(bpm)
     with SEQ_RENDER_LOCK:
-        L, R, SR = _sequence_mix(payload, tail_sec=1.8)
+        L, R, SR, partial = _sequence_mix(payload, tail_sec=1.8)
     out_pcm = _s16_stereo(L, R)
     N = len(L)
 
@@ -1128,6 +1157,11 @@ def render_sequence_to_mp3(payload):
             ], check=True)
         os.replace(wav_tmp, wav_path)
         if mp3_tmp is not None:
+            # the root copy must read OUR tmp, not the shared fixed-name
+            # mp3_path — a concurrent same-bpm render can swap different
+            # audio into it between our replace and the read (#71)
+            _atomic_copy(mp3_tmp,
+                         os.path.join(ROOT, "brownnote_custom_groove.mp3"))
             os.replace(mp3_tmp, mp3_path)
             mp3_tmp = None
     except BaseException:
@@ -1141,21 +1175,20 @@ def render_sequence_to_mp3(payload):
         raise
 
     if have_ffmpeg:
-        # Also copy to workspace root so user can grab it easily
-        _atomic_copy(mp3_path,
-                     os.path.join(ROOT, "brownnote_custom_groove.mp3"))
         return {
             "ok": True,
             "url": f"/build/presets/{mp3_name}?t={ts}",
             "wavUrl": f"/build/presets/{wav_name}?t={ts}",
             "rootFile": "brownnote_custom_groove.mp3",
             "durationSec": round(N / SR, 2),
+            "partial": partial,
         }
     return {
         "ok": True,
         "url": f"/build/presets/{wav_name}?t={ts}",
         "wavUrl": f"/build/presets/{wav_name}?t={ts}",
         "durationSec": round(N / SR, 2),
+        "partial": partial,
     }
 
 
@@ -1181,6 +1214,7 @@ JAM = {
     "host": None, "user": None, "seq": None,
     "bpm": None, "bpi": None, "bars": None,
     "intervalSec": None, "loopSec": None, "intervalClamped": False,
+    "loopPartial": False,
     "resultLine": None, "error": None,
 }
 
@@ -1251,7 +1285,7 @@ def render_jam_loop(seq, bpm, bpi, out_path):
     # the same whole-mix lock as /api/render-sequence: a jam loop and a
     # manual render never allocate big sample buffers at once (#64)
     with SEQ_RENDER_LOCK:
-        L, R, SR = _sequence_mix(payload, tail_sec=0.0)
+        L, R, SR, partial = _sequence_mix(payload, tail_sec=0.0)
     want = max(1, int(round(bpi * 60.0 / bpm * SR)))
     if len(L) > want:
         L, R = L[:want], R[:want]
@@ -1276,7 +1310,7 @@ def render_jam_loop(seq, bpm, bpi, out_path):
         except OSError:
             pass
         raise
-    return round(want / SR, 3)
+    return round(want / SR, 3), partial
 
 
 def _jam_render(proc, seq, bpm, bpi):
@@ -1287,8 +1321,8 @@ def _jam_render(proc, seq, bpm, bpi):
             if JAM["proc"] is not proc:
                 return
         try:
-            sec = render_jam_loop(seq, bpm, bpi,
-                                  os.path.join(JAM_DIR, "loop.wav"))
+            sec, partial = render_jam_loop(
+                seq, bpm, bpi, os.path.join(JAM_DIR, "loop.wav"))
         except Exception as e:
             with JAM_LOCK:
                 if JAM["proc"] is proc:
@@ -1302,6 +1336,9 @@ def _jam_render(proc, seq, bpm, bpi):
                     pass
                 return
             JAM["loopSec"] = sec
+            # a budget-cut mix must not pass silently — late hits were
+            # dropped, so the loop is partial
+            JAM["loopPartial"] = partial
             if JAM["error"] and JAM["error"].startswith("loop render"):
                 JAM["error"] = None
 
@@ -1433,6 +1470,7 @@ def jam_status():
             "intervalSec": JAM["intervalSec"],
             "intervalClamped": JAM["intervalClamped"],
             "loopSec": JAM["loopSec"],
+            "loopPartial": JAM["loopPartial"],
             "resultLine": JAM["resultLine"],
             "error": JAM["error"],
         }
@@ -1489,6 +1527,7 @@ def jam_join(host, user, password, seq):
             "seq": seq or {},
             "bpm": None, "bpi": None, "bars": None,
             "intervalSec": None, "loopSec": None, "intervalClamped": False,
+            "loopPartial": False,
             "resultLine": None, "error": None,
         })
         JAM["tail"] = threading.Thread(
@@ -1526,6 +1565,7 @@ def jam_stop():
             "host": None, "user": None,
             "bpm": None, "bpi": None, "bars": None,
             "intervalSec": None, "loopSec": None, "intervalClamped": False,
+            "loopPartial": False,
             "resultLine": None, "error": None,
         })
         if proc is not None:
@@ -1607,6 +1647,9 @@ POST_CAPS = {
     "/api/library/default": PATCH_MAX_BYTES,
 }
 PRESET_NAME_RE = re.compile(r"^[a-z0-9-]{1,32}$")
+# A Host :port must be ASCII digits — str.isdigit() also accepts
+# Unicode digits like '²' (#65)
+_PORT_RE = re.compile(r"[0-9]+")
 
 
 def _cap_label(cap):
@@ -1636,7 +1679,9 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
     # ---- #63/#65 request gate ---------------------------------------
 
     def _host_name(self):
-        """Host header value with any :port stripped."""
+        """Host header value with any :port stripped.  A present but
+        non-numeric port fails the whole value — '127.0.0.1:junk' is
+        not a loopback with a weird port (#65)."""
         host = (self.headers.get("Host") or "").strip()
         if host.startswith("["):
             end = host.find("]")
@@ -1646,11 +1691,13 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
             # '[::1]junk' is not a v6 literal with a port — only an
             # empty tail or ':<digits>' may follow the bracket (#65)
             if rest and not (rest.startswith(":")
-                             and rest[1:].isdigit()):
+                             and _PORT_RE.fullmatch(rest[1:])):
                 return host
             return host[1:end]
         if host.count(":") == 1:
-            host = host.split(":", 1)[0]
+            name, _, port = host.partition(":")
+            if _PORT_RE.fullmatch(port):
+                return name
         return host
 
     def _blocked(self):
@@ -1669,12 +1716,20 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
             except ValueError:
                 pass
         if not host_ok:
-            self._send_json(403, {"ok": False,
-                                  "error": "Host must be loopback"})
+            self._send_json(403, {"ok": False, "error": (
+                "Host must be an IP literal or loopback name"
+                if ALLOW_REMOTE else "Host must be loopback")})
             return True
         # gate on the PARSED path — raw self.path in absolute-form
-        # ('GET http://host/api/jam') would slip past a startswith test
-        path = urllib.parse.urlparse(self.path).path
+        # ('GET http://host/api/jam') would slip past a startswith test.
+        # urlparse raises ValueError on a malformed netloc ('[::1/x') —
+        # a dropped connection is not a response; answer 400 (#68).
+        try:
+            path = urllib.parse.urlparse(self.path).path
+        except ValueError:
+            self._send_json(400, {"ok": False,
+                                  "error": "malformed request target"})
+            return True
         if not path.startswith("/api/"):
             return False
         host = (self.headers.get("Host") or "").strip().lower()
@@ -1729,12 +1784,15 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
             return None, (400, "chunked bodies not supported")
         # HTTP permits repeated Content-Length fields only when every
         # value agrees; and int() accepted '1_0'/'+2' — ASCII digits
-        # only, one distinct value (#68)
+        # only, one distinct value (#68).  The digit run is also
+        # length-capped: int() on >4300 digits raises ValueError under
+        # Python 3.11's limit — outside any try, that drops the
+        # connection instead of answering 400.
         raws = self.headers.get_all("Content-Length") or []
         vals = [v.strip() for r in raws for v in r.split(",")]
         if not vals:
             return b"", None
-        if any(not re.fullmatch(r"[0-9]+", v) for v in vals) \
+        if any(not re.fullmatch(r"[0-9]{1,15}", v) for v in vals) \
                 or len(set(vals)) != 1:
             return None, (400, "bad Content-Length")
         length = int(vals[0])
@@ -2204,10 +2262,17 @@ function studioPadsSerialize(pads) {
   // labels are free text from localStorage and re-validated server-side —
   // strip the only chars it rejects so a stale/hand-edited label can't
   // brick every patch save with a 400 (#66)
-  return (Array.isArray(pads) ? pads : []).map(p => ({
-    stem: p.stem, semi: p.semi,
-    label: String(p.label ?? '').replace(/[<>]/g, '').slice(0, 64),
-  }));
+  return (Array.isArray(pads) ? pads : [])
+    .filter(p => p && typeof p === 'object')   // a stray null must not brick Save
+    .map(p => {
+      const o = { stem: p.stem, semi: p.semi };
+      // keep a missing label absent — serializing it as '' makes
+      // applyPadsSlice blank the pad's existing label on next load
+      if (p.label !== undefined) {
+        o.label = String(p.label).replace(/[<>]/g, '').slice(0, 64);
+      }
+      return o;
+    });
 }
 
 // Default desk slice (the /mixer page owns this live, but / needs it to
@@ -3635,8 +3700,10 @@ function applySeqSlice(seq) {
       st.steps = Array.from({ length: 16 }, (_, i) => pt.steps[i] | 0);
     }
     if (Array.isArray(pt.stepPitches)) {
+      // same window as the server's per-step clamp — the combined
+      // pitch+step reaches +30 through the UI and must not collapse
       st.stepPitches = Array.from({ length: 16 }, (_, i) =>
-        Math.max(-24, Math.min(24, pt.stepPitches[i] | 0)));
+        Math.max(-24, Math.min(48, pt.stepPitches[i] | 0)));
     }
   }
   buildTracksUI();
@@ -3776,7 +3843,8 @@ async function bounceSequenceToMp3() {
     stText.textContent = `❌ Error: ${data.error}`;
     return;
   }
-  stText.textContent = `✓ Exported ${data.durationSec}s stereo MP3 (${bpm} BPM, ${bars} bars) -> ${data.rootFile || data.url}`;
+  stText.textContent = `✓ Exported ${data.durationSec}s stereo MP3 (${bpm} BPM, ${bars} bars) -> ${data.rootFile || data.url}`
+    + (data.partial ? ' — ⚠ partial: render hit the time budget, late hits dropped' : '');
   stLink.innerHTML = `<a href="${esc(data.url)}" download style="color:var(--accent-hi);font-weight:700;">⬇ Download MP3</a>`;
   playInMasterPlayer(data.url);
   renderJukebox(data.tracks || []);
@@ -5709,7 +5777,8 @@ async function exportLoop() {
     });
     const data = await res.json();
     if (!data.ok) { setStatus(`❌ export failed: ${data.error}`); return; }
-    setStatus(`✓ loop bounced (${data.durationSec}s) -> ${data.rootFile || data.url} — lossy summary of the loop`);
+    setStatus(`✓ loop bounced (${data.durationSec}s) -> ${data.rootFile || data.url} — lossy summary of the loop`
+      + (data.partial ? ' — ⚠ partial: render hit the time budget, late hits dropped' : ''));
     stLink.innerHTML = `<a href="${esc(data.url)}" download style="color:var(--accent-hi);font-weight:700;">⬇ Download MP3</a>`;
   } catch (e) {
     setStatus(`❌ export failed: ${e}`);
@@ -6274,6 +6343,7 @@ function paintJam(st) {
   if (st.bpm) stats.push(`<span class="stat">bpm <b>${st.bpm}</b></span>`);
   if (st.bpi) stats.push(`<span class="stat">bpi <b>${st.bpi}</b> (${st.bars} bars)</span>`);
   if (st.intervalSec) stats.push(`<span class="stat">interval <b>${st.intervalSec}s${st.intervalClamped ? ' (clamped)' : ''}</b></span>`);
+  if (st.loopPartial) stats.push('<span class="stat">loop <b>partial — render budget hit, late hits dropped</b></span>');
   document.getElementById('jamStats').innerHTML = stats.join('');
   document.getElementById('jamResult').textContent = st.resultLine || '';
   const audio = document.getElementById('jamAudio');

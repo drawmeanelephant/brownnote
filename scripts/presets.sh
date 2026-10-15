@@ -285,7 +285,7 @@ run_fx() {
 	local tmp
 	tmp="$(mktemp -d "${TMPDIR:-/tmp}/brownnote.XXXXXXXXXX")"
 	# a SIGKILLed parent can't run this, but TERM/clean exits can — the
-	# studio also sweeps stale brownnote.* dirs on boot (#69)
+	# studio sweeps only its own studio-render-* dirs on boot (#69)
 	PRESET_TMP="$tmp"
 	trap 'rm -rf "$PRESET_TMP"' EXIT
 
@@ -406,12 +406,15 @@ run_song() {
 	# clamp render size: the python mixer allocates bars*bar*SR samples
 	# in pure python — unbounded --bars/--bpm is a DoS (#64).  A bare
 	# digit string above int64 still errors out of the arithmetic test
-	# ('integer expected'), so cap the length before comparing.
+	# ('integer expected'), so cap the length before comparing; and
+	# strip leading zeros first — '00008' is 8, not a 5-digit clamp.
 	case "$bars" in *[!0-9]*|'') bars=8 ;; esac
+	bars="${bars#"${bars%%[!0]*}"}"; bars="${bars:-0}"
 	[ "${#bars}" -gt 4 ] && bars=64
 	[ "$bars" -lt 1 ]  && bars=1
 	[ "$bars" -gt 64 ] && bars=64
 	case "$bpm" in *[!0-9]*|'') bpm=120 ;; esac
+	bpm="${bpm#"${bpm%%[!0]*}"}"; bpm="${bpm:-0}"
 	[ "${#bpm}" -gt 3 ] && bpm=240
 	[ "$bpm" -lt 40 ]  && bpm=40
 	[ "$bpm" -gt 240 ] && bpm=240
@@ -419,7 +422,7 @@ run_song() {
 	local tmp
 	tmp="$(mktemp -d "${TMPDIR:-/tmp}/brownnote.XXXXXXXXXX")"
 	# a SIGKILLed parent can't run this, but TERM/clean exits can — the
-	# studio also sweeps stale brownnote.* dirs on boot (#69)
+	# studio sweeps only its own studio-render-* dirs on boot (#69)
 	PRESET_TMP="$tmp"
 	trap 'rm -rf "$PRESET_TMP"' EXIT
 

@@ -412,7 +412,14 @@ def main():
             wav_b, e2 = render_wav(seq_tracks(pat * 2), bars, bpm)
             pat32 = pat + [0] * 4 + [1] + [0] * 11    # hits at steps 0 and 20
             wav_c, e3 = render_wav(seq_tracks(pat32), bars, bpm)
-            err = e1 or e2 or e3
+            # ±24-st clamp regression: +26 is UI-reachable (hat +14 +
+            # a +12 step; slider +18 + +12) so the asymmetric server
+            # clamp must keep it distinct, not collapse it onto +24
+            wav_p24, e4 = render_wav(seq_tracks(pat, [24] + [0] * 15),
+                                     bars, bpm)
+            wav_p26, e5 = render_wav(seq_tracks(pat, [26] + [0] * 15),
+                                     bars, bpm)
+            err = e1 or e2 or e3 or e4 or e5
             if err:
                 fails.append(f"POST /api/render-sequence: {err}")
             else:
@@ -429,6 +436,9 @@ def main():
                     if rms_at(wav_c, bar_sec + 4 * step_sec) < 500:
                         fails.append("render-sequence: no hit audible at "
                                      "extended step 20")
+                if wav_p24 == wav_p26:
+                    fails.append("render-sequence: +26 st render "
+                                 "collapsed onto +24 (clamp regression)")
 
         status, ctype, body = post("/api/no-such-endpoint")
         try:
@@ -547,6 +557,18 @@ def main():
                                      "(want 404)")
                     elif b"alert(1)" in body:
                         fails.append(f"GET {path} served planted html")
+                # ...and it must not be cataloged either: not in the
+                # manifest, not in /api/state's track crates
+                status, _, body = get("/api/library")
+                if status == 200 and any(
+                        e.get("file") == "build/library/pack.wav"
+                        for e in (json.loads(body).get("entries") or [])):
+                    fails.append("dir-as-audio cataloged in /api/library")
+                status, _, body = get("/api/state")
+                if status == 200 and any(
+                        t.get("name") == "pack.wav"
+                        for t in (json.loads(body).get("tracks") or [])):
+                    fails.append("dir-as-audio listed in /api/state tracks")
             finally:
                 shutil.rmtree(pack_dir, ignore_errors=True)
         finally:
@@ -579,17 +601,37 @@ def main():
                            {"Referer": "http://evil.example/x"})
         if status != 200:
             fails.append(f"cross-site Referer GET /: {status} (want 200)")
-        # '[::1]junk' is not an IPv6 literal with a port — reject it
+        # '[::1]junk' is not an IPv6 literal with a port — reject it;
+        # and a present but non-ASCII-digit port ('junk', '²') fails
+        # the whole Host value, not just the port part
+        for bad_host in ("[::1]junk", "127.0.0.1:junk",
+                         "localhost:junk", "[::1]:²"):
+            conn = http.client.HTTPConnection(host, int(sport), timeout=10)
+            conn.putrequest("GET", "/api/state", skip_host=True)
+            conn.putheader("Host", bad_host)
+            conn.putheader("X-Studio-Client", "1")
+            conn.endheaders()
+            resp = conn.getresponse()
+            if resp.status != 403:
+                fails.append(f"Host {bad_host!r}: {resp.status} (want 403)")
+            resp.read()
+            conn.close()
+        # a malformed absolute-form request target ('[::1/x') makes
+        # urlparse raise — the answer must be 400, not a dropped conn
         conn = http.client.HTTPConnection(host, int(sport), timeout=10)
-        conn.putrequest("GET", "/api/state", skip_host=True)
-        conn.putheader("Host", "[::1]junk")
-        conn.putheader("X-Studio-Client", "1")
+        conn.putrequest("GET", "http://[::1/x", skip_host=True)
+        conn.putheader("Host", f"{host}:{sport}")
         conn.endheaders()
-        resp = conn.getresponse()
-        if resp.status != 403:
-            fails.append(f"Host '[::1]junk': {resp.status} (want 403)")
-        resp.read()
-        conn.close()
+        try:
+            resp = conn.getresponse()
+            if resp.status != 400:
+                fails.append(f"malformed absolute path: {resp.status} "
+                             "(want 400)")
+            resp.read()
+        except Exception as e:
+            fails.append(f"malformed absolute path: no response ({e})")
+        finally:
+            conn.close()
         # HEAD answers like GET for the in-memory pages (sans body)
         status, _, body = raw("/", "HEAD", None, {})
         if status != 200:
@@ -604,6 +646,9 @@ def main():
             ("bad length", {"Content-Length": "abc"}),
             ("underscore length", {"Content-Length": "1_0"}),
             ("signed length", {"Content-Length": "+2"}),
+            # >4300 digits trip Python 3.11's int() digit cap — must
+            # 400 inside the gate, not drop the connection
+            ("huge length", {"Content-Length": "9" * 5000}),
             ("chunked", {"Transfer-Encoding": "chunked"}),
         ):
             conn = http.client.HTTPConnection(host, int(sport), timeout=10)
@@ -732,6 +777,29 @@ if (q(9) !== 9) throw new Error('chromatic not identity');
                                    capture_output=True, text=True, timeout=15)
                 if r.returncode != 0:
                     fails.append("node q() table: "
+                                 + (r.stderr.strip() or r.stdout.strip()))
+            # pad serialize: a null entry or missing label must not
+            # brick patch save — non-objects are skipped and an absent
+            # label stays absent (a '' would blank the pad on load)
+            m2 = re.search(rb"function studioPadsSerialize\(.*?\n\}\n",
+                           body, re.S)
+            if not m2:
+                fails.append("GET /: studioPadsSerialize missing")
+            elif node:
+                script = m2.group(0).decode("utf-8", "replace") + """
+const out = studioPadsSerialize([null, {stem:'bomb',semi:0},
+                                 {stem:'x',semi:1,label:'A<B'}]);
+if (out.length !== 2)
+  throw new Error('non-object pad not skipped: ' + JSON.stringify(out));
+if ('label' in out[0])
+  throw new Error('missing label serialized to blank');
+if (out[1].label !== 'AB')
+  throw new Error('label not sanitized: ' + out[1].label);
+"""
+                r = subprocess.run([node, "-e", script],
+                                   capture_output=True, text=True, timeout=15)
+                if r.returncode != 0:
+                    fails.append("node studioPadsSerialize: "
                                  + (r.stderr.strip() or r.stdout.strip()))
 
         # ---- #45: whole-studio patches ----------------------------------
