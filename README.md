@@ -186,6 +186,17 @@ by a nav bar:
   `recordings/` as a card with a drawn waveform, playhead, and kind
   filters.
 
+## Native pads (prototype)
+
+`make native` builds a standalone Rust/Rune pad instrument over the five
+existing recordings. Run `native/target/release/brownnote-native`, then
+click a pad or play `1234` / `QWER` / `ASDF` / `ZXCV`; Esc stops all voices.
+The native panel has illuminated pads, real sample waveforms, a selected-sound
+display, and a reactive output meter.
+No Python server or effects toolchain is required. The web studio remains
+the full workflow, with no shared state.
+See [native/README.md](native/README.md) for controls, requirements and tests.
+
 ## Testing
 
 ```sh

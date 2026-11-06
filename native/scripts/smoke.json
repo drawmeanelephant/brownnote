@@ -1,0 +1,5 @@
+[
+  {"t": 0.2, "type": "tap", "key": "pad-0"},
+  {"t": 0.4, "type": "key", "name": "q"},
+  {"t": 0.8, "type": "key", "name": "Escape"}
+]

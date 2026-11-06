@@ -2,6 +2,7 @@ CC ?= cc
 CFLAGS ?= -O2 -Wall -Wextra -std=gnu11 -D_DEFAULT_SOURCE
 LDFLAGS ?=
 LDLIBS ?= -lm
+CARGO ?= cargo
 
 BIN = build/brownnote
 UNIT = build/unit_wav
@@ -69,4 +70,12 @@ presets: $(BIN)
 studio: $(BIN)
 	python3 scripts/studio.py
 
-.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio
+native:
+	$(CARGO) build --release --manifest-path native/Cargo.toml
+
+native-test:
+	$(CARGO) fmt --manifest-path native/Cargo.toml --check
+	$(CARGO) clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) test --manifest-path native/Cargo.toml
+
+.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test
