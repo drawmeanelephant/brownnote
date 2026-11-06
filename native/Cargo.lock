@@ -475,7 +475,9 @@ dependencies = [
  "hound",
  "rtrb",
  "rune",
+ "rune-fx",
  "serde_json",
+ "wgpu",
 ]
 
 [[package]]
@@ -2701,6 +2703,17 @@ dependencies = [
  "xkbcommon",
  "zbus 6.2.1",
  "zeroize",
+]
+
+[[package]]
+name = "rune-fx"
+version = "0.0.1"
+source = "git+https://github.com/anomalyco/rune?rev=cbaf637dfe5fcf3ec8b3f1c3ad27246b69742fbf#cbaf637dfe5fcf3ec8b3f1c3ad27246b69742fbf"
+dependencies = [
+ "bytemuck",
+ "rune-motion",
+ "rune-staging",
+ "wgpu",
 ]
 
 [[package]]

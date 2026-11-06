@@ -1,0 +1,10 @@
+[
+  {"t": 0.10, "type": "down", "key": "pad-9"},
+  {"t": 0.20, "type": "key", "name": "Tab"},
+  {"t": 0.23, "type": "key", "name": "Tab"},
+  {"t": 0.26, "type": "key", "name": "Tab"},
+  {"t": 0.29, "type": "key", "name": "Tab"},
+  {"t": 0.32, "type": "key", "name": "Tab"},
+  {"t": 0.35, "type": "key", "name": "Tab"},
+  {"t": 0.38, "type": "key", "name": "Tab"}
+]

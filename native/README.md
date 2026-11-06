@@ -89,6 +89,8 @@ Exact direct dependencies:
 
 - Rune git revision `cbaf637dfe5fcf3ec8b3f1c3ad27246b69742fbf`,
   default features, from <https://github.com/anomalyco/rune>.
+- rune-fx from the same revision, and wgpu 30 for the compositor hook's types
+  (features come from Rune's own wgpu). Only the look showcase draws with them.
 - cpal `=0.18.2`, rtrb `=0.4.1`, hound `=3.5.1`.
 - `Cargo.lock` fixes transitive versions; serde_json is test-only.
 
@@ -135,6 +137,13 @@ They also check selection, meter decay, muted-hit feedback, and the minimum
 The headless integration test launches the real binary, checks voice badges
 before and after panic, and checks missing-folder errors. It is not skipped
 automatically if a GPU is absent. Screenshots alone do not prove audio playback.
+
+## Look showcase
+
+`brownnote-showcase` draws the same instrument in three looks (Bunker, Space
+Program, Afterhours) with an effect lab, tiers and measurement switches:
+`cargo run --release --bin brownnote-showcase`. See [SHOWCASE.md](SHOWCASE.md)
+for commands, the recommendation, the theme and control API, and measurements.
 
 ## Relationship to the studio
 
