@@ -4,9 +4,13 @@
 //! and `make -C vendor/GuitarPedal/Validation bench` builds the bench.
 #![allow(clippy::unwrap_used)]
 
-use brownnote_native::pedals::{
-    brownnote::{self, CatalogError, DEFAULT_BIN},
-    catalog::Catalog,
+use brownnote_native::{
+    kit,
+    pedals::{
+        brownnote::{self, CatalogError, DEFAULT_BIN},
+        catalog::Catalog,
+        render::{self, Chain, RenderJob, Stage},
+    },
 };
 use std::{
     fs::{self, File},
@@ -109,5 +113,76 @@ fn routable_effects_render_and_system_blocks_are_refused_by_the_real_bench() {
             );
         }
     }
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+fn rms(samples: &[f32]) -> f32 {
+    let sum: f64 = samples
+        .iter()
+        .map(|value| f64::from(*value) * f64::from(*value))
+        .sum();
+    (sum / samples.len() as f64).sqrt() as f32
+}
+
+#[test]
+fn live_renders_change_the_sound_ring_out_and_then_hit_the_cache() {
+    let Some(catalog) = catalog() else { return };
+    let catalog = std::sync::Arc::new(catalog);
+    let source = kit::load_wav(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("recordings/fart_dry.wav"),
+    )
+    .unwrap();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("pedals-live-render-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let job = |stages: Vec<Stage>| RenderJob {
+        brownnote: binary(),
+        cache: dir.join("cache"),
+        catalog: catalog.clone(),
+        source: source.clone(),
+        chain: Chain { stages },
+        timeout: Duration::from_secs(10),
+    };
+    let effect = |name: &str, pots: Vec<(&str, u8)>| Stage {
+        effect: name.into(),
+        pots: pots
+            .into_iter()
+            .map(|(label, value)| (label.into(), value))
+            .collect(),
+        mix: None,
+    };
+
+    for name in ["Rat Sketch", "Tape Echo", "Flanger"] {
+        let rendered = render::render(&job(vec![effect(name, vec![])])).unwrap();
+        assert!(!rendered.cached);
+        let frames = source.data.len().min(rendered.sample.data.len());
+        let difference: Vec<f32> = (0..frames)
+            .map(|i| rendered.sample.data[i] - source.data[i])
+            .collect();
+        let changed = rms(&difference);
+        assert!(
+            changed > 0.01,
+            "{name} barely changed the source: rms {changed}"
+        );
+    }
+
+    let echo = render::render(&job(vec![effect("Tape Echo", vec![("Sustain", 90)])])).unwrap();
+    let start = source.data.len();
+    let end = start + (0.5 * f64::from(source.rate)) as usize;
+    assert!(
+        echo.sample.data.len() >= end,
+        "echo output is only {} frames, need {end}",
+        echo.sample.data.len()
+    );
+    let tail = rms(&echo.sample.data[start..end]);
+    let floor = 10.0_f64.powf(-45.0 / 20.0) as f32;
+    assert!(tail > floor, "echo tail is quiet: rms {tail}");
+
+    let again = render::render(&job(vec![effect("Tape Echo", vec![("Sustain", 90)])])).unwrap();
+    assert!(again.cached, "a second identical render missed the cache");
     fs::remove_dir_all(&dir).unwrap();
 }

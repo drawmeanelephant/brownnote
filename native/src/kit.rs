@@ -64,7 +64,17 @@ impl fmt::Display for KitError {
 }
 impl std::error::Error for KitError {}
 
+/// A kit sample is at most 30 seconds long.
+pub const KIT_SECONDS: u64 = 30;
+
 pub fn load_wav(path: &Path) -> Result<Sample, KitError> {
+    load_wav_max(path, |rate| u64::from(rate) * KIT_SECONDS)
+}
+
+/// `load_wav` for files that are legitimately longer than a kit sample, such
+/// as a render whose pedal added a ring-out tail. `max` gets the file's rate
+/// and returns the longest frame count to accept.
+pub fn load_wav_max(path: &Path, max: impl Fn(u32) -> u64) -> Result<Sample, KitError> {
     let error = |reason: String| KitError {
         path: path.to_path_buf(),
         reason,
@@ -84,8 +94,12 @@ pub fn load_wav(path: &Path) -> Result<Sample, KitError> {
         return Err(error("expected 16-bit PCM or 32-bit float WAV".into()));
     }
     let frames = reader.duration();
-    if frames == 0 || frames > spec.sample_rate * 30 {
-        return Err(error("length must be 1 frame..30 seconds".into()));
+    let limit = max(spec.sample_rate);
+    if frames == 0 || u64::from(frames) > limit {
+        return Err(error(format!(
+            "length must be 1 frame..{limit} frames at {} Hz",
+            spec.sample_rate
+        )));
     }
     let values: Result<Vec<f32>, _> = match spec.sample_format {
         hound::SampleFormat::Int => reader
