@@ -85,7 +85,7 @@ fn run(path: &Path, input: &Path, output: &Path, effect: &str) -> std::process::
 #[test]
 fn the_real_list_parses_and_lists_the_named_effects() {
     let Some(catalog) = catalog() else { return };
-    for name in ["Rat Sketch", "Tape Echo", "Flanger"] {
+    for name in ["Rat Sketcher", "Tape Echo", "Flanger"] {
         let effect = catalog
             .effect(name)
             .unwrap_or_else(|| panic!("{name} missing from the real list"));
