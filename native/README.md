@@ -45,6 +45,17 @@ samples disable only the affected pads. A missing folder leaves the window
 usable with a banner explaining `--samples`. Audio failures fall back to the
 silent mixer and expose **RETRY AUDIO**.
 
+Pedals use the C CLI that `make` builds:
+
+```sh
+make                                          # build/brownnote
+make -C vendor/GuitarPedal/Validation bench   # the bench it drives
+native/target/release/brownnote-native --list-pedals
+```
+
+Without either of those the app plays exactly as before, and the PEDALS tab
+says what to build.
+
 ### Controls
 
 - Play `1234` / `QWER` / `ASDF` / `ZXCV`, matching the four grid rows.
@@ -61,6 +72,10 @@ silent mixer and expose **RETRY AUDIO**.
   Cmd/Ctrl/Alt shortcuts pass through; Cmd-Q still quits.
 - The voice badge is the engine's actual voice count. The quick flash is
   immediate input feedback. PEAK decays after a hit.
+- **SHAPE / PEDALS** switches the editor's lower half. SHAPE holds GAIN, PAN,
+  PITCH and MASTER; PEDALS holds the selected pad's chain. Pad keys keep
+  working while a pedal control has focus, and Tab reaches every pedal
+  control.
 
 Pitch changes playback speed and duration using linear interpolation; this
 is not time stretching or a bandlimited pitch shifter. Pan is constant power.
@@ -79,6 +94,54 @@ Custom folders must contain `fart_dry.wav`, `fart_fuzz.wav`, `fart_delay.wav`,
 WAVs may be 16-bit PCM or 32-bit float, mono or stereo (averaged to mono),
 8–192 kHz, from one frame through 30 seconds. Invalid or non-finite samples
 produce file-specific errors. All files load before the audio stream starts.
+
+## Pedals
+
+Each pad can hold a chain of up to 4 GuitarPedal effects, picked from every
+routable pedal the bench lists (22 of them, plus 5 system blocks that always
+run and are never offered). The app reads the list from
+`brownnote --list` at launch, so new upstream pedals show up without code
+changes.
+
+- Select a pad, open **PEDALS**, and press **+ PEDAL**. Effects already in the
+  chain are disabled, because the bench refuses a duplicate route.
+- Chips are in signal order. Click one to show its pots; `‹` and `›` move it,
+  `×` removes it.
+- Pots are 0..max with the list's default marked `DEF`. Pots with `max` of 4 or
+  less are switches: they show the raw position, because `--list` has no names
+  for switch positions.
+- **MIX** stays at the effect's own default until you touch it; **RESET**
+  returns it there. It is hidden for effects whose mix law is `none`. Escape
+  during a drag cancels it and puts the previous value back, pots included.
+
+A chain edit renders in the background through `brownnote`, and the pad's
+next hit plays the result; the status reads `RENDERING…` then
+`READY 0.4 s`, with `· CLIPPED` when the bench reported clipping. A hit
+before the render lands uses the base sample, and a voice already playing
+keeps the sample it started with. The render includes 2 s of silence after
+the source so echoes and reverb ring out; trailing digital silence is trimmed
+before playback.
+
+Renders are cached on disk by content, so the same chain on the same sample
+runs once; the clipping warning is cached with the audio, so it survives a
+hit. The cache lives in `native/target/pedal-cache` (override with
+`--pedal-cache DIR`) and keeps the newest 256 entries. `--pedal-cache` may
+name an existing folder of recordings: eviction only ever deletes files this
+cache wrote, whose names are 16 hex digits. Only the moved pots are passed,
+with names exactly as `--list` prints them.
+
+`--brownnote PATH` points at a different `brownnote` binary for both the
+catalog and the renders; it defaults to `build/brownnote`. Bench discovery
+stays brownnote's own (`--bench`, `BROWNNOTE_BENCH`, `vendor/GuitarPedal/...`).
+
+`--list-pedals` prints the routable catalog and exits without a window or an
+audio device; a missing binary, a missing bench or an unparsable list prints
+one line saying what to build and exits 3.
+
+At their defaults the EQ-type pedals (Tone 1, Tone 2, Parametric EQ, Analog In
+Tone, Analog Out Tone, Hum Filter) sound almost the same as the source,
+because their gain pots default to flat. That is expected, not a render that
+did nothing.
 
 ## Build and platform
 
@@ -122,8 +185,15 @@ cargo test
 # Audible, no window: pad 0 for two seconds, exit 0 only for frames and signal.
 cargo run --release -- --check-audio
 
+# The pedal catalog, with no window and no audio device.
+cargo run --release -- --list-pedals
+
+# Adds Tape Echo to pad 4's chain, for a real brownnote and bench to render.
+cargo run --release -- --script scripts/pedals.json --at 6.0 --tree target/pedal-chain.json
+
 # Silent, actual binary + virtual mixer + Rune GPU renderer:
 cargo run --release -- --script scripts/smoke.json --at 0.6 --tree target/playing.json
+cargo run --release -- --scene pedals --at 0.6 --tree target/pedals.json
 cargo run --release -- --snap target/default.png
 cargo run --release -- --scene playing --at 0.08 --snap target/playing.png
 cargo run --release -- --scene missing-samples --snap target/missing.png
@@ -157,19 +227,20 @@ The existing C CLI, Python studio and their tests are unchanged.
 The audio callback drains a bounded 256-command wait-free queue, mixes a
 preallocated 32-voice pool, converts directly into the device buffer and
 updates atomic meters. It does no allocation, locks, I/O, logging, or Arc
-clone/drop. UI queue overflow drops the command and reports a count.
+clone/drop, including while loading and retiring samples: a retiring sample
+waits in its slot until the last voice reading it ends, then goes back to the
+UI on a second bounded queue. UI queue overflow drops the command and reports
+a count.
 The virtual driver runs the same mixer, with at most 0.25 seconds rendered
 per poll; it is a silent fallback, not a wall-clock playback guarantee.
 Recovering or retrying a failed device starts a fresh voice pool.
 
-**Effects rendering is deferred.** A future `rune::Latest` job or worker thread
-could run `build/brownnote --effect NAME < dry.wav > build/native/<pad>-<effect>.wav`
-or `scripts/presets.sh fx`, then load the rendered WAV off the audio thread.
-A new swap command would carry its immutable Arc to the mixer, and a return
-queue would send the old Arc back to the UI so the callback never frees it.
-That swap/return protocol is not implemented here. Existing effect tools are
-not reimplemented, and there are no placeholder effect controls.
+Pedal chains and renders do not survive a quit, and there is no patch
+persistence. Effects never run inside the audio callback: a render completes
+off the UI thread, and swapping it in is a `Load` on the command queue. The
+mixer holds 64 slots, so 5 kit files plus renders for every pad fit with room
+for retirements in flight.
 
 Also deferred: sequencer, desk/mixer, library, loop station, recording,
-NINJAM, MIDI, patch persistence, sample browsing, hot reload, a device picker,
-web/WASM, mobile, native CI (needs a GPU runner), and a docs-site page.
+NINJAM, MIDI, sample browsing, hot reload, a device picker, web/WASM, mobile,
+and Linux/Windows pedal verification.

@@ -193,8 +193,12 @@ existing recordings. Run `native/target/release/brownnote-native`, then
 click a pad or play `1234` / `QWER` / `ASDF` / `ZXCV`; Esc stops all voices.
 The native panel has illuminated pads, real sample waveforms, a selected-sound
 display, and a reactive output meter.
-No Python server or effects toolchain is required. The web studio remains
-the full workflow, with no shared state.
+No Python server is required.
+Each pad can also hold a chain of up to 4 GuitarPedal effects, with their pots
+and mix, rendered in the background through `brownnote` and played on the
+pad's next hit. That needs `make` (for `build/brownnote`) and the bench
+(`make -C vendor/GuitarPedal/Validation bench`); without them the pads play as
+before. The web studio remains the full workflow, with no shared state.
 See [native/README.md](native/README.md) for controls, requirements and tests.
 
 ## Testing
