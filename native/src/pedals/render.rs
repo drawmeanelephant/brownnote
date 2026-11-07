@@ -230,11 +230,14 @@ fn write_input(path: &Path, source: &Sample) -> Result<(), RenderError> {
         let sample = (value.clamp(-1.0, 1.0) * 32767.0).round() as i16;
         writer.write_sample(sample).map_err(io)?;
     }
-    let tail = (TAIL_SECONDS * f64::from(source.rate)).round() as usize;
-    for _ in 0..tail {
+    for _ in 0..tail_frames(source.rate) {
         writer.write_sample(0_i16).map_err(io)?;
     }
     writer.finalize().map_err(io)
+}
+
+fn tail_frames(rate: u32) -> usize {
+    (TAIL_SECONDS * f64::from(rate)).round() as usize
 }
 
 fn trim(sample: Sample, floor: usize) -> Sample {
@@ -274,7 +277,7 @@ fn evict(cache: &Path) {
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("wav") {
+            if !is_cache_file(&path) {
                 return None;
             }
             let modified = entry.metadata().ok()?.modified().ok()?;
@@ -286,7 +289,49 @@ fn evict(cache: &Path) {
     }
     files.sort_by_key(|(modified, _)| *modified);
     for (_, path) in files.iter().take(files.len() - CACHE_FILES) {
-        let _ = fs::remove_file(path);
+        remove_entry(path);
+    }
+}
+
+/// `--pedal-cache DIR` takes any directory, so eviction may only touch entries
+/// this cache wrote: `<16 hex digits>.wav` with its optional `.clip` beside it.
+/// A directory of 300 unrelated recordings looks nothing like that and is left
+/// alone.
+fn is_cache_file(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    ext == "wav" && stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn clip_file(cache_file: &Path) -> PathBuf {
+    cache_file.with_extension("clip")
+}
+
+fn remove_entry(cache_file: &Path) {
+    let _ = fs::remove_file(cache_file);
+    let _ = fs::remove_file(clip_file(cache_file));
+}
+
+/// The clipping count has to survive a cache hit, or the editor shows CLIPPED
+/// for a fresh render and nothing for the same chain served from disk.
+fn read_clip(cache_file: &Path) -> Option<u64> {
+    let text = fs::read_to_string(clip_file(cache_file)).ok()?;
+    text.trim().parse().ok()
+}
+
+fn write_clip(cache_file: &Path, clip: Option<u64>) {
+    let path = clip_file(cache_file);
+    match clip {
+        Some(count) => {
+            let _ = fs::write(path, format!("{count}\n"));
+        }
+        None => {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
@@ -299,15 +344,18 @@ pub fn render(job: &RenderJob) -> Result<Rendered, RenderError> {
     let args = argv(&job.chain);
     let key = cache_key(job, &args);
     let cache_file = job.cache.join(format!("{key:016x}.wav"));
+    // The bench writes the source plus the tail, which is longer than the
+    // 30-second kit limit once a source is long in its own right.
+    let limit = job.source.data.len() + tail_frames(job.source.rate);
 
     // A cache entry that fails to load is a miss; the atomic replace fixes it.
     if cache_file.is_file()
-        && let Ok(sample) = kit::load_wav(&cache_file)
+        && let Ok(sample) = kit::load_wav_max(&cache_file, |_| limit as u64)
     {
         return Ok(Rendered {
             sample: trim(sample, job.source.data.len()),
             cached: true,
-            clipped: None,
+            clipped: read_clip(&cache_file),
         });
     }
 
@@ -331,6 +379,7 @@ pub fn render(job: &RenderJob) -> Result<Rendered, RenderError> {
         let _ = fs::remove_file(&temp);
         RenderError::Io(format!("{}: {error}", cache_file.display()))
     })?;
+    write_clip(&cache_file, clipped);
     evict(&job.cache);
     Ok(Rendered {
         sample,
@@ -368,14 +417,12 @@ fn run(
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate(&mut child);
                 return Err(RenderError::Timeout);
             }
             Ok(None) => thread::sleep(Duration::from_millis(5)),
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate(&mut child);
                 return Err(RenderError::Io(error.to_string()));
             }
         }
@@ -388,10 +435,38 @@ fn run(
     if code != 0 {
         return Err(classify(code, &stderr));
     }
-    let output = kit::load_wav(temp).map_err(RenderError::Output)?;
+    let limit = job.source.data.len() + tail_frames(job.source.rate);
+    let output = kit::load_wav_max(temp, |_| limit as u64).map_err(RenderError::Output)?;
     let mut rendered = trim(output, job.source.data.len());
     rendered.rate = job.source.rate;
     Ok((rendered, clipped(&stderr)))
+}
+
+/// How long brownnote gets to act on SIGTERM before it is killed outright.
+/// Its handler gives the bench two seconds of grace, then kills it.
+const TERM_GRACE: Duration = Duration::from_millis(2500);
+
+/// Stop a render. SIGTERM goes to brownnote, whose handler forwards it to the
+/// bench and waits for it to leave; SIGKILL alone would bypass that and leave
+/// the bench computing with nobody to read its output.
+fn terminate(child: &mut std::process::Child) {
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg(child.id().to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let deadline = Instant::now() + TERM_GRACE;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(test)]

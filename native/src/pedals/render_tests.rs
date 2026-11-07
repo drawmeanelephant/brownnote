@@ -77,6 +77,11 @@ fn job(bin: &Path, cache: &Path, chain: Chain, source: Sample, catalog: Arc<Cata
     }
 }
 
+/// The sidecar the cache keeps its clipping count in.
+fn clip(cache_file: &Path) -> PathBuf {
+    cache_file.with_extension("clip")
+}
+
 fn wav_files(cache: &Path) -> Vec<PathBuf> {
     fs::read_dir(cache)
         .unwrap()
@@ -225,9 +230,16 @@ fn failures_keep_their_kind_and_leave_no_partial_files() {
 }
 
 #[test]
-fn a_brownnote_that_does_not_answer_is_killed_and_reported_as_a_timeout() {
+fn a_brownnote_that_does_not_answer_is_asked_to_stop_and_then_killed() {
     let dir = dir();
-    let bin = script(&dir, "sleep 30");
+    // Stops on SIGTERM like the real brownnote, which forwards it to the bench
+    // before leaving.
+    let bin = script(
+        &dir,
+        "d=$(dirname \"$0\")\nsleep 30 & child=$!\n\
+         trap 'kill $child 2>/dev/null; echo term > \"$d/term\"; exit 0' TERM\n\
+         wait $child",
+    );
     let cache = dir.join("cache");
     let mut job = job(
         &bin,
@@ -241,7 +253,37 @@ fn a_brownnote_that_does_not_answer_is_killed_and_reported_as_a_timeout() {
     let error = render(&job).unwrap_err();
     assert!(matches!(error, RenderError::Timeout), "{error:?}");
     assert!(start.elapsed() < Duration::from_millis(1200));
+    assert!(
+        dir.join("term").exists(),
+        "the timeout skipped SIGTERM, so the bench would never hear about it"
+    );
     assert!(fs::read_dir(&cache).unwrap().next().is_none());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_brownnote_that_ignores_sigterm_is_still_killed_within_the_grace() {
+    let dir = dir();
+    // An ignored signal stays ignored across exec, so this stands in for a
+    // bench that will not act on the signal brownnote forwards.
+    let bin = script(&dir, "trap '' TERM\nexec sleep 30");
+    let cache = dir.join("cache");
+    let mut job = job(
+        &bin,
+        &cache,
+        chain(&[stage("Reverb", &[], None)]),
+        source(),
+        catalog(),
+    );
+    job.timeout = Duration::from_millis(200);
+    let start = Instant::now();
+    let error = render(&job).unwrap_err();
+    assert!(matches!(error, RenderError::Timeout), "{error:?}");
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "the grace ran long: {:?}",
+        start.elapsed()
+    );
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -274,21 +316,14 @@ fn a_missing_binary_and_a_missing_output_are_reported() {
 }
 
 #[test]
-fn eviction_keeps_the_newest_256_wav_files_and_leaves_other_files_alone() {
+fn eviction_leaves_recordings_it_does_not_own_alone() {
     let dir = dir();
     let bin = script(&dir, "cat");
     let cache = dir.join("cache");
     fs::create_dir_all(&cache).unwrap();
-    for i in 0..300 {
-        let path = cache.join(format!("old-{i:03}.wav"));
-        fs::write(&path, b"x").unwrap();
-        let time = SystemTime::UNIX_EPOCH + Duration::from_secs(i);
-        fs::File::options()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_modified(time)
-            .unwrap();
+    // `--pedal-cache` takes any directory; 257 songs in it must all survive.
+    for i in 0..257 {
+        fs::write(cache.join(format!("song-{i:03}.wav")), b"x").unwrap();
     }
     fs::write(cache.join("keep.txt"), b"x").unwrap();
 
@@ -301,12 +336,112 @@ fn eviction_keeps_the_newest_256_wav_files_and_leaves_other_files_alone() {
     ))
     .unwrap();
 
+    for i in 0..257 {
+        assert!(
+            cache.join(format!("song-{i:03}.wav")).exists(),
+            "song-{i:03}.wav was evicted"
+        );
+    }
+    assert!(cache.join("keep.txt").exists());
+    assert_eq!(wav_files(&cache).len(), 258);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn eviction_keeps_the_newest_256_cache_entries() {
+    let dir = dir();
+    let bin = script(&dir, "cat");
+    let cache = dir.join("cache");
+    fs::create_dir_all(&cache).unwrap();
+    let owned = |i: usize| cache.join(format!("{i:016x}.wav"));
+    for i in 0..300 {
+        let path = owned(i);
+        fs::write(&path, b"x").unwrap();
+        fs::write(clip(&path), b"3\n").unwrap();
+        let time = SystemTime::UNIX_EPOCH + Duration::from_secs(i as u64);
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+    }
+
+    render(&job(
+        &bin,
+        &cache,
+        chain(&[stage("Reverb", &[], None)]),
+        source(),
+        catalog(),
+    ))
+    .unwrap();
+
     let files = wav_files(&cache);
     assert_eq!(files.len(), 256);
-    assert!(!cache.join("old-000.wav").exists());
-    assert!(!cache.join("old-044.wav").exists());
-    assert!(cache.join("old-045.wav").exists());
-    assert!(cache.join("keep.txt").exists());
+    assert!(!owned(0).exists());
+    assert!(!owned(44).exists());
+    assert!(owned(45).exists());
+    assert!(!clip(&owned(0)).exists(), "a clip sidecar outlived its wav");
+    assert!(clip(&owned(45)).exists());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn the_clipping_warning_survives_a_cache_hit() {
+    let dir = dir();
+    let bin = script(&dir, "echo 'clipped 12 samples' >&2\ncat");
+    let cache = dir.join("cache");
+    let catalog = catalog();
+    let make = || {
+        job(
+            &bin,
+            &cache,
+            chain(&[stage("Reverb", &[], None)]),
+            source(),
+            catalog.clone(),
+        )
+    };
+
+    let first = render(&make()).unwrap();
+    assert_eq!(first.clipped, Some(12));
+    let second = render(&make()).unwrap();
+    assert!(second.cached);
+    assert_eq!(
+        second.clipped,
+        Some(12),
+        "a cached render forgot that it clipped"
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_source_long_enough_to_exceed_the_kit_limit_still_renders_and_caches() {
+    let dir = dir();
+    let bin = script(&dir, "cat");
+    let cache = dir.join("cache");
+    let catalog = catalog();
+    // 29 s at 8 kHz plus the 2 s tail is 248 000 frames, past the 240 000 the
+    // kit accepts, and exactly what a long kit sample would produce.
+    let frames = 8_000 * 29;
+    let source = Sample {
+        data: Arc::from(vec![0.1_f32; frames]),
+        rate: 8_000,
+    };
+    let make = || {
+        job(
+            &bin,
+            &cache,
+            chain(&[stage("Reverb", &[], None)]),
+            source.clone(),
+            catalog.clone(),
+        )
+    };
+    let first = render(&make()).unwrap();
+    assert_eq!(first.sample.data.len(), frames);
+    let second = render(&make()).unwrap();
+    assert!(second.cached);
+    assert_eq!(second.sample.data.len(), frames);
+    assert_eq!(runs(&dir), 1);
     fs::remove_dir_all(dir).unwrap();
 }
 
