@@ -198,8 +198,29 @@ Rune Runtime tests exercise pointer, keys, sliders and missing assets.
 They also check selection, meter decay, muted-hit feedback, and the minimum
 820×600 layout. Waveform tests cover silence, transients and extreme samples.
 The headless integration test launches the real binary, checks voice badges
-before and after panic, and checks missing-folder errors. It is not skipped
-automatically if a GPU is absent. Screenshots alone do not prove audio playback.
+before and after panic, and checks missing-folder errors. Screenshots alone do
+not prove audio playback.
+
+### What CI runs
+
+`make native-test` runs everything, but a bare `cargo test` skips tests marked
+`#[ignore = "needs a GPU adapter"]`. The three tests in `tests/headless.rs`
+carry that mark because they launch the real binary and draw with Rune's GPU
+renderer. The in-process `Runtime` tests (`ui_tests.rs`, `ui_pedals_tests.rs`,
+`showcase/motion_tests.rs`) drive a virtual clock and need no adapter, so they
+run in CI too.
+
+`make native-test` adds `-- --include-ignored`, so it still runs the marked
+tests locally, where a Metal adapter exists. Run them by hand with
+`cargo test -- --include-ignored`, or just one with
+`cargo test --test headless -- --ignored`.
+
+The `native` job in `.github/workflows/ci.yml` runs on macOS and builds the
+bench and `build/brownnote` first. It sets `BROWNNOTE_REQUIRE_BENCH=1`, which
+turns a missing-bench skip in `tests/pedals_live.rs` into a failure, so the
+catalog and render tests really ran against upstream GuitarPedal. Without that
+variable they print the reason and pass, which is what happens on a machine
+with no bench.
 
 ## Look showcase
 

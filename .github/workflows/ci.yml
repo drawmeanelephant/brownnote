@@ -81,3 +81,49 @@ jobs:
 
       - name: Fuzz corpus and mutations under sanitizers
         run: make fuzz
+
+  native:
+    # the one tested platform, per #77; Linux can follow in its own issue
+    runs-on: macos-latest
+    env:
+      # a missing bench fails instead of skipping, so the catalog and render
+      # tests really ran against upstream GuitarPedal
+      BROWNNOTE_REQUIRE_BENCH: "1"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone GuitarPedal
+        run: git clone --depth 1 https://github.com/torvalds/GuitarPedal vendor/GuitarPedal
+
+      - name: Build the bench
+        run: make -C vendor/GuitarPedal/Validation bench
+
+      - name: Build brownnote
+        run: make
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          components: rustfmt, clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: native-${{ runner.os }}-${{ hashFiles('native/Cargo.lock') }}
+          restore-keys: native-${{ runner.os }}-
+
+      - name: Format
+        run: cargo fmt --manifest-path native/Cargo.toml --check
+
+      - name: Lint
+        run: cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
+
+      # no --include-ignored: the `#[ignore = "needs a GPU adapter"]` tests in
+      # native/tests/headless.rs need a window, and `make native-test` runs them
+      # locally
+      - name: Test
+        run: cargo test --manifest-path native/Cargo.toml
