@@ -1,0 +1,8 @@
+[
+  {"t": 0.05, "type": "tap", "key": "pad-4"},
+  {"t": 0.20, "type": "tap", "key": "editor-tab-pedals"},
+  {"t": 0.40, "type": "tap", "key": "pedal-add"},
+  {"t": 0.60, "type": "menu-pick", "id": "Tape Echo"},
+  {"t": 2.00, "type": "tap", "key": "pot-sustain"},
+  {"t": 2.10, "type": "key", "name": "End"}
+]

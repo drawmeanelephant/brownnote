@@ -1,4 +1,4 @@
-use crate::engine::{Command, Meters, Mixer, QUEUE_CAPACITY, SLOTS, Sample, Slots};
+use crate::engine::{Command, Meters, Mixer, QUEUE_CAPACITY, Returned, SLOTS, Sample, Slots};
 use cpal::{
     SampleFormat, Stream, StreamConfig,
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -48,7 +48,7 @@ pub struct Output {
     wake: Arc<OnceLock<rune::Waker>>,
     pub commands: rtrb::Producer<Command>,
     /// Samples the mixer has finished with, for the UI thread to drop.
-    retired: rtrb::Consumer<Sample>,
+    retired: rtrb::Consumer<Returned>,
     pub meters: Arc<Meters>,
     pub status: String,
     pub failed: bool,
@@ -141,14 +141,15 @@ impl Output {
         }
     }
 
-    /// Samples the mixer has finished with. Call from the UI thread; dropping
-    /// the result drops the samples there, never in the callback.
-    pub fn take_retired(&mut self) -> Vec<Sample> {
-        let mut samples = Vec::new();
-        while let Ok(sample) = self.retired.pop() {
-            samples.push(sample);
+    /// Samples the mixer has finished with, with the slot each came from. Call
+    /// from the UI thread; dropping the result drops the samples there, never
+    /// in the callback.
+    pub fn take_retired(&mut self) -> Vec<Returned> {
+        let mut items = Vec::new();
+        while let Ok(item) = self.retired.pop() {
+            items.push(item);
         }
-        samples
+        items
     }
 
     pub fn set_waker(&self, wake: rune::Waker) {

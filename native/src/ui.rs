@@ -1,5 +1,6 @@
 mod control;
 mod graphics;
+pub(crate) mod pedals;
 use brownnote_native::{
     engine::{Command, Slots},
     kit::{DEFAULT_SAMPLES, FILES, Kit, PADS},
@@ -7,6 +8,8 @@ use brownnote_native::{
 };
 use control::{Control, slider};
 use graphics::{Envelope, envelope, led, logo, meter, waveform};
+#[allow(unused_imports)]
+pub use pedals::{CatalogState, FIRST_RENDER_SLOT, Status, Tab};
 use rune::{Color, Cx, Drag, El, Key, KeyEvent, Phase, TextStyle, Tx, col, el, row, text};
 use std::{path::Path, sync::atomic::Ordering::Relaxed, time::Duration};
 
@@ -29,6 +32,9 @@ pub struct State {
     pub choke: bool,
     pub counts: [u32; 16],
     pub peak: f32,
+    pub pedals: pedals::Pedals,
+    /// The waveform of each pad's rendered sample, if it has one.
+    pub render_waves: [Option<graphics::Envelope>; 16],
     now: f64,
     flashes: [f64; 16],
     wake: Option<rune::Waker>,
@@ -37,7 +43,17 @@ pub struct State {
 
 impl State {
     pub fn new(kit: Kit, headless: bool, no_audio: bool) -> Self {
+        Self::with_cache(kit, headless, no_audio, pedals::default_cache())
+    }
+
+    pub fn with_cache(
+        kit: Kit,
+        headless: bool,
+        no_audio: bool,
+        pedal_cache: std::path::PathBuf,
+    ) -> Self {
         let waveforms = std::array::from_fn(|i| envelope(&kit.samples[i]));
+        let pedals = pedals::Pedals::new(pedal_cache);
         let slots = Slots::from(kit.samples.clone());
         let output = if headless || no_audio {
             Output::virtual_driver(
@@ -67,6 +83,8 @@ impl State {
             choke: true,
             counts: [0; 16],
             peak: 0.0,
+            pedals,
+            render_waves: std::array::from_fn(|_| None),
             now: 0.0,
             flashes: [0.0; 16],
             wake: None,
@@ -82,7 +100,7 @@ impl State {
         let settings = self.settings[pad];
         self.output.send(Command::Trigger {
             pad,
-            slot: spec.sample,
+            slot: self.pedals.pads[pad].slot,
             group: spec.sample,
             velocity,
             gain: settings.gain,
@@ -110,7 +128,9 @@ pub fn init() -> State {
 
 pub fn setup(s: &mut State, wake: rune::Waker) {
     s.output.set_waker(wake.clone());
+    s.pedals.set_waker(wake.clone());
     s.wake = Some(wake);
+    s.pedals.load();
 }
 
 pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
@@ -150,12 +170,14 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
         s.output.send(Command::SetChoke(s.choke));
     }
     s.output.advance(elapsed);
+    let pedals_changed = pedals::poll(s);
     let counts = s.output.meters.counts();
     let fresh_peak = f32::from_bits(s.output.meters.peak.swap(0, Relaxed));
     let peak = fresh_peak.max(s.peak * (-elapsed as f32 * 7.0).exp());
     let peak = if peak < 0.001 { 0.0 } else { peak };
     let lit = s.flashes.map(|until| until > clock);
     let changed = failed
+        || pedals_changed
         || counts != s.counts
         || peak != s.peak
         || was_lit != lit
@@ -181,6 +203,13 @@ pub const SCENES: &[Scene] = &[
             true,
             true,
         );
+    }),
+    ("pedals", |s| pedals::scene(s, pedals::SceneKind::Ready)),
+    ("pedal-error", |s| {
+        pedals::scene(s, pedals::SceneKind::Error)
+    }),
+    ("pedals-unavailable", |s| {
+        pedals::scene(s, pedals::SceneKind::Unavailable)
     }),
     ("no-audio", |s| {
         s.output = Output::virtual_driver(
@@ -386,7 +415,7 @@ fn display(s: &State, tall: bool) -> El {
                     "Normalized sample waveform: {}",
                     FILES[spec.sample]
                 ))
-                .child(waveform(&s.waveforms[spec.sample], color, true))
+                .child(waveform(s.pad_wave(s.selected), color, true))
                 .child(
                     row()
                         .justify_between()
@@ -400,30 +429,86 @@ fn display(s: &State, tall: bool) -> El {
 
 fn editor(s: &State) -> El {
     let spec = &PADS[s.selected];
+    let pedals_tab = s.pedals.tab == Tab::Pedals;
+    let tab = |key: &'static str, label: &'static str, tab: Tab| {
+        let active = s.pedals.tab == tab;
+        el().key(key)
+            .role("tab")
+            .label(label)
+            .focusable(true)
+            .checked(active)
+            .h(16.0)
+            .px(7.0)
+            .center()
+            .radius(3.0)
+            .fill(if active {
+                ink("#2f3d34")
+            } else {
+                ink("#1b251f")
+            })
+            .border(
+                1.0,
+                if active {
+                    ink("#c8f77b")
+                } else {
+                    ink("#3b4c42")
+                },
+            )
+            .child(
+                text(label)
+                    .font(TextStyle::new(9.5, 700.0))
+                    .color(if active {
+                        ink("#eef4d8")
+                    } else {
+                        ink("#8c9e98")
+                    }),
+            )
+            .on_press(move |s: &mut State| s.pedals.tab = tab)
+    };
+    let header = if pedals_tab {
+        pedals::header(s)
+    } else {
+        row()
+            .justify_between()
+            .child(
+                caption(format!("SHAPE {:02}  /  {}", s.selected + 1, spec.label))
+                    .color(accent(spec.sample)),
+            )
+            .child(caption("PAD SETTINGS APPLY TO THE NEXT HIT"))
+    };
+    let body = if pedals_tab {
+        pedals::strip(s)
+    } else {
+        row()
+            .gap(22.0)
+            .child(slider(s, Control::Gain))
+            .child(slider(s, Control::Pan))
+            .child(slider(s, Control::Pitch))
+            .child(slider(s, Control::Master))
+    };
     col()
         .key("editor")
         .radius(9.0)
-        .padding(12.0)
-        .gap(8.0)
+        .px(10.0)
+        .py(8.0)
+        .gap(4.0)
         .gradient(ink("#28332d"), ink("#1d2721"))
         .border_gradient(1.0, ink("#424e44"), ink("#1b251f"))
         .child(
-            row()
-                .justify_between()
-                .child(
-                    caption(format!("SHAPE {:02}  /  {}", s.selected + 1, spec.label))
-                        .color(accent(spec.sample)),
-                )
-                .child(caption("PAD SETTINGS APPLY TO THE NEXT HIT")),
+            row().justify_between().center_y().child(header).child(
+                row()
+                    .gap(4.0)
+                    .center_y()
+                    .child(tab("editor-tab-shape", "SHAPE", Tab::Shape))
+                    .child(tab("editor-tab-pedals", "PEDALS", Tab::Pedals))
+                    .child(if pedals_tab {
+                        caption("UP TO 4 · NEXT HIT").color(ink("#8c9e98"))
+                    } else {
+                        caption("NEXT HIT").color(ink("#8c9e98"))
+                    }),
+            ),
         )
-        .child(
-            row()
-                .gap(22.0)
-                .child(slider(s, Control::Gain))
-                .child(slider(s, Control::Pan))
-                .child(slider(s, Control::Pitch))
-                .child(slider(s, Control::Master)),
-        )
+        .child(body)
 }
 
 fn pad(s: &State, index: usize) -> El {
@@ -490,7 +575,8 @@ fn pad(s: &State, index: usize) -> El {
                             text(spec.label)
                                 .font(TextStyle::new(14.0, 750.0))
                                 .color(tint),
-                        ),
+                        )
+                        .children(pedals::tag(s, index)),
                 )
                 .child(
                     el().size(19.0, 17.0)
@@ -505,7 +591,7 @@ fn pad(s: &State, index: usize) -> El {
                 ),
         )
         .child(waveform(
-            &s.waveforms[spec.sample],
+            s.pad_wave(index),
             tint.mix(base, if playing { 0.05 } else { 0.45 }),
             false,
         ))
