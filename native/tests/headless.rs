@@ -1,3 +1,6 @@
+//! The real binary, drawn by Rune's GPU renderer, so every test here is
+//! `#[ignore]`d: `make native-test` runs them with `--include-ignored` and a
+//! bare `cargo test` skips them, which is what CI does.
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
@@ -36,6 +39,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs a GPU adapter"]
     fn actual_binary_script_voices_panic_and_missing_assets() {
         let playing = run(
             "playing",
@@ -67,6 +71,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs a GPU adapter"]
     fn the_pedals_scene_shows_a_ready_chain_and_an_error_keeps_its_message() {
         let pedals = run("pedals", &["--scene", "pedals"]);
         assert_eq!(text(&pedals, "pedal-status"), "READY 0.4 s");
@@ -109,6 +114,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs a GPU adapter"]
     fn compact_binary_layout_keeps_every_pad_above_the_editor() {
         for missing in [false, true] {
             let mut args = vec!["--size", "820x600"];
