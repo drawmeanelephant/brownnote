@@ -1,4 +1,4 @@
-use crate::engine::{Command, Meters, Mixer, QUEUE_CAPACITY, Sample};
+use crate::engine::{Command, Meters, Mixer, QUEUE_CAPACITY, SLOTS, Sample, Slots};
 use cpal::{
     SampleFormat, Stream, StreamConfig,
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -47,6 +47,8 @@ pub struct Output {
     driver: Driver,
     wake: Arc<OnceLock<rune::Waker>>,
     pub commands: rtrb::Producer<Command>,
+    /// Samples the mixer has finished with, for the UI thread to drop.
+    retired: rtrb::Consumer<Sample>,
     pub meters: Arc<Meters>,
     pub status: String,
     pub failed: bool,
@@ -54,16 +56,23 @@ pub struct Output {
 }
 
 impl Output {
-    pub fn virtual_driver(samples: Box<[Sample]>, status: String, failed: bool) -> Self {
+    pub fn virtual_driver(slots: impl Into<Slots>, status: String, failed: bool) -> Self {
         let (commands, consumer) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
+        let (retired_commands, retired) = rtrb::RingBuffer::new(SLOTS);
         let meters = Arc::new(Meters::default());
         Self {
             driver: Driver::Virtual {
-                mixer: Box::new(Mixer::new(samples, 44_100, meters.clone())),
+                mixer: Box::new(Mixer::new(
+                    slots.into(),
+                    44_100,
+                    meters.clone(),
+                    retired_commands,
+                )),
                 commands: consumer,
                 remainder: 0.0,
             },
             commands,
+            retired,
             meters,
             wake: Arc::new(OnceLock::new()),
             status,
@@ -72,7 +81,7 @@ impl Output {
         }
     }
 
-    pub fn open(samples: Box<[Sample]>) -> Result<Self, AudioError> {
+    pub fn open(slots: impl Into<Slots>) -> Result<Self, AudioError> {
         let device = cpal::default_host()
             .default_output_device()
             .ok_or(AudioError::NoDevice)?;
@@ -89,8 +98,14 @@ impl Output {
             config.sample_rate, config.channels
         );
         let (commands, consumer) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
+        let (retired_commands, retired) = rtrb::RingBuffer::new(SLOTS);
         let meters = Arc::new(Meters::default());
-        let mixer = Mixer::new(samples, config.sample_rate, meters.clone());
+        let mixer = Mixer::new(
+            slots.into(),
+            config.sample_rate,
+            meters.clone(),
+            retired_commands,
+        );
         let (send_error, errors) = mpsc::channel();
         let wake = Arc::new(OnceLock::new());
         let send_error = ErrorSink {
@@ -111,6 +126,7 @@ impl Output {
                 errors,
             },
             commands,
+            retired,
             meters,
             wake,
             status,
@@ -123,6 +139,16 @@ impl Output {
         if self.commands.push(command).is_err() {
             self.dropped += 1;
         }
+    }
+
+    /// Samples the mixer has finished with. Call from the UI thread; dropping
+    /// the result drops the samples there, never in the callback.
+    pub fn take_retired(&mut self) -> Vec<Sample> {
+        let mut samples = Vec::new();
+        while let Ok(sample) = self.retired.pop() {
+            samples.push(sample);
+        }
+        samples
     }
 
     pub fn set_waker(&self, wake: rune::Waker) {
@@ -207,7 +233,8 @@ pub fn check_audio(samples: Box<[Sample]>) -> Result<String, AudioError> {
     let mut output = Output::open(samples)?;
     output.send(Command::Trigger {
         pad: 0,
-        sample: 0,
+        slot: 0,
+        group: 0,
         velocity: 1.0,
         gain: 1.0,
         pan: 0.0,
@@ -255,7 +282,7 @@ mod tests {
 
     #[test]
     fn virtual_time_is_capped_and_full_queue_counts_drops() {
-        let mut output = Output::virtual_driver(Box::new([]), "test".into(), false);
+        let mut output = Output::virtual_driver(Slots::empty(), "test".into(), false);
         for _ in 0..QUEUE_CAPACITY + 3 {
             output.send(Command::Panic);
         }
@@ -280,13 +307,15 @@ mod tests {
             rate: 44_100,
         }];
         let mut mixer = Mixer::new(
-            samples.into_boxed_slice(),
+            Slots::from_samples(samples),
             44_100,
             Arc::new(Meters::default()),
+            rtrb::RingBuffer::new(SLOTS).0,
         );
         mixer.command(Command::Trigger {
             pad: 0,
-            sample: 0,
+            slot: 0,
+            group: 0,
             velocity: 1.0,
             gain: 1.0,
             pan: -1.0,

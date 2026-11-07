@@ -8,18 +8,41 @@ fn sample(data: Vec<f32>, rate: u32) -> Sample {
     }
 }
 
-fn rig(samples: Vec<Sample>, rate: u32) -> (Mixer, Arc<Meters>) {
+fn rig_with_returns(
+    samples: Vec<Sample>,
+    rate: u32,
+) -> (Mixer, Arc<Meters>, rtrb::Consumer<Sample>) {
     let meters = Arc::new(Meters::default());
-    let mut mixer = Mixer::new(samples.into_boxed_slice(), rate, meters.clone());
+    let (retired, returns) = rtrb::RingBuffer::new(SLOTS);
+    let mut mixer = Mixer::new(Slots::from_samples(samples), rate, meters.clone(), retired);
     mixer.command(Command::SetMaster(1.0));
     mixer.render(&mut [0.0; 2], 2);
+    (mixer, meters, returns)
+}
+
+fn rig(samples: Vec<Sample>, rate: u32) -> (Mixer, Arc<Meters>) {
+    let (mixer, meters, returns) = rig_with_returns(samples, rate);
+    drop(returns);
     (mixer, meters)
 }
 
-fn trigger(pad: usize, sample: usize) -> Command {
+fn trigger(pad: usize, slot: usize) -> Command {
     Command::Trigger {
         pad,
-        sample,
+        slot,
+        group: slot,
+        velocity: 1.0,
+        gain: 1.0,
+        pan: 0.0,
+        semitones: 0.0,
+    }
+}
+
+fn trigger_in(pad: usize, slot: usize, group: usize) -> Command {
+    Command::Trigger {
+        pad,
+        slot,
+        group,
         velocity: 1.0,
         gain: 1.0,
         pan: 0.0,
@@ -30,7 +53,8 @@ fn trigger(pad: usize, sample: usize) -> Command {
 fn hit(m: &mut Mixer, gain: f32, pan: f32, semitones: f32) {
     m.command(Command::Trigger {
         pad: 0,
-        sample: 0,
+        slot: 0,
+        group: 0,
         velocity: 1.0,
         gain,
         pan,
@@ -71,7 +95,8 @@ fn unity_gain_velocity_and_constant_power_pan_at_both_rates() {
         let (mut m, _) = rig(vec![sample(vec![0.8; 32], rate)], rate);
         m.command(Command::Trigger {
             pad: 0,
-            sample: 0,
+            slot: 0,
+            group: 0,
             velocity: 0.4,
             gain: 0.5,
             pan: 0.0,
@@ -156,14 +181,14 @@ fn distinct_samples_overlap_as_the_sum_of_solo_renders() {
 }
 
 #[test]
-fn choke_matches_sample_not_pad_and_off_stacks() {
+fn choke_is_by_group_across_slots_and_never_across_groups() {
     for rate in [44_100, 48_000] {
         for choke in [true, false] {
-            let (mut m, meters) = rig(vec![sample(vec![0.1; 10_000], rate)], rate);
+            let (mut m, meters) = rig(vec![sample(vec![0.1; 10_000], rate); 2], rate);
             m.command(Command::SetChoke(choke));
-            m.command(trigger(0, 0));
+            m.command(trigger_in(0, 0, 7));
             render(&mut m, 64, 2);
-            m.command(trigger(1, 0));
+            m.command(trigger_in(1, 1, 7));
             render(&mut m, 1, 2);
             assert_eq!(&meters.counts()[..2], &[1, 1]);
             let fade_frames = (f64::from(rate) * 0.005).ceil() as usize;
@@ -174,6 +199,15 @@ fn choke_matches_sample_not_pad_and_off_stacks() {
                 0.1 * C * if choke { 1.0 } else { 2.0 },
             );
         }
+        let (mut m, meters) = rig(vec![sample(vec![0.1; 10_000], rate); 2], rate);
+        m.command(trigger_in(0, 0, 3));
+        render(&mut m, 64, 2);
+        m.command(trigger_in(1, 1, 4));
+        render(&mut m, 1, 2);
+        assert_eq!(&meters.counts()[..2], &[1, 1]);
+        let fade_frames = (f64::from(rate) * 0.005).ceil() as usize;
+        render(&mut m, fade_frames - 1, 2);
+        assert_eq!(&meters.counts()[..2], &[1, 1], "different groups choke");
     }
 }
 
@@ -280,4 +314,161 @@ fn finite_float_extremes_cannot_overflow_interpolation_or_mix_to_nan() {
         assert_eq!(out[0], 1.0);
         assert_eq!(out[2], 0.0);
     }
+}
+
+#[test]
+fn a_voice_plays_to_its_end_after_unload_and_the_sample_returns_once() {
+    for rate in [44_100, 48_000] {
+        let source = sample(vec![0.25; 1000], rate);
+        let data = source.data.clone();
+        let (mut m, _meters, mut returns) = rig_with_returns(vec![source], rate);
+        let (mut reference, _) = rig(vec![sample(vec![0.25; 1000], rate)], rate);
+        reference.command(trigger(0, 0));
+        let expected = render(&mut reference, 1000, 2);
+
+        m.command(trigger(0, 0));
+        m.command(Command::Unload { slot: 0 });
+        let mut got = render(&mut m, 900, 2);
+        assert!(returns.pop().is_err(), "returned before the voice ended");
+        got.extend(render(&mut m, 100, 2));
+        assert_eq!(got, expected);
+        let returned = returns.pop().unwrap();
+        assert!(Arc::ptr_eq(&returned.data, &data));
+        assert!(returns.pop().is_err(), "sample returned twice");
+    }
+}
+
+#[test]
+fn a_trigger_on_an_empty_or_retiring_slot_plays_nothing() {
+    let (mut m, meters, _returns) = rig_with_returns(vec![sample(vec![0.5; 1000], 44_100)], 44_100);
+    m.command(trigger(0, 5));
+    render(&mut m, 1, 2);
+    assert_eq!(meters.counts(), [0; 16]);
+
+    m.command(trigger(0, 0));
+    m.command(Command::Unload { slot: 0 });
+    m.command(trigger(1, 0));
+    render(&mut m, 1, 2);
+    assert_eq!(&meters.counts()[..2], &[1, 0]);
+}
+
+#[test]
+fn a_load_and_trigger_drained_in_one_block_play_the_new_sample() {
+    for rate in [44_100, 48_000] {
+        let (mut commands, mut consumer) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
+        let (retired, _returns) = rtrb::RingBuffer::new(SLOTS);
+        let mut m = Mixer::new(Slots::empty(), rate, Arc::new(Meters::default()), retired);
+        commands.push(Command::SetMaster(1.0)).unwrap();
+        m.drain(&mut consumer);
+        m.render(&mut [0.0; 2], 2);
+
+        commands
+            .push(Command::Load {
+                slot: 9,
+                sample: sample(vec![0.3; 32], rate),
+            })
+            .unwrap();
+        commands.push(trigger(0, 9)).unwrap();
+        m.drain(&mut consumer);
+        close(render(&mut m, 1, 2)[0], 0.3 * C);
+    }
+}
+
+#[test]
+fn a_load_into_an_occupied_slot_returns_the_incoming_sample_and_keeps_the_old() {
+    let old = sample(vec![0.2; 64], 44_100);
+    let incoming = sample(vec![0.9; 64], 44_100);
+    let incoming_data = incoming.data.clone();
+    let (mut m, _meters, mut returns) = rig_with_returns(vec![old], 44_100);
+    m.command(Command::Load {
+        slot: 0,
+        sample: incoming,
+    });
+    let returned = returns.pop().unwrap();
+    assert!(Arc::ptr_eq(&returned.data, &incoming_data));
+    m.command(trigger(0, 0));
+    close(render(&mut m, 1, 2)[0], 0.2 * C);
+}
+
+#[test]
+fn a_full_return_queue_delays_retirement_and_the_overflow_never_loses_a_sample() {
+    let rate = 44_100;
+    let samples: Vec<Sample> = (0..SLOTS)
+        .map(|i| sample(vec![0.001 * (i as f32 + 1.0); 8], rate))
+        .collect();
+    let (mut m, meters, mut returns) = rig_with_returns(samples, rate);
+    for slot in 0..SLOTS {
+        m.command(Command::Unload { slot });
+    }
+    render(&mut m, 1, 2);
+    assert_eq!(returns.slots(), SLOTS, "return queue not full");
+
+    let a = sample(vec![0.4; 8], rate);
+    let b = sample(vec![0.6; 8], rate);
+    let (a_data, b_data) = (a.data.clone(), b.data.clone());
+    m.command(Command::Load { slot: 0, sample: a });
+    m.command(Command::Load { slot: 0, sample: b });
+    m.command(trigger(0, 0));
+    close(render(&mut m, 1, 2)[0], 0.4 * C);
+    render(&mut m, 7, 2);
+
+    m.command(Command::Unload { slot: 0 });
+    render(&mut m, 1, 2);
+    m.command(trigger(1, 0));
+    render(&mut m, 1, 2);
+    assert_eq!(&meters.counts()[..2], &[0, 0], "retiring slot played");
+
+    returns.pop().unwrap();
+    render(&mut m, 1, 2);
+    let held = drain(&mut returns);
+    assert!(
+        held.iter()
+            .filter(|s| Arc::ptr_eq(&s.data, &b_data))
+            .count()
+            == 1,
+        "the overflow sample was not returned exactly once"
+    );
+    assert!(held.iter().all(|s| !Arc::ptr_eq(&s.data, &a_data)));
+    render(&mut m, 1, 2);
+    let retired = returns.pop().unwrap();
+    assert!(Arc::ptr_eq(&retired.data, &a_data));
+    assert!(returns.pop().is_err());
+}
+
+#[test]
+fn an_old_voice_keeps_playing_after_a_shorter_sample_loads_and_the_old_slot_unloads() {
+    for rate in [44_100, 48_000] {
+        let long = sample(vec![0.1; rate as usize * 3], rate);
+        let (mut m, meters, mut returns) = rig_with_returns(vec![long.clone()], rate);
+        let (mut reference, _) = rig(vec![long], rate);
+        m.command(trigger(0, 0));
+        reference.command(trigger(0, 0));
+        m.command(Command::Load {
+            slot: 1,
+            sample: sample(vec![0.9; 4], rate),
+        });
+        m.command(Command::Unload { slot: 0 });
+
+        let mut got = Vec::new();
+        let mut expected = Vec::new();
+        let mut left = rate as usize * 3 + 100;
+        while left > 0 {
+            let frames = left.min(512);
+            got.extend(render(&mut m, frames, 2));
+            expected.extend(render(&mut reference, frames, 2));
+            left -= frames;
+        }
+        assert_eq!(got, expected);
+        assert_eq!(meters.counts()[0], 0);
+        assert!(returns.pop().is_ok());
+        assert!(returns.pop().is_err());
+    }
+}
+
+fn drain(returns: &mut rtrb::Consumer<Sample>) -> Vec<Sample> {
+    let mut samples = Vec::new();
+    while let Ok(sample) = returns.pop() {
+        samples.push(sample);
+    }
+    samples
 }
