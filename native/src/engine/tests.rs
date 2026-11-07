@@ -11,7 +11,7 @@ fn sample(data: Vec<f32>, rate: u32) -> Sample {
 fn rig_with_returns(
     samples: Vec<Sample>,
     rate: u32,
-) -> (Mixer, Arc<Meters>, rtrb::Consumer<Sample>) {
+) -> (Mixer, Arc<Meters>, rtrb::Consumer<Returned>) {
     let meters = Arc::new(Meters::default());
     let (retired, returns) = rtrb::RingBuffer::new(SLOTS);
     let mut mixer = Mixer::new(Slots::from_samples(samples), rate, meters.clone(), retired);
@@ -332,7 +332,7 @@ fn a_voice_plays_to_its_end_after_unload_and_the_sample_returns_once() {
         assert!(returns.pop().is_err(), "returned before the voice ended");
         got.extend(render(&mut m, 100, 2));
         assert_eq!(got, expected);
-        let returned = returns.pop().unwrap();
+        let returned = returned_sample(returns.pop().unwrap());
         assert!(Arc::ptr_eq(&returned.data, &data));
         assert!(returns.pop().is_err(), "sample returned twice");
     }
@@ -384,7 +384,7 @@ fn a_load_into_an_occupied_slot_returns_the_incoming_sample_and_keeps_the_old() 
         slot: 0,
         sample: incoming,
     });
-    let returned = returns.pop().unwrap();
+    let returned = returned_sample(returns.pop().unwrap());
     assert!(Arc::ptr_eq(&returned.data, &incoming_data));
     m.command(trigger(0, 0));
     close(render(&mut m, 1, 2)[0], 0.2 * C);
@@ -430,7 +430,7 @@ fn a_full_return_queue_delays_retirement_and_the_overflow_never_loses_a_sample()
     );
     assert!(held.iter().all(|s| !Arc::ptr_eq(&s.data, &a_data)));
     render(&mut m, 1, 2);
-    let retired = returns.pop().unwrap();
+    let retired = returned_sample(returns.pop().unwrap());
     assert!(Arc::ptr_eq(&retired.data, &a_data));
     assert!(returns.pop().is_err());
 }
@@ -465,10 +465,18 @@ fn an_old_voice_keeps_playing_after_a_shorter_sample_loads_and_the_old_slot_unlo
     }
 }
 
-fn drain(returns: &mut rtrb::Consumer<Sample>) -> Vec<Sample> {
+fn returned_sample(item: Returned) -> Sample {
+    match item {
+        Returned::Retired { sample, .. } | Returned::Rejected(sample) => sample,
+    }
+}
+
+fn drain(returns: &mut rtrb::Consumer<Returned>) -> Vec<Sample> {
     let mut samples = Vec::new();
-    while let Ok(sample) = returns.pop() {
-        samples.push(sample);
+    while let Ok(item) = returns.pop() {
+        match item {
+            Returned::Retired { sample, .. } | Returned::Rejected(sample) => samples.push(sample),
+        }
     }
     samples
 }

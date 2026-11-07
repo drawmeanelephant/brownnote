@@ -14,7 +14,7 @@ pub const QUEUE_CAPACITY: usize = 256;
 /// Sample slots. 0..5 hold the kit's files; renders take free slots above.
 pub const SLOTS: usize = 64;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Sample {
     pub data: Arc<[f32]>,
     pub rate: u32,
@@ -90,6 +90,16 @@ impl From<Vec<Sample>> for Slots {
     }
 }
 
+/// A sample coming back from the mixer to the UI thread.
+#[derive(Debug)]
+pub enum Returned {
+    /// A slot finished retiring, so the UI may reuse it.
+    Retired { slot: usize, sample: Sample },
+    /// A `Load` into a slot that already held a sample. The slot keeps its
+    /// sample; the UI just drops this one.
+    Rejected(Sample),
+}
+
 pub struct Meters {
     pub pads: [AtomicU32; 16],
     /// Maximum since the UI last exchanged it for zero (positive f32 bits).
@@ -133,10 +143,10 @@ pub struct Mixer {
     voices: [Option<Voice>; VOICES],
     /// Samples ready to go back to the UI. Pushing moves the `Arc`; it never
     /// changes its count.
-    retired: rtrb::Producer<Sample>,
+    retired: rtrb::Producer<Returned>,
     /// Rejected loads that found the return queue full. Preallocated, so the
     /// callback never drops a sample and never allocates.
-    overflow: [Option<Sample>; SLOTS],
+    overflow: [Option<Returned>; SLOTS],
     rate: u32,
     fade_frames: u32,
     age: u64,
@@ -151,7 +161,7 @@ impl Mixer {
         slots: Slots,
         rate: u32,
         meters: Arc<Meters>,
-        retired: rtrb::Producer<Sample>,
+        retired: rtrb::Producer<Returned>,
     ) -> Self {
         debug_assert_eq!(slots.0.len(), SLOTS);
         Self {
@@ -182,7 +192,7 @@ impl Mixer {
             Command::Load { slot, sample } => match self.slots.get_mut(slot) {
                 Some(entry) if entry.is_none() => *entry = Some(sample),
                 // A UI bug: never overwrite a sample voices may be reading.
-                _ => self.return_sample(sample),
+                _ => self.return_item(Returned::Rejected(sample)),
             },
             Command::Unload { slot } => {
                 if self.slots.get(slot).is_some_and(Option::is_some) {
@@ -244,12 +254,12 @@ impl Mixer {
     }
 
     /// A sample the mixer can't use goes straight back to the UI.
-    fn return_sample(&mut self, sample: Sample) {
-        match self.retired.push(sample) {
+    fn return_item(&mut self, item: Returned) {
+        match self.retired.push(item) {
             Ok(()) => {}
-            Err(rtrb::PushError::Full(sample)) => {
+            Err(rtrb::PushError::Full(item)) => {
                 if let Some(empty) = self.overflow.iter_mut().find(|slot| slot.is_none()) {
-                    *empty = Some(sample);
+                    *empty = Some(item);
                 }
             }
         }
@@ -260,9 +270,9 @@ impl Mixer {
     /// on the next block.
     fn collect(&mut self) {
         for entry in &mut self.overflow {
-            let Some(sample) = entry.take() else { continue };
-            if let Err(rtrb::PushError::Full(sample)) = self.retired.push(sample) {
-                *entry = Some(sample);
+            let Some(item) = entry.take() else { continue };
+            if let Err(rtrb::PushError::Full(item)) = self.retired.push(item) {
+                *entry = Some(item);
                 break;
             }
         }
@@ -277,10 +287,19 @@ impl Mixer {
                 self.retiring[index] = false;
                 continue;
             };
-            if let Err(rtrb::PushError::Full(sample)) = self.retired.push(sample) {
-                self.slots[index] = Some(sample);
-            } else {
-                self.retiring[index] = false;
+            let item = Returned::Retired {
+                slot: index,
+                sample,
+            };
+            match self.retired.push(item) {
+                Ok(()) => self.retiring[index] = false,
+                // No room yet: the slot stays retiring and is retried next block.
+                Err(rtrb::PushError::Full(Returned::Retired { sample, .. })) => {
+                    self.slots[index] = Some(sample);
+                }
+                Err(rtrb::PushError::Full(Returned::Rejected(_))) => {
+                    unreachable!("only retirement items are pushed here")
+                }
             }
         }
     }
