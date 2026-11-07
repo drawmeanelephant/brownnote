@@ -76,6 +76,6 @@ native:
 native-test:
 	$(CARGO) fmt --manifest-path native/Cargo.toml --check
 	$(CARGO) clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
-	$(CARGO) test --manifest-path native/Cargo.toml
+	$(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored
 
 .PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test

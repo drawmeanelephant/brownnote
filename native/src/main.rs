@@ -1,5 +1,7 @@
 mod ui;
 #[cfg(test)]
+mod ui_pedals_tests;
+#[cfg(test)]
 mod ui_tests;
 
 use brownnote_native::{
@@ -18,6 +20,7 @@ struct Options {
     check_audio: bool,
     list_pedals: bool,
     brownnote: PathBuf,
+    pedal_cache: PathBuf,
 }
 
 fn options(args: Vec<String>) -> Result<Options, String> {
@@ -27,6 +30,7 @@ fn options(args: Vec<String>) -> Result<Options, String> {
         check_audio: false,
         list_pedals: false,
         brownnote: DEFAULT_BIN.into(),
+        pedal_cache: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/target/pedal-cache")),
     };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -34,6 +38,9 @@ fn options(args: Vec<String>) -> Result<Options, String> {
             "--samples" => options.samples = args.next().ok_or("--samples requires DIR")?.into(),
             "--brownnote" => {
                 options.brownnote = args.next().ok_or("--brownnote requires PATH")?.into()
+            }
+            "--pedal-cache" => {
+                options.pedal_cache = args.next().ok_or("--pedal-cache requires DIR")?.into()
             }
             "--no-audio" => options.no_audio = true,
             "--check-audio" => options.check_audio = true,
@@ -121,6 +128,12 @@ fn main() {
             ui::view,
         )
     })
-    .init(move || ui::State::new(kit, rune::is_headless(), options.no_audio))
+    .init({
+        let cache = options.pedal_cache.clone();
+        let brownnote = options.brownnote.clone();
+        // The same path for the catalog and for renders, so one build's pedal
+        // list never edits against another build's pedals.
+        move || ui::State::with_cache(kit, rune::is_headless(), options.no_audio, cache, brownnote)
+    })
     .run();
 }

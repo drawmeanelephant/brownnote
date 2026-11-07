@@ -147,8 +147,8 @@ fn callback_path_allocates_and_frees_nothing_for_two_seconds_at_both_rates() {
         // The full queue held every sample it was given; the overflow and the
         // delayed retirement come back once there is room.
         let mut returned = Vec::new();
-        while let Ok(sample) = returns.pop() {
-            returned.push(sample);
+        while let Ok(item) = returns.pop() {
+            returned.push(item);
         }
         assert_eq!(returned.len(), SLOTS, "queue at {rate}");
         mixer.render(&mut output[..2], 2);

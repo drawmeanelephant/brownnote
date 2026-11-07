@@ -2,6 +2,8 @@
 //!
 //! They skip, printing why, when either is absent. `make` builds brownnote
 //! and `make -C vendor/GuitarPedal/Validation bench` builds the bench.
+//! `BROWNNOTE_REQUIRE_BENCH=1` turns a skip into a failure, so CI cannot pass
+//! without them.
 #![allow(clippy::unwrap_used)]
 
 use brownnote_native::{
@@ -25,20 +27,30 @@ fn binary() -> PathBuf {
         .unwrap_or_else(|| DEFAULT_BIN.into())
 }
 
+/// Skipping needs a reason, and `BROWNNOTE_REQUIRE_BENCH=1` makes it a failure
+/// so the CI job cannot go green without touching the real bench.
+fn skip(reason: &str) {
+    assert!(
+        std::env::var_os("BROWNNOTE_REQUIRE_BENCH").is_none(),
+        "BROWNNOTE_REQUIRE_BENCH is set, so this cannot skip: {reason}"
+    );
+    println!("skipped: {reason}");
+}
+
 fn catalog() -> Option<Catalog> {
     let path = binary();
     if !path.exists() {
-        println!("skipped: no brownnote at {}", path.display());
+        skip(&format!("no brownnote at {}", path.display()));
         return None;
     }
     match brownnote::list(&path, Duration::from_secs(5)) {
         Ok(catalog) => Some(catalog),
         Err(CatalogError::NoBench(_)) => {
-            println!("skipped: brownnote found no GuitarPedal bench");
+            skip("brownnote found no GuitarPedal bench");
             None
         }
         Err(CatalogError::NotFound(_)) => {
-            println!("skipped: no brownnote at {}", path.display());
+            skip(&format!("no brownnote at {}", path.display()));
             None
         }
         Err(error) => panic!("brownnote --list failed: {error}"),

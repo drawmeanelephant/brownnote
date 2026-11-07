@@ -1,3 +1,6 @@
+//! The real binary, drawn by Rune's GPU renderer, so every test here is
+//! `#[ignore]`d: `make native-test` runs them with `--include-ignored` and a
+//! bare `cargo test` skips them, which is what CI does.
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
@@ -36,6 +39,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs a GPU adapter"]
     fn actual_binary_script_voices_panic_and_missing_assets() {
         let playing = run(
             "playing",
@@ -67,6 +71,50 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn the_pedals_scene_shows_a_ready_chain_and_an_error_keeps_its_message() {
+        let pedals = run("pedals", &["--scene", "pedals"]);
+        assert_eq!(text(&pedals, "pedal-status"), "READY 0.4 s");
+        assert_eq!(text(&pedals, "pad-4-fx"), "FX 2");
+        assert!(
+            pedals["elements"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["key"] == "pedal-0")
+        );
+        assert!(
+            pedals["elements"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["key"] == "pedal-1")
+        );
+        assert!(
+            pedals["elements"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["key"] == "pot-sustain")
+        );
+
+        let error = run("pedal-error", &["--scene", "pedal-error"]);
+        assert_eq!(
+            text(&error, "pedal-status"),
+            "ERROR · Rat Sketch / Distortion takes 0..120, not 200"
+        );
+        assert_eq!(text(&error, "pad-4-fx"), "FX 2");
+
+        let unavailable = run("pedals-unavailable", &["--scene", "pedals-unavailable"]);
+        assert_eq!(
+            text(&unavailable, "pedal-status"),
+            "Pedals need the GuitarPedal bench: run `make -C vendor/GuitarPedal/Validation bench`"
+        );
+        assert_eq!(unavailable["warnings"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    #[ignore = "needs a GPU adapter"]
     fn compact_binary_layout_keeps_every_pad_above_the_editor() {
         for missing in [false, true] {
             let mut args = vec!["--size", "820x600"];
