@@ -1,0 +1,151 @@
+Signal Chain  (always runs) [mix: none]
+    Gate           0..120  default 60   dB
+    Attack         0..120  default 18   ms
+    Release        0..120  default 27   ms
+    Trim           0..120  default 60   dB
+    Volume         0..120  default 80   dB
+Hum Filter [mix: none]
+    Target         0..120  default 48   dB
+Tone 1 [mix: linear]
+    Bass Freq      0..120  default 40   Hz
+    Bass           0..120  default 60   dB
+    Mid Freq       0..120  default 64   Hz
+    Mid            0..120  default 60   dB
+    Treble Freq    0..120  default 87   Hz
+    Treble         0..120  default 60   dB
+    Mid Q          0..120  default 40   
+Tone 2 [mix: linear]
+    Bass Freq      0..120  default 40   Hz
+    Bass           0..120  default 60   dB
+    Mid Freq       0..120  default 64   Hz
+    Mid            0..120  default 60   dB
+    Treble Freq    0..120  default 87   Hz
+    Treble         0..120  default 60   dB
+    Mid Q          0..120  default 40   
+Preamp [mix: linear]
+    Level          0..120  default 60   dB
+    Sat            0..120  default 24   x
+    Voice          0..1    default 0    
+Compressor [mix: linear]
+    Level          0..120  default 60   dB
+    Attack         0..120  default 16   ms
+    Release        0..120  default 27   ms
+    Ratio          0..120  default 63   x
+    Boost          0..120  default 30   dB
+Auto-Wah [mix: linear]
+    Sens           0..120  default 60   dB
+    Freq           0..120  default 64   Hz
+    Resonance      0..120  default 73   
+    Range          0..120  default 90   oct
+    Mode           0..1    default 0    
+    Direction      0..1    default 0    
+    Decay          0..120  default 30   ms
+    Level          0..120  default 80   dB
+Boost [mix: linear]
+    Boost          0..120  default 0    dB
+    Level          0..120  default 120  dB
+    Basscut        0..120  default 57   Hz
+    Highcut        0..120  default 60   kHz
+Klonlike [mix: linear]
+    Gain           0..120  default 24   
+    Treble         0..120  default 60   
+    Output         0..120  default 48   
+Phaser [mix: linear]
+    LFO            0..120  default 60   ms
+    Feedback       0..120  default 60   
+    Freq           0..120  default 60   Hz
+    Q              0..120  default 60   
+Rat Sketch [mix: linear]
+    Distortion     0..120  default 54   
+    Filter         0..120  default 60   
+    Sweep          0..120  default 0    
+    Mode           0..2    default 0    
+    Volume         0..120  default 60   
+Flanger [mix: linear]
+    Freq           0..120  default 60   Hz
+    Delay          0..120  default 60   ms
+    Depth          0..120  default 60   
+    Feedback       0..120  default 60   
+Vibrato [mix: equal power]
+    Rate           0..120  default 75   Hz
+    Depth          0..120  default 21   ms
+Tape Echo [mix: equal power]
+    Blend          0..120  default 24   
+    Sustain        0..120  default 33   
+    Time           0..120  default 93   ms
+    Record         0..120  default 25   
+    Tone           0..120  default 68   Hz
+    WowFlut        0..120  default 24   
+    Mode           0..1    default 0    
+Reverb [mix: equal power]
+    Room           0..120  default 77   
+    Damp           0..120  default 45   
+Pitch [mix: equal power]
+    Octave         0..120  default 90   
+    Feedback       0..120  default 60   
+Tremolo [mix: linear]
+    Rate           0..120  default 75   Hz
+    Depth          0..120  default 60   
+    Mode           0..1    default 0    
+Parametric EQ [mix: linear]
+    LS Freq        0..120  default 28   Hz
+    LS Gain        0..120  default 60   dB
+    P1 Freq        0..120  default 44   Hz
+    P1 Gain        0..120  default 60   dB
+    P2 Freq        0..120  default 68   Hz
+    P2 Gain        0..120  default 60   dB
+    P3 Freq        0..120  default 92   Hz
+    P3 Gain        0..120  default 60   dB
+    HS Freq        0..120  default 104  Hz
+    HS Gain        0..120  default 60   dB
+Frenchie Amp [mix: linear]
+    Gain           0..120  default 60   
+    Tone           0..120  default 60   
+    Input          0..120  default 60   
+    Sag            0..120  default 60   
+    Level          0..120  default 15   
+Test Tone [mix: linear]
+    Level          0..120  default 93   dBFS
+    Freq           0..120  default 60   Hz
+    Shape          0..3    default 0    
+Cabinet [mix: linear]
+    Cabinet        0..4    default 3    
+    Drive          0..120  default 60   dB
+    Resonance      0..120  default 20   ohm
+    Axis           0..120  default 60   
+Settings  (always runs) [mix: none]
+    Analog In      0..1    default 1    
+    MIDI Ch        0..16   default 0    
+    LED            0..120  default 12   %
+    ATTN           0..120  default 60   %
+    Tuning         0..3    default 0    
+Expression Jack  (always runs) [mix: none]
+    Detect         0..1    default 0    
+    Accessory      0..3    default 0    
+    Type           0..1    default 0    
+    Calibrate      0..1    default 0    
+    Heel           0..120  default 0    %
+    Toe            0..120  default 120  %
+USB Audio  (always runs) [mix: none]
+    L/R Out        0..3    default 1    
+    L/R In         0..3    default 2    
+Analog In Tone [mix: none]
+    Bass Freq      0..120  default 40   Hz
+    Bass           0..120  default 60   dB
+    Mid Freq       0..120  default 64   Hz
+    Mid            0..120  default 60   dB
+    Treble Freq    0..120  default 87   Hz
+    Treble         0..120  default 60   dB
+    Mid Q          0..120  default 40   
+Analog Out Tone [mix: none]
+    Bass Freq      0..120  default 40   Hz
+    Bass           0..120  default 60   dB
+    Mid Freq       0..120  default 64   Hz
+    Mid            0..120  default 60   dB
+    Treble Freq    0..120  default 87   Hz
+    Treble         0..120  default 60   dB
+    Mid Q          0..120  default 40   
+Bluetooth Audio  (always runs) [mix: none]
+    In             0..3    default 1    
+    Level          0..120  default 73   dB
+    Out            0..3    default 1    
