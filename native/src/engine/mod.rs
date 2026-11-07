@@ -1,4 +1,9 @@
 //! Fixed voice pool. Samples and meters are owned before the callback starts.
+//!
+//! Samples live in 64 slots. The UI loads a sample into a free slot, triggers
+//! voices from it, and unloads it; a voice keeps reading its slot until it
+//! ends, and the sample returns to the UI on a queue once no voice reads it.
+//! The callback never allocates, frees, locks, or changes an `Arc` count.
 use std::sync::{
     Arc,
     atomic::{AtomicU32, AtomicU64, Ordering::Relaxed},
@@ -6,6 +11,8 @@ use std::sync::{
 
 pub const VOICES: usize = 32;
 pub const QUEUE_CAPACITY: usize = 256;
+/// Sample slots. 0..5 hold the kit's files; renders take free slots above.
+pub const SLOTS: usize = 64;
 
 #[derive(Clone)]
 pub struct Sample {
@@ -13,11 +20,13 @@ pub struct Sample {
     pub rate: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone)]
 pub enum Command {
     Trigger {
         pad: usize,
-        sample: usize,
+        slot: usize,
+        /// The pad's base file index. Choke works across pads that share it.
+        group: usize,
         velocity: f32,
         gain: f32,
         pan: f32,
@@ -26,6 +35,59 @@ pub enum Command {
     SetMaster(f32),
     SetChoke(bool),
     Panic,
+    Load {
+        slot: usize,
+        sample: Sample,
+    },
+    Unload {
+        slot: usize,
+    },
+}
+
+/// The UI's view of what each slot holds, kept so a new `Output` can be
+/// rebuilt after a device failure. Cloning it clones `Arc`s on the UI thread.
+#[derive(Clone)]
+pub struct Slots(Box<[Option<Sample>]>);
+
+impl Slots {
+    pub fn empty() -> Self {
+        Self(vec![None; SLOTS].into_boxed_slice())
+    }
+
+    /// Put `samples` in slots 0..n and leave the rest empty.
+    pub fn from_samples(samples: impl IntoIterator<Item = Sample>) -> Self {
+        let mut slots = Self::empty();
+        for (index, sample) in samples.into_iter().take(SLOTS).enumerate() {
+            slots.0[index] = Some(sample);
+        }
+        slots
+    }
+
+    pub fn get(&self, slot: usize) -> Option<&Sample> {
+        self.0.get(slot).and_then(Option::as_ref)
+    }
+
+    pub fn set(&mut self, slot: usize, sample: Option<Sample>) {
+        if let Some(entry) = self.0.get_mut(slot) {
+            *entry = sample;
+        }
+    }
+
+    pub fn is_empty(&self, slot: usize) -> bool {
+        self.get(slot).is_none()
+    }
+}
+
+impl From<Box<[Sample]>> for Slots {
+    fn from(samples: Box<[Sample]>) -> Self {
+        Self::from_samples(samples.into_vec())
+    }
+}
+
+impl From<Vec<Sample>> for Slots {
+    fn from(samples: Vec<Sample>) -> Self {
+        Self::from_samples(samples)
+    }
 }
 
 pub struct Meters {
@@ -54,7 +116,8 @@ impl Meters {
 #[derive(Clone, Copy)]
 struct Voice {
     pad: usize,
-    sample: usize,
+    slot: usize,
+    group: usize,
     position: f64,
     step: f64,
     left: f32,
@@ -64,8 +127,16 @@ struct Voice {
 }
 
 pub struct Mixer {
-    samples: Box<[Sample]>,
+    slots: Box<[Option<Sample>]>,
+    /// Set by `Unload`; the sample leaves the slot once no voice reads it.
+    retiring: Box<[bool]>,
     voices: [Option<Voice>; VOICES],
+    /// Samples ready to go back to the UI. Pushing moves the `Arc`; it never
+    /// changes its count.
+    retired: rtrb::Producer<Sample>,
+    /// Rejected loads that found the return queue full. Preallocated, so the
+    /// callback never drops a sample and never allocates.
+    overflow: [Option<Sample>; SLOTS],
     rate: u32,
     fade_frames: u32,
     age: u64,
@@ -76,10 +147,19 @@ pub struct Mixer {
 }
 
 impl Mixer {
-    pub fn new(samples: Box<[Sample]>, rate: u32, meters: Arc<Meters>) -> Self {
+    pub fn new(
+        slots: Slots,
+        rate: u32,
+        meters: Arc<Meters>,
+        retired: rtrb::Producer<Sample>,
+    ) -> Self {
+        debug_assert_eq!(slots.0.len(), SLOTS);
         Self {
-            samples,
+            slots: slots.0,
+            retiring: vec![false; SLOTS].into_boxed_slice(),
             voices: [None; VOICES],
+            retired,
+            overflow: std::array::from_fn(|_| None),
             rate,
             fade_frames: (f64::from(rate) * 0.005).ceil() as u32,
             age: 0,
@@ -99,18 +179,29 @@ impl Mixer {
                     v.fade = Some(v.fade.unwrap_or(self.fade_frames).min(self.fade_frames));
                 }
             }
+            Command::Load { slot, sample } => match self.slots.get_mut(slot) {
+                Some(entry) if entry.is_none() => *entry = Some(sample),
+                // A UI bug: never overwrite a sample voices may be reading.
+                _ => self.return_sample(sample),
+            },
+            Command::Unload { slot } => {
+                if self.slots.get(slot).is_some_and(Option::is_some) {
+                    self.retiring[slot] = true;
+                }
+            }
             Command::Trigger {
                 pad,
-                sample,
+                slot,
+                group,
                 velocity,
                 gain,
                 pan,
                 semitones,
             } => {
-                let Some(src) = self.samples.get(sample) else {
+                let Some(src) = self.slots.get(slot).and_then(Option::as_ref) else {
                     return;
                 };
-                if pad >= 16 || src.data.is_empty() {
+                if self.retiring[slot] || pad >= 16 || src.data.is_empty() {
                     return;
                 }
                 if self.choke {
@@ -118,12 +209,12 @@ impl Mixer {
                         .voices
                         .iter_mut()
                         .flatten()
-                        .filter(|v| v.sample == sample)
+                        .filter(|v| v.group == group)
                     {
                         v.fade = Some(v.fade.unwrap_or(self.fade_frames).min(self.fade_frames));
                     }
                 }
-                let slot = self
+                let voice = self
                     .voices
                     .iter()
                     .position(Option::is_none)
@@ -136,9 +227,10 @@ impl Mixer {
                     });
                 let theta = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
                 self.age += 1;
-                self.voices[slot] = Some(Voice {
+                self.voices[voice] = Some(Voice {
                     pad,
-                    sample,
+                    slot,
+                    group,
                     position: 0.0,
                     step: f64::from(src.rate) / f64::from(self.rate)
                         * 2.0_f64.powf(f64::from(semitones) / 12.0),
@@ -151,9 +243,56 @@ impl Mixer {
         }
     }
 
-    /// Bounded draining prevents a busy producer from extending a callback indefinitely.
+    /// A sample the mixer can't use goes straight back to the UI.
+    fn return_sample(&mut self, sample: Sample) {
+        match self.retired.push(sample) {
+            Ok(()) => {}
+            Err(rtrb::PushError::Full(sample)) => {
+                if let Some(empty) = self.overflow.iter_mut().find(|slot| slot.is_none()) {
+                    *empty = Some(sample);
+                }
+            }
+        }
+    }
+
+    /// Hand back retiring samples no voice reads, and flush the overflow.
+    /// With nowhere to put a sample, the slot stays retiring and is retried
+    /// on the next block.
+    fn collect(&mut self) {
+        for entry in &mut self.overflow {
+            let Some(sample) = entry.take() else { continue };
+            if let Err(rtrb::PushError::Full(sample)) = self.retired.push(sample) {
+                *entry = Some(sample);
+                break;
+            }
+        }
+        for index in 0..SLOTS {
+            if !self.retiring[index] {
+                continue;
+            }
+            if self.voices.iter().flatten().any(|v| v.slot == index) {
+                continue;
+            }
+            let Some(sample) = self.slots[index].take() else {
+                self.retiring[index] = false;
+                continue;
+            };
+            if let Err(rtrb::PushError::Full(sample)) = self.retired.push(sample) {
+                self.slots[index] = Some(sample);
+            } else {
+                self.retiring[index] = false;
+            }
+        }
+    }
+
+    /// Bounded draining prevents a busy producer from extending a callback
+    /// indefinitely. It also stops when a returned sample would have nowhere
+    /// to go, so the command stays queued for the next block.
     pub fn drain(&mut self, commands: &mut rtrb::Consumer<Command>) {
         for _ in 0..QUEUE_CAPACITY {
+            if self.retired.is_full() && self.overflow.iter().all(Option::is_some) {
+                break;
+            }
             let Ok(command) = commands.pop() else { break };
             self.command(command);
         }
@@ -181,7 +320,14 @@ impl Mixer {
             let mut right = 0.0_f64;
             for slot in &mut self.voices {
                 let Some(v) = slot else { continue };
-                let src = &self.samples[v.sample].data;
+                let src = match &self.slots[v.slot] {
+                    Some(sample) => &sample.data,
+                    // Unreachable: a slot is emptied only when no voice reads it.
+                    None => {
+                        *slot = None;
+                        continue;
+                    }
+                };
                 let index = v.position as usize;
                 let next = (index + 1).min(src.len() - 1);
                 // Float WAVs may contain any finite f32, including values above unity.
@@ -215,6 +361,7 @@ impl Mixer {
             self.master = self.target_master;
         }
         output[frames * channels..].fill(convert(0.0));
+        self.collect();
         let mut counts = [0; 16];
         for v in self.voices.iter().flatten() {
             counts[v.pad] += 1;

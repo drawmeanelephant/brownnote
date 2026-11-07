@@ -1,7 +1,7 @@
 mod control;
 mod graphics;
 use brownnote_native::{
-    engine::Command,
+    engine::{Command, Slots},
     kit::{DEFAULT_SAMPLES, FILES, Kit, PADS},
     output::Output,
 };
@@ -20,6 +20,9 @@ pub struct Settings {
 pub struct State {
     pub kit: Kit,
     pub output: Output,
+    /// What each sample slot holds, kept so a fresh `Output` can be rebuilt
+    /// after a device failure.
+    pub slots: Slots,
     pub settings: [Settings; 16],
     pub selected: usize,
     pub master: f32,
@@ -35,10 +38,10 @@ pub struct State {
 impl State {
     pub fn new(kit: Kit, headless: bool, no_audio: bool) -> Self {
         let waveforms = std::array::from_fn(|i| envelope(&kit.samples[i]));
-        let samples = kit.samples.clone();
+        let slots = Slots::from(kit.samples.clone());
         let output = if headless || no_audio {
             Output::virtual_driver(
-                samples,
+                slots.clone(),
                 if headless {
                     "Headless: no audio device".into()
                 } else {
@@ -47,13 +50,13 @@ impl State {
                 false,
             )
         } else {
-            Output::open(samples).unwrap_or_else(|e| {
-                Output::virtual_driver(kit.samples.clone(), e.to_string(), true)
-            })
+            Output::open(slots.clone())
+                .unwrap_or_else(|e| Output::virtual_driver(slots.clone(), e.to_string(), true))
         };
         Self {
             kit,
             output,
+            slots,
             settings: std::array::from_fn(|i| Settings {
                 gain: 1.0,
                 pan: 0.0,
@@ -79,7 +82,8 @@ impl State {
         let settings = self.settings[pad];
         self.output.send(Command::Trigger {
             pad,
-            sample: spec.sample,
+            slot: spec.sample,
+            group: spec.sample,
             velocity,
             gain: settings.gain,
             pan: settings.pan,
@@ -90,9 +94,8 @@ impl State {
     }
 
     fn retry(&mut self) {
-        self.output = Output::open(self.kit.samples.clone()).unwrap_or_else(|e| {
-            Output::virtual_driver(self.kit.samples.clone(), e.to_string(), true)
-        });
+        self.output = Output::open(self.slots.clone())
+            .unwrap_or_else(|e| Output::virtual_driver(self.slots.clone(), e.to_string(), true));
         self.output.send(Command::SetMaster(self.master));
         self.output.send(Command::SetChoke(self.choke));
         if let Some(wake) = &self.wake {
@@ -142,8 +145,7 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let error = s.output.take_error();
     let failed = error.is_some();
     if let Some(error) = error {
-        s.output =
-            Output::virtual_driver(s.kit.samples.clone(), format!("Audio error: {error}"), true);
+        s.output = Output::virtual_driver(s.slots.clone(), format!("Audio error: {error}"), true);
         s.output.send(Command::SetMaster(s.master));
         s.output.send(Command::SetChoke(s.choke));
     }

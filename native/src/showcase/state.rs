@@ -154,7 +154,8 @@ impl State {
         let settings = self.settings[pad];
         self.output.send(Command::Trigger {
             pad,
-            sample: spec.sample,
+            slot: spec.sample,
+            group: spec.sample,
             velocity,
             gain: settings.gain,
             pan: settings.pan,
