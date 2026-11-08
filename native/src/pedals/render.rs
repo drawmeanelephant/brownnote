@@ -92,7 +92,8 @@ impl fmt::Display for RenderError {
             Self::Path(error) => write!(f, "Pedals: {error}"),
             Self::NoBench(detail) => write!(
                 f,
-                "Pedals need the GuitarPedal bench: set BROWNNOTE_BENCH or run `make -C vendor/GuitarPedal/Validation bench`. {detail}"
+                "Pedals need the GuitarPedal bench: set BROWNNOTE_BENCH or run `make -C vendor/GuitarPedal/Validation bench`.{}{detail}",
+                if detail.is_empty() { "" } else { " " }
             ),
             Self::Usage(message) => write!(f, "Pedals: brownnote rejected the command: {message}"),
             Self::NotRoutable(message) => write!(f, "Pedals: {message}"),

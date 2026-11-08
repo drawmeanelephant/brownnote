@@ -12,6 +12,23 @@ use std::{
 const FIXTURE: &str = include_str!("../../tests/fixtures/bench-list.txt");
 
 #[test]
+fn missing_bench_hint_keeps_optional_details_without_trailing_space() {
+    let hint = "Pedals need the GuitarPedal bench: set BROWNNOTE_BENCH or run `make -C vendor/GuitarPedal/Validation bench`.";
+    for detail in ["", "device-independent fixture detail"] {
+        let expected = if detail.is_empty() {
+            hint.to_string()
+        } else {
+            format!("{hint} {detail}")
+        };
+        assert_eq!(CatalogError::NoBench(detail.into()).to_string(), expected);
+        assert_eq!(
+            super::render::RenderError::NoBench(detail.into()).to_string(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn fixture_parses_to_27_effects_of_which_22_are_routable() {
     let catalog = Catalog::parse(FIXTURE).unwrap();
     assert_eq!(catalog.effects.len(), 27);

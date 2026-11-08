@@ -7,8 +7,7 @@ use brownnote_native::{
 impl State {
     pub(super) fn retry(&mut self) {
         self.prune_slots();
-        let output = Output::open(self.slots.clone())
-            .unwrap_or_else(|e| Output::virtual_driver(self.slots.clone(), e.to_string(), true));
+        let output = self.output.retry(self.slots.clone());
         self.install(output);
     }
 
@@ -45,9 +44,57 @@ impl State {
             return false;
         };
         self.prune_slots();
-        let output =
-            Output::virtual_driver(self.slots.clone(), format!("Audio error: {error}"), true);
+        let output = Output::silent_selected(
+            self.slots.clone(),
+            self.output.selection().clone(),
+            format!("Audio error: {error}"),
+        );
         self.install(output);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brownnote_native::{
+        kit::{DEFAULT_SAMPLES, Kit},
+        output::OutputSelection,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn retry_remembers_a_missing_id_and_replaces_active_voices_with_an_honest_silent_mixer() {
+        let mut state = State::new(Kit::load(Path::new(DEFAULT_SAMPLES)), true, true);
+        let selection = OutputSelection {
+            device_id: Some(cpal::DeviceId::new(
+                cpal::default_host().id(),
+                "brownnote-missing-device-fixture",
+            )),
+            sample_rate: Some(48_000),
+            ..Default::default()
+        };
+        state.output =
+            Output::silent_selected(state.slots.clone(), selection.clone(), "lost".into());
+        state.trigger(0, 1.0);
+        state.output.advance(0.01);
+        assert!(state.output.meters.counts()[0] > 0);
+
+        state.retry();
+        assert_eq!(state.output.selection(), &selection);
+        assert!(state.output.failed);
+        assert!(state.output.opened().is_none());
+        assert!(state.output.timestamps().is_none());
+        assert!(state.output.status.starts_with("Silent: "));
+        assert!(state.output.status.contains("voices stopped"));
+        assert_eq!(state.output.meters.counts(), [0; 16]);
+        state.output.advance(0.01);
+        assert_eq!(state.output.meters.counts(), [0; 16]);
+        state.trigger(0, 1.0);
+        state.output.advance(0.01);
+        assert!(
+            state.output.meters.counts()[0] > 0,
+            "samples survived retry"
+        );
     }
 }

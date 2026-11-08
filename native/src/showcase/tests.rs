@@ -182,6 +182,34 @@ fn muted_master_still_shows_every_hit() {
 }
 
 #[test]
+fn real_mixer_overload_lights_clip_but_clean_near_unity_does_not() {
+    let mut rt = runtime();
+    rt.state.master = 0.9995;
+    rt.state.output.send(Command::SetMaster(0.9995));
+    rt.state.choke = false;
+    rt.state.output.send(Command::SetChoke(false));
+    rt.state.settings[0].pan = -1.0;
+    run(&mut rt, 0.02);
+    key(&mut rt, Key::Text("1".into()));
+    key(&mut rt, Key::Text("1".into()));
+    assert!((rt.state.meter.level - 0.9995).abs() < 1e-6);
+    assert!(!rt.state.meter.clipping());
+
+    key(&mut rt, Key::Text("1".into()));
+    assert!((rt.state.meter.level - 1.49925).abs() < 1e-6);
+    assert!(rt.state.meter.clipping());
+    key(&mut rt, Key::Escape);
+    run(&mut rt, 1.4);
+    assert_eq!(rt.state.counts, [0; 16]);
+    assert!(
+        rt.state.meter.clipping(),
+        "panic must not clear the latch early"
+    );
+    run(&mut rt, 0.2);
+    assert!(!rt.state.meter.clipping(), "silence lets the latch expire");
+}
+
+#[test]
 fn overlapping_hits_stay_bounded_and_everything_settles_then_stops_waking() {
     let mut rt = runtime();
     rt.state.output.send(Command::SetChoke(false));

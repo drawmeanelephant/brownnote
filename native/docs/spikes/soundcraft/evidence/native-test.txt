@@ -1,0 +1,155 @@
+cargo fmt --manifest-path native/Cargo.toml --check
+cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.38s
+cargo test --manifest-path native/Cargo.toml -- --include-ignored
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running unittests src/lib.rs (native/docs/spikes/soundcraft/.work/cargo-target/debug/deps/brownnote_native-568cab2ccefbbc7a)
+
+running 61 tests
+test engine::tests::a_trigger_on_an_empty_or_retiring_slot_plays_nothing ... ok
+test engine::tests::a_load_into_an_occupied_slot_returns_the_incoming_sample_and_keeps_the_old ... ok
+test engine::tests::finite_float_extremes_cannot_overflow_interpolation_or_mix_to_nan ... ok
+test engine::tests::a_load_and_trigger_drained_in_one_block_play_the_new_sample ... ok
+test engine::tests::a_full_return_queue_delays_retirement_and_the_overflow_never_loses_a_sample ... ok
+test engine::tests::master_ramps_one_block_and_zero_remains_silent ... ok
+test engine::tests::distinct_samples_overlap_as_the_sum_of_solo_renders ... ok
+test engine::tests::mono_averages_stereo_and_surround_channels_are_zero ... ok
+test engine::tests::trigger_settings_are_snapshots_not_live_pad_settings ... ok
+test engine::tests::unity_gain_velocity_and_constant_power_pan_at_both_rates ... ok
+test engine::tests::voice_cap_steals_oldest_keeps_newest_and_clamps_output ... ok
+test engine::tests::octave_pitch_values_and_durations_at_both_rates ... ok
+test look::controls::tests::bins_preserve_transients_and_silence_without_inventing_signal ... ok
+test engine::tests::choke_is_by_group_across_slots_and_never_across_groups ... ok
+test engine::tests::panic_fades_to_exact_silence_and_next_trigger_works ... ok
+test look::controls::tests::effects_light_keeps_still_materials_and_reduced_motion_drops_ripples ... ok
+test look::controls::tests::meter_segments_cover_minus_48_to_zero ... ok
+test look::fx::probe::tests::percentiles_and_reports_cover_empty_and_live_bursts ... ok
+test look::fx::tests::glow_style_rides_in_the_mark_and_heat_is_clamped ... ok
+test look::fx::tests::ripple_origin_is_unpacked_inside_the_shape_and_ends_with_its_life ... ok
+test look::fx::tests::slots_map_to_layers_and_unknown_marks_draw_nothing ... ok
+test look::motion::tests::light_attacks_fast_scales_with_velocity_and_releases_without_a_cut ... ok
+test look::motion::tests::meter_attacks_instantly_holds_peak_latches_clip_then_settles ... ok
+test engine::tests::a_voice_plays_to_its_end_after_unload_and_the_sample_returns_once ... ok
+test look::motion::tests::sustain_holds_while_the_voice_plays_and_only_lets_go_after_grace ... ok
+test look::motion::tests::ripples_overlap_are_bounded_across_the_window_and_settle ... ok
+test look::theme::tests::every_theme_keeps_text_and_focus_readable ... ok
+test look::theme::tests::pad_labels_stay_readable_under_their_own_light ... ok
+test look::theme::tests::slot_round_trips_every_channel_and_mix_stays_in_gamut ... ok
+test output::tests::all_four_device_formats_convert_signal_and_silence ... ok
+test output::tests::stream_error_reports_and_wakes_even_when_ui_is_idle ... ok
+test kit::tests::stereo_pcm_and_float_average_and_nonfinite_is_rejected ... ok
+test engine::tests::sample_rate_conversion_uses_the_same_playback_step ... ok
+test output::tests::virtual_time_is_capped_and_full_queue_counts_drops ... ok
+test pedals::render::tests::argv_for_three_stages_is_exact ... ok
+test pedals::render::tests::every_invalid_chain_is_refused_before_a_process_starts ... ok
+test kit::tests::errors_name_file_for_missing_corrupt_8bit_empty_rate_and_length ... ok
+test kit::tests::missing_folder_is_nonfatal_and_bad_file_only_disables_its_pads ... ok
+test kit::tests::all_repo_samples_and_exact_pad_mapping ... ok
+test pedals::render::tests::the_cache_key_is_stable_and_covers_every_input ... ok
+test pedals::render::tests::a_missing_binary_and_a_missing_output_are_reported ... ok
+test engine::tests::an_old_voice_keeps_playing_after_a_shorter_sample_loads_and_the_old_slot_unloads ... ok
+test pedals::tests::a_malformed_pot_line_is_an_error_not_a_header ... ok
+test pedals::tests::a_missing_binary_is_reported_as_not_found ... ok
+test pedals::tests::a_pot_label_longer_than_the_padding_column_parses ... ok
+test pedals::render::tests::a_passthrough_render_trims_the_tail_and_then_hits_the_cache ... ok
+test pedals::render::tests::eviction_leaves_recordings_it_does_not_own_alone ... ok
+test pedals::tests::effect_lookup_is_exact_and_routable_iterates_in_list_order ... ok
+test pedals::tests::a_fake_brownnote_that_prints_the_list_gives_a_parsed_catalog ... ok
+test pedals::tests::fixture_parses_to_27_effects_of_which_22_are_routable ... ok
+test pedals::tests::parse_errors_name_the_line_and_reason ... ok
+test pedals::tests::spot_checks_match_the_bench_list ... ok
+test pedals::render::tests::eviction_keeps_the_newest_256_cache_entries ... ok
+test pedals::render::tests::the_clipping_warning_survives_a_cache_hit ... ok
+test pedals::tests::exit_two_with_no_bench_is_its_own_error_and_explains_the_fix ... ok
+test pedals::tests::another_non_zero_exit_keeps_the_code_and_stderr ... ok
+test pedals::render::tests::a_source_long_enough_to_exceed_the_kit_limit_still_renders_and_caches ... ok
+test pedals::render::tests::failures_keep_their_kind_and_leave_no_partial_files ... ok
+test pedals::render::tests::a_brownnote_that_does_not_answer_is_asked_to_stop_and_then_killed ... ok
+test pedals::tests::a_slow_brownnote_is_killed_and_reported_as_a_timeout ... ok
+test pedals::render::tests::a_brownnote_that_ignores_sigterm_is_still_killed_within_the_grace ... ok
+
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.72s
+
+     Running unittests src/main.rs (native/docs/spikes/soundcraft/.work/cargo-target/debug/deps/brownnote_native-6337e5a81c471bd0)
+
+running 31 tests
+test ui::graphics::tests::envelopes_preserve_transients_and_silence_without_inventing_signal ... ok
+test ui_pedals_tests::an_unavailable_catalog_explains_what_to_build_and_leaves_play_alone ... ok
+test ui_pedals_tests::a_load_the_queue_refused_is_landed_once_it_drains ... ok
+test ui_pedals_tests::a_hit_before_the_answer_uses_the_base_slot_and_after_uses_the_new_one ... ok
+test ui_pedals_tests::a_four_stage_chain_with_ten_pots_fits_the_minimum_window_and_tabs_through ... ok
+test ui_pedals_tests::adding_a_pedal_renders_once_after_the_debounce_with_only_the_moved_pot ... ok
+test ui_pedals_tests::cancelling_a_mix_drag_restores_a_moved_value ... ok
+test ui_pedals_tests::a_render_error_shows_its_first_line_and_keeps_the_previous_sound ... ok
+test ui_pedals_tests::the_catalog_loader_runs_the_brownnote_the_state_was_given ... ok
+test ui_pedals_tests::a_voice_keeps_its_sample_across_a_swap_and_its_slot_retires_after_it_ends ... ok
+test ui_pedals_tests::an_edit_that_changes_nothing_keeps_ready_and_asks_for_nothing ... ok
+test ui_tests::click_height_sets_top_and_bottom_velocity ... ok
+test ui_tests::all_pads_and_controls_fit_minimum_window_even_with_long_asset_errors ... ok
+test ui_pedals_tests::cancelling_a_mix_drag_restores_default_and_asks_for_nothing ... ok
+test ui_pedals_tests::the_pedal_tab_offers_only_routable_pedals ... ok
+test ui_tests::escape_also_panics_while_pointer_is_still_held_on_a_pad ... ok
+test ui_pedals_tests::the_display_length_follows_the_render ... ok
+test ui_pedals_tests::removing_the_last_stage_points_the_pad_back_at_its_base_slot ... ok
+test ui_pedals_tests::duplicates_are_disabled_and_a_fifth_stage_cannot_be_added ... ok
+test ui_tests::escape_after_click_and_panic_button_clear_real_voices ... ok
+test ui_tests::pointer_down_is_immediate_once_up_does_not_trigger_and_pads_cannot_focus ... ok
+test ui_tests::muted_hits_still_animate_input_feedback_and_stop_redrawing_at_rest ... ok
+test ui_tests::missing_pad_does_nothing_while_good_pads_still_play ... ok
+test ui_tests::slider_drag_cancel_restores_original_value ... ok
+test ui_tests::upper_and_lower_q_repeat_and_modified_keys ... ok
+test ui_tests::idle_poll_returns_false_and_virtual_voices_expire ... ok
+test ui_pedals_tests::reordering_stages_changes_the_requested_order ... ok
+test ui_pedals_tests::retry_audio_drops_slots_no_pad_owns ... ok
+test ui_tests::display_tracks_selection_and_meter_reports_real_signal_then_silence ... ok
+test ui_tests::slider_keyboard_steps_limits_and_next_hit_settings ... ok
+test ui_pedals_tests::audio_pending_for_an_abandoned_chain_is_dropped ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.51s
+
+     Running unittests src/showcase/main.rs (native/docs/spikes/soundcraft/.work/cargo-target/debug/deps/brownnote_showcase-6b8974cde8e4b79a)
+
+running 10 tests
+test tests::flags_pick_look_effects_mask_and_view ... ok
+test tests::muted_master_still_shows_every_hit ... ok
+test tests::pointer_hits_keep_the_velocity_curve_and_light_scales_with_it ... ok
+test tests::missing_samples_disable_pads_and_audio_failure_offers_retry ... ok
+test tests::tab_reaches_every_control_with_a_visible_ring_and_steps_change_values ... ok
+test tests::look_switches_and_reduced_motion_change_the_skin_not_the_sound ... ok
+test tests::keys_ignore_repeat_and_modifiers_and_escape_panics_and_releases_light ... ok
+test tests::overlapping_hits_stay_bounded_and_everything_settles_then_stops_waking ... ok
+test tests::every_look_fits_default_and_minimum_windows_in_every_state ... ok
+test motion_tests::motion_gate_every_look_hits_overlaps_panics_and_goes_quiet ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.66s
+
+     Running tests/headless.rs (native/docs/spikes/soundcraft/.work/cargo-target/debug/deps/headless-6138574f9db0e05e)
+
+running 3 tests
+test tests::compact_binary_layout_keeps_every_pad_above_the_editor ... ok
+test tests::the_pedals_scene_shows_a_ready_chain_and_an_error_keeps_its_message ... ok
+test tests::actual_binary_script_voices_panic_and_missing_assets ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.46s
+
+     Running tests/pedals_live.rs (native/docs/spikes/soundcraft/.work/cargo-target/debug/deps/pedals_live-c65aea0948cb8794)
+
+running 3 tests
+test the_real_list_parses_and_lists_the_named_effects ... ok
+test routable_effects_render_and_system_blocks_are_refused_by_the_real_bench ... ok
+test live_renders_change_the_sound_ring_out_and_then_hit_the_cache ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.76s
+
+     Running tests/rt_alloc.rs (native/docs/spikes/soundcraft/.work/cargo-target/debug/deps/rt_alloc-722d249a04bc49fd)
+
+running 1 test
+test callback_path_allocates_and_frees_nothing_for_two_seconds_at_both_rates ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+   Doc-tests brownnote_native
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

@@ -1,0 +1,5227 @@
+[
+  {
+    "id": "session.new",
+    "label": "New...",
+    "menu": [
+      "File"
+    ],
+    "shortcut": "Cmd+N",
+    "params": "{name?: 'Untitled', sample_rate?: 48000, bit_depth?: 24, template?: blank|demo}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "session.open",
+    "label": "Open Session...",
+    "menu": [
+      "File"
+    ],
+    "shortcut": "Cmd+O",
+    "params": "{path}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "session.close",
+    "label": "Close Session",
+    "menu": [
+      "File"
+    ],
+    "shortcut": "Cmd+Shift+W",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "session.save",
+    "label": "Save Session",
+    "menu": [
+      "File"
+    ],
+    "shortcut": "Cmd+S",
+    "params": "{path?, replace?: false}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "session.save_as",
+    "label": "Save Session As...",
+    "menu": [
+      "File"
+    ],
+    "shortcut": "Cmd+Shift+S",
+    "params": "{path, replace?: false}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "session.save_copy",
+    "label": "Save Session Copy In...",
+    "menu": [
+      "File"
+    ],
+    "shortcut": null,
+    "params": "{path, replace?: false}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "session.save_template",
+    "label": "Save As Template...",
+    "menu": [
+      "File"
+    ],
+    "shortcut": null,
+    "params": "{path, replace?: false}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "session.revert",
+    "label": "Revert Session to Saved...",
+    "menu": [
+      "File"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "the session has not been saved"
+  },
+  {
+    "id": "file.import_audio",
+    "label": "Audio...",
+    "menu": [
+      "File",
+      "Import"
+    ],
+    "shortcut": "Cmd+Shift+I",
+    "params": "{path | paths: [..], track?: target track, at?: position, new_tracks?: true (default; false uses `track` or the selected audio track)}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.import_midi",
+    "label": "MIDI...",
+    "menu": [
+      "File",
+      "Import"
+    ],
+    "shortcut": "Cmd+Alt+I",
+    "params": "{path, at?}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.import_video",
+    "label": "Video...",
+    "menu": [
+      "File",
+      "Import"
+    ],
+    "shortcut": "Cmd+Ctrl+I",
+    "params": "{path, at?} — adds a Video track clip for the movie's picture (H.264, ProRes, Motion JPEG) and imports its audio onto a new track",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.bounce_mix",
+    "label": "Bounce Mix...",
+    "menu": [
+      "File"
+    ],
+    "shortcut": "Cmd+Alt+B",
+    "params": "{path, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, source?: main|bus name, normalize?: false, dither?: true, fold_down?: stereo}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.bounce_stems",
+    "label": "Bounce Stems...",
+    "menu": [],
+    "shortcut": null,
+    "params": "{dir, format?: wav|aiff|flac, bit_depth?: 16|24|32f, start?, end?, dither?: true, fold_down?: stereo}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "file.export_midi",
+    "label": "MIDI...",
+    "menu": [
+      "File",
+      "Export"
+    ],
+    "shortcut": null,
+    "params": "{path, tracks?}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.export_session_text",
+    "label": "Session Info as Text...",
+    "menu": [
+      "File",
+      "Export"
+    ],
+    "shortcut": null,
+    "params": "{path?, replace?: false}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.export_clips",
+    "label": "Export Clips as Files...",
+    "menu": [],
+    "shortcut": "Cmd+Shift+K",
+    "params": "{dir, clips?, format?: wav}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.export_selected_tracks_as_session",
+    "label": "Selected Tracks as New Session...",
+    "menu": [
+      "File",
+      "Export"
+    ],
+    "shortcut": null,
+    "params": "{path, tracks?, replace?: false}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "file.export_sibelius",
+    "label": "Sibelius...",
+    "menu": [
+      "File",
+      "Export"
+    ],
+    "shortcut": null,
+    "params": "{path, tracks?} — MIDI tracks as MusicXML (.musicxml)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.send_to_sibelius",
+    "label": "Sibelius",
+    "menu": [
+      "File",
+      "Send To..."
+    ],
+    "shortcut": null,
+    "params": "{path?, tracks?} — writes MusicXML for a notation program (to the temp folder when no `path`)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.print_score",
+    "label": "Print Score...",
+    "menu": [
+      "File"
+    ],
+    "shortcut": "Cmd+P",
+    "params": "{path?, tracks?} — engraves the MIDI tracks as a printable SVG page",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.score_setup",
+    "label": "Score Setup...",
+    "menu": [
+      "File"
+    ],
+    "shortcut": null,
+    "params": "{title?, composer?, bars_per_system?: 1..16, show_track_names?: bool} — returns the current setup",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.export_clip_groups",
+    "label": "Export Clip Groups...",
+    "menu": [],
+    "shortcut": null,
+    "params": "{path, clips?} — writes a .scgrp clip group file with its audio",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.import_clip_groups",
+    "label": "Clip Groups...",
+    "menu": [
+      "File",
+      "Import"
+    ],
+    "shortcut": null,
+    "params": "{path, track?: first target track, at?}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.get_info",
+    "label": "Get Info...",
+    "menu": [
+      "File"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "app.quit",
+    "label": "Quit",
+    "menu": [],
+    "shortcut": "Cmd+Q",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.undo",
+    "label": "Undo",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Cmd+Z",
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "nothing to undo"
+  },
+  {
+    "id": "edit.redo",
+    "label": "Redo",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Cmd+Shift+Z",
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "nothing to redo"
+  },
+  {
+    "id": "edit.restore_last_selection",
+    "label": "Restore Last Selection",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Cmd+Alt+Z",
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "no previous selection to restore"
+  },
+  {
+    "id": "edit.cut",
+    "label": "Cut",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Cmd+X",
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.copy",
+    "label": "Copy",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Cmd+C",
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.paste",
+    "label": "Paste",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Cmd+V",
+    "params": "{tracks?, at?}",
+    "enabled": false,
+    "disabled_reason": "the clipboard is empty"
+  },
+  {
+    "id": "edit.clear",
+    "label": "Clear",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Cmd+B",
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.cut_clip_gain",
+    "label": "Clip Gain",
+    "menu": [
+      "Edit",
+      "Cut Special"
+    ],
+    "shortcut": "Cmd+Ctrl+X",
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.clear_clip_gain",
+    "label": "Clip Gain",
+    "menu": [
+      "Edit",
+      "Clear Special"
+    ],
+    "shortcut": "Cmd+Ctrl+B",
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.cut_all_automation",
+    "label": "All Automation",
+    "menu": [
+      "Edit",
+      "Cut Special"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.clear_all_automation",
+    "label": "All Automation",
+    "menu": [
+      "Edit",
+      "Clear Special"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.clear_pan_automation",
+    "label": "Pan Automation",
+    "menu": [
+      "Edit",
+      "Clear Special"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.clear_plugin_automation",
+    "label": "Plugin Automation",
+    "menu": [
+      "Edit",
+      "Clear Special"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.paste_repeat_to_fill",
+    "label": "Repeat to Fill Selection",
+    "menu": [
+      "Edit",
+      "Paste Special"
+    ],
+    "shortcut": "Cmd+Alt+V",
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "the clipboard is empty"
+  },
+  {
+    "id": "edit.select_all",
+    "label": "Select All",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Cmd+A",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.select",
+    "label": "Set Edit Selection",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?: [id|name], start?, end?, clips?: [id], sources?: [id] (Clip List files), exact?: bool (ignore edit groups)}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.select_none",
+    "label": "Deselect All",
+    "menu": [],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.selection_to_timeline",
+    "label": "Change Timeline to Match Edit",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": "Alt+Shift+5",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.timeline_to_selection",
+    "label": "Change Edit to Match Timeline",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": "Alt+Shift+6",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.move_selection_left",
+    "label": "Move Edit Left",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": "Cmd+Alt+L",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.move_selection_right",
+    "label": "Move Edit Right",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": "Cmd+Alt+'",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.halve_selection",
+    "label": "Halve Edit",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.double_selection",
+    "label": "Double Edit",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.extend_selection_up",
+    "label": "Extend Edit Up",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": "Ctrl+Shift+P",
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "edit.extend_selection_down",
+    "label": "Extend Edit Down",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": "Ctrl+Shift+;",
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "edit.remove_selection_top",
+    "label": "Remove Edit from Top",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "edit.remove_selection_bottom",
+    "label": "Remove Edit from Bottom",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "edit.duplicate",
+    "label": "Duplicate",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Cmd+D",
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.repeat",
+    "label": "Repeat...",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Alt+R",
+    "params": "{count: n}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.shift",
+    "label": "Shift...",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Alt+H",
+    "params": "{by: samples|{seconds}, later?: bool}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.insert_silence",
+    "label": "Insert Silence",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Cmd+Shift+E",
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.separate",
+    "label": "At Selection",
+    "menu": [
+      "Edit",
+      "Separate"
+    ],
+    "shortcut": "Cmd+E",
+    "params": "{tracks?, at?|start/end}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.separate_on_grid",
+    "label": "On Grid",
+    "menu": [
+      "Edit",
+      "Separate"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.separate_at_transients",
+    "label": "At Transients",
+    "menu": [
+      "Edit",
+      "Separate"
+    ],
+    "shortcut": null,
+    "params": "{sensitivity?: 0..1}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.heal",
+    "label": "Heal Separation",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Cmd+H",
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.trim_to_selection",
+    "label": "To Selection",
+    "menu": [
+      "Edit",
+      "Trim"
+    ],
+    "shortcut": "Cmd+T",
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.trim_start_to_insertion",
+    "label": "Start to Insertion",
+    "menu": [
+      "Edit",
+      "Trim"
+    ],
+    "shortcut": "Alt+Shift+7",
+    "params": "{tracks?, at?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.trim_end_to_insertion",
+    "label": "End to Insertion",
+    "menu": [
+      "Edit",
+      "Trim"
+    ],
+    "shortcut": "Alt+Shift+8",
+    "params": "{tracks?, at?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.trim_to_file_boundaries",
+    "label": "To File Boundaries",
+    "menu": [
+      "Edit",
+      "Trim"
+    ],
+    "shortcut": null,
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.trim_to_fill_selection",
+    "label": "To Fill Selection",
+    "menu": [
+      "Edit",
+      "Trim"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.mute_clips",
+    "label": "Mute",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Cmd+M",
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.copy_to_new_playlist",
+    "label": "New Playlist",
+    "menu": [
+      "Edit",
+      "Copy Selection to..."
+    ],
+    "shortcut": "Alt+Shift+Down",
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.strip_silence",
+    "label": "Strip Silence",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Cmd+U",
+    "params": "{threshold_db?: -48, min_length_ms?: 50, pad_before_ms?: 5, pad_after_ms?: 20, mode?: strip|extract|separate, name?, number?: 1, zeros?: 0, suffix?} (strip removes the silence; extract removes the audio and keeps the silence; separate separates the clips at the edges of the silence and does not remove any; with a name, the clips left in the selection are named name, zeros, a number counting up from number, suffix)",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.fades_create",
+    "label": "Create...",
+    "menu": [
+      "Edit",
+      "Fades"
+    ],
+    "shortcut": "Cmd+F",
+    "params": "{shape?: linear|equal power|s-curve|exponential|logarithmic, tracks?, start?, end?} or {clip: id, side: in|out, length: samples, shape?, curvature?: -1..1}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.fades_delete",
+    "label": "Delete",
+    "menu": [
+      "Edit",
+      "Fades"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.fade_to_start",
+    "label": "Fade to Start",
+    "menu": [
+      "Edit",
+      "Fades"
+    ],
+    "shortcut": "Cmd+Ctrl+D",
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.fade_to_end",
+    "label": "Fade to End",
+    "menu": [
+      "Edit",
+      "Fades"
+    ],
+    "shortcut": "Cmd+Ctrl+G",
+    "params": "{}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.nudge",
+    "label": "Nudge",
+    "menu": [],
+    "shortcut": "Plus/Minus",
+    "params": "{direction: 1|-1, count?: n, next?: bool (next larger value)}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.mode",
+    "label": "Edit Mode",
+    "menu": [],
+    "shortcut": "F1-F4, Alt+1-4, `",
+    "params": "{mode: shuffle|slip|spot|grid|relative_grid, snap_to_grid?: bool (Shuffle, Slip and Spot)}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.snap_to_grid",
+    "label": "Snap to Grid",
+    "menu": [],
+    "shortcut": "Shift+F4",
+    "params": "{value?: bool} (toggles when omitted) — in Shuffle, Slip and Spot the Edit cursor and selections snap to the grid",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.shuffle_lock",
+    "label": "Shuffle Lock",
+    "menu": [],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted) — keeps Shuffle mode from being chosen",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.tool",
+    "label": "Edit Tool",
+    "menu": [],
+    "shortcut": "F5-F10",
+    "params": "{tool: zoom|trim|selector|grabber|scrubber|pencil|smart}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.move_clips",
+    "label": "Move Clips",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clips?: [id], by?: samples, to?: position for the first clip that can move (Grid modes snap its sync point), track?: where the first clip's track goes; the others keep their distance}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.trim_clip",
+    "label": "Trim Clip",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clip: id, start?: position, end?: position} — moves the clip's edges like the Trim tool, in the current Edit mode",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.consolidate",
+    "label": "Consolidate",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": "Alt+Shift+3",
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.cut_pan_automation",
+    "label": "Pan Automation",
+    "menu": [
+      "Edit",
+      "Cut Special"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?} — cuts pan automation only to the clipboard",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.cut_plugin_automation",
+    "label": "Plugin Automation",
+    "menu": [
+      "Edit",
+      "Cut Special"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?} — cuts plug-in automation only",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.copy_all_automation",
+    "label": "All Automation",
+    "menu": [
+      "Edit",
+      "Copy Special"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?} — copies automation only (no clips)",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.copy_pan_automation",
+    "label": "Pan Automation",
+    "menu": [
+      "Edit",
+      "Copy Special"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.copy_plugin_automation",
+    "label": "Plugin Automation",
+    "menu": [
+      "Edit",
+      "Copy Special"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.copy_clip_gain",
+    "label": "Clip Gain",
+    "menu": [
+      "Edit",
+      "Copy Special"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?} — copies the clip gain curve under the selection",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.paste_clip_gain",
+    "label": "Paste Clip Gain",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, at?} — pastes copied clip gain onto the clips under the paste range",
+    "enabled": false,
+    "disabled_reason": "no clip gain has been copied"
+  },
+  {
+    "id": "edit.copy_clip_effects",
+    "label": "Clip Effects",
+    "menu": [
+      "Edit",
+      "Copy Special"
+    ],
+    "shortcut": null,
+    "params": "{clips?} — copies the first clip's clip-effect settings",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.cut_clip_effects",
+    "label": "Clip Effects",
+    "menu": [
+      "Edit",
+      "Cut Special"
+    ],
+    "shortcut": null,
+    "params": "{clips?} — copies then removes clip-effect settings",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.clear_clip_effects",
+    "label": "Clip Effects",
+    "menu": [
+      "Edit",
+      "Clear Special"
+    ],
+    "shortcut": null,
+    "params": "{clips?} — removes clip-effect settings (and bypass)",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.paste_clip_effects",
+    "label": "Paste Clip Effects",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "no clip effects have been copied"
+  },
+  {
+    "id": "edit.paste_merge_midi",
+    "label": "Merge MIDI",
+    "menu": [
+      "Edit",
+      "Paste Special"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, at?} — merges copied MIDI notes into existing MIDI clips instead of replacing them",
+    "enabled": false,
+    "disabled_reason": "the clipboard is empty"
+  },
+  {
+    "id": "edit.paste_merge_markers",
+    "label": "Merge Markers",
+    "menu": [
+      "Edit",
+      "Paste Special"
+    ],
+    "shortcut": null,
+    "params": "{at?} — adds the copied markers at the insertion point, skipping any that already exist there",
+    "enabled": false,
+    "disabled_reason": "no markers on the clipboard"
+  },
+  {
+    "id": "edit.paste_to_current_automation",
+    "label": "To Current Automation Type",
+    "menu": [
+      "Edit",
+      "Paste Special"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, at?, param?} — pastes copied automation into the shown lane (track view) or `param`, rescaled to its range",
+    "enabled": false,
+    "disabled_reason": "no automation has been copied"
+  },
+  {
+    "id": "edit.play_timeline",
+    "label": "Play Timeline",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": null,
+    "params": "{} — plays the timeline selection",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.duplicate_extend",
+    "label": "Duplicate and Extend Edit",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?} — duplicates the selection and extends the selection over the copy",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.extend_up_to_members",
+    "label": "Extend Edit Up to Members",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": null,
+    "params": "{} — adds the parent folder of each selected member and its members",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.extend_down_to_members",
+    "label": "Extend Edit Down to Members",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": null,
+    "params": "{} — adds the members of selected folder tracks (recursively)",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.marker_lane_move_up",
+    "label": "Move Edit Selection To Marker Lane Above",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": null,
+    "params": "{} — the selection's marker ruler lane (1..5) moves up",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.marker_lane_move_down",
+    "label": "Move Edit Selection To Marker Lane Below",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.marker_lane_extend_up",
+    "label": "Extend Edit Selection To Marker Lane Above",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": null,
+    "params": "{} — adds the marker ruler lane above to the selection",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.marker_lane_extend_down",
+    "label": "Extend Edit Selection To Marker Lane Below",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.space_clips",
+    "label": "Space Clips…",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": null,
+    "params": "{clips?, gap?: samples|{seconds} (default 0), mode?: end_to_start|start_to_start}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.snap_next",
+    "label": "Next",
+    "menu": [
+      "Edit",
+      "Snap to"
+    ],
+    "shortcut": null,
+    "params": "{clips?} — moves each clip so its end meets the start of the next clip",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.snap_previous",
+    "label": "Previous",
+    "menu": [
+      "Edit",
+      "Snap to"
+    ],
+    "shortcut": null,
+    "params": "{clips?} — moves each clip so its start meets the end of the previous clip",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.copy_to_target_playlist",
+    "label": "Target Playlist",
+    "menu": [
+      "Edit",
+      "Copy Selection to..."
+    ],
+    "shortcut": "Alt+Shift+Up",
+    "params": "{tracks?, start?, end?} — copies the selection into each track's target playlist",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.copy_to_duplicate_playlist",
+    "label": "Duplicate of Main Playlist",
+    "menu": [
+      "Edit",
+      "Copy Selection to..."
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.move_to_target_playlist",
+    "label": "Target Playlist",
+    "menu": [
+      "Edit",
+      "Move Selection to..."
+    ],
+    "shortcut": "Alt+Shift+T",
+    "params": "{tracks?, start?, end?} — copies to the target playlist and clears it from the main",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.move_to_new_playlist",
+    "label": "New Playlist",
+    "menu": [
+      "Edit",
+      "Move Selection to..."
+    ],
+    "shortcut": "Alt+Shift+N",
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.move_to_duplicate_playlist",
+    "label": "Duplicate of Main Playlist",
+    "menu": [
+      "Edit",
+      "Move Selection to..."
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.tce_to_timeline",
+    "label": "TCE Edit to Timeline Selection",
+    "menu": [
+      "Edit"
+    ],
+    "shortcut": null,
+    "params": "{clip?, start?, end?} — time-stretches the clip to fill the timeline selection (pitch preserved)",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.automation_coalesce_volume_to_clip_gain",
+    "label": "Coalesce Volume Automation to Clip Gain",
+    "menu": [
+      "Edit",
+      "Automation"
+    ],
+    "shortcut": null,
+    "params": "{tracks?} — folds the whole volume curve into clip gain; the fader goes to 0 dB",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.automation_coalesce_clip_gain_to_volume",
+    "label": "Coalesce Clip Gain to Volume Automation",
+    "menu": [
+      "Edit",
+      "Automation"
+    ],
+    "shortcut": null,
+    "params": "{tracks?} — folds all clip gain into volume automation",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.automation_trim_to_all",
+    "label": "Trim to All Enabled",
+    "menu": [
+      "Edit",
+      "Automation"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?} — offsets every enabled lane in the selection so it starts at the current control value",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.automation_glide_to_all",
+    "label": "Glide to All Enabled",
+    "menu": [
+      "Edit",
+      "Automation"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?} — ramps every enabled lane from its value at the start to the current value at the end",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "edit.automation_glide_pan",
+    "label": "Glide Pan Only",
+    "menu": [
+      "Edit",
+      "Automation"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "view.zoom_in",
+    "label": "Zoom In",
+    "menu": [],
+    "shortcut": "Cmd+]",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.zoom_out",
+    "label": "Zoom Out",
+    "menu": [],
+    "shortcut": "Cmd+[",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.zoom_by",
+    "label": "Zoom By",
+    "menu": [],
+    "shortcut": null,
+    "params": "{factor: >1 zooms in, x?: px into the timeline to hold (else the insertion point if on screen)}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.zoom_set",
+    "label": "Set Zoom",
+    "menu": [],
+    "shortcut": null,
+    "params": "{samples_per_px}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.zoom_preset",
+    "label": "Zoom Preset",
+    "menu": [],
+    "shortcut": "Cmd+Ctrl+1-5",
+    "params": "{preset: 1..5, store?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.zoom_to_selection",
+    "label": "Zoom to Selection",
+    "menu": [],
+    "shortcut": "Alt+F",
+    "params": "{width_px?: 1200}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.zoom_fit",
+    "label": "Fill Window With Session",
+    "menu": [],
+    "shortcut": "Alt+A",
+    "params": "{width_px?: 1200}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.scroll",
+    "label": "Scroll Timeline",
+    "menu": [],
+    "shortcut": null,
+    "params": "{to?: position, by_px?: n}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.waveform_zoom",
+    "label": "Waveform Zoom",
+    "menu": [],
+    "shortcut": "Cmd+Alt+[ / ]",
+    "params": "{factor?: 2 | value}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.ruler",
+    "label": "Rulers",
+    "menu": [
+      "View",
+      "Rulers"
+    ],
+    "shortcut": null,
+    "params": "{ruler: bars_beats|min_secs|timecode|feet_frames|samples|tempo|meter|markers|key|chords, visible?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.main_counter",
+    "label": "Main Counter",
+    "menu": [
+      "View",
+      "Main Counter"
+    ],
+    "shortcut": null,
+    "params": "{format: bars_beats|min_secs|timecode|feet_frames|samples}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.sub_counter",
+    "label": "Sub Counter",
+    "menu": [],
+    "shortcut": null,
+    "params": "{format?: … | null}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.grid",
+    "label": "Grid Value",
+    "menu": [],
+    "shortcut": "Shift+=/-",
+    "params": "{value?, step?, format?: bars_beats|min_secs|timecode|feet_frames|samples|clips_markers, follow_main?: bool, lines?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.grid_lines",
+    "label": "Show Grid Lines",
+    "menu": [],
+    "shortcut": null,
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.nudge",
+    "label": "Nudge Value",
+    "menu": [],
+    "shortcut": "Alt+Shift+=/-",
+    "params": "{value?, step?, format?: bars_beats|min_secs|timecode|feet_frames|samples, follow_main?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "track.new",
+    "label": "New...",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": "Cmd+Shift+N",
+    "params": "{count?: 1, format?: mono|stereo|5.1…, kind?: audio|aux|master|midi|instrument|vca|folder, name?, timebase?: samples|ticks, instrument?: plugin id, rows?: [objects with the same fields] (1–128 tracks total)}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "track.group",
+    "label": "Group...",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": "Cmd+G",
+    "params": "{name?, tracks?, edit?: true, mix?: true}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.ungroup",
+    "label": "Delete Group",
+    "menu": [],
+    "shortcut": null,
+    "params": "{group: id|name}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "track.group_toggle",
+    "label": "Toggle Group Active",
+    "menu": [],
+    "shortcut": null,
+    "params": "{group: id|name}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "track.group_modify",
+    "label": "Modify Group",
+    "menu": [],
+    "shortcut": null,
+    "params": "{group: id|name, name?, tracks?, edit?, mix?}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "track.duplicate",
+    "label": "Duplicate...",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": "Alt+Shift+D",
+    "params": "{tracks?, playlists?: true, automation?: true, inserts?: true, sends?: true}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.split_into_mono",
+    "label": "Split into Mono",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": null,
+    "params": "{tracks?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.make_inactive",
+    "label": "Make Inactive",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, inactive?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.move_to_new_folder",
+    "label": "Move to New Folder...",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": "Cmd+Alt+Shift+N",
+    "params": "{tracks?, name?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.move_to_folder",
+    "label": "Move to Folder",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, folder}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.remove_from_folder",
+    "label": "Remove from Folder",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.change_width",
+    "label": "Change Track Width",
+    "menu": [
+      "Track",
+      "Change Track Width"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, format: mono|stereo|…}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.delete",
+    "label": "Delete",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": null,
+    "params": "{tracks?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.rename",
+    "label": "Rename Track",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track, name}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "track.comments",
+    "label": "Track Comments",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track, comments}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "track.color",
+    "label": "Track Color",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, color: [r,g,b] | palette index}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.height",
+    "label": "Track Height",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, height: micro|mini|small|medium|large|jumbo|extreme | points}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.height_up",
+    "label": "Increase Track Height",
+    "menu": [],
+    "shortcut": "Ctrl+Up",
+    "params": "{tracks?} — one preset taller",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.height_down",
+    "label": "Decrease Track Height",
+    "menu": [],
+    "shortcut": "Ctrl+Down",
+    "params": "{tracks?} — one preset shorter",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.view",
+    "label": "Track View",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, view: waveform|blocks|notes|volume|pan|mute|<automation id>}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.hide",
+    "label": "Hide Track",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, hidden?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.pin",
+    "label": "Pin Track",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.move",
+    "label": "Move Track",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track, to: index}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "track.freeze",
+    "label": "Freeze",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": null,
+    "params": "{tracks?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.commit",
+    "label": "Commit...",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": "Alt+Shift+C",
+    "params": "{tracks?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.bounce",
+    "label": "Bounce...",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": "Cmd+Alt+Shift+B",
+    "params": "{tracks?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.bypass_inserts",
+    "label": "All",
+    "menu": [
+      "Track",
+      "Bypass Inserts"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, bypass?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.mute_sends",
+    "label": "All",
+    "menu": [
+      "Track",
+      "Mute Sends"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, mute?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.set_record_to_input_only",
+    "label": "Set Record Tracks to Input Only",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": "Alt+K",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "track.scroll_to",
+    "label": "Scroll to Track...",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": "Cmd+Alt+F",
+    "params": "{track}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "track.clear_clip_indicators",
+    "label": "Clear All Clip Indicators",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": "Alt+C",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "track.clear_trim_automation",
+    "label": "Clear Trim Automation",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": null,
+    "params": "{tracks?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.create_click",
+    "label": "Create Click Track",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "track.playlist_new",
+    "label": "New Playlist",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, name?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.playlist_duplicate",
+    "label": "Duplicate Playlist",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, name?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.playlist_select",
+    "label": "Select Playlist",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, index | name}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.playlist_delete_unused",
+    "label": "Delete Unused Playlists",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.folder_toggle",
+    "label": "Open/Close Folder",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track, open?: bool}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "track.vca",
+    "label": "Assign to VCA",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, vca: VCA track id|name | null}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.playlist_promote",
+    "label": "Promote to Main Playlist",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track, playlist: index, start?, end?} (copy that range from an alternate playlist into the active one)",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "track.input",
+    "label": "Track Input",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, input: none|bus name|hardware name}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.output",
+    "label": "Track Output",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, output: main|none|bus name}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.timebase",
+    "label": "Track Timebase",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, ticks: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.elastic",
+    "label": "Elastic Audio",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, algorithm?: polyphonic|rhythmic|monophonic|varispeed|x-form|none}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.edit_lock",
+    "label": "Edit Lock/Unlock",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": "Cmd+L",
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.time_lock",
+    "label": "Time Lock/Unlock",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": "Ctrl+Alt+L",
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.send_to_back",
+    "label": "Send to Back",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": "Alt+Shift+B",
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.bring_to_front",
+    "label": "Bring to Front",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": "Alt+Shift+F",
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.rating",
+    "label": "Rating",
+    "menu": [
+      "Clip",
+      "Rating"
+    ],
+    "shortcut": "Cmd+Alt+0-5",
+    "params": "{clips?, rating: 0..5}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.group",
+    "label": "Group",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": "Cmd+Alt+G",
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.ungroup",
+    "label": "Ungroup",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": "Cmd+Alt+U",
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.ungroup_all",
+    "label": "Ungroup All",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "clip.loop",
+    "label": "Loop...",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": "Cmd+Alt+L",
+    "params": "{clips?, count?: n, length?: samples, fill?: bool}: count is the clip plus its loops; length is the whole looped clip, with the last loop cut short to fit; fill loops up to the next clip on the track, or else to the session end",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.rename",
+    "label": "Rename...",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": "Cmd+Alt+Shift+R",
+    "params": "{clip?, name}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.gain",
+    "label": "Clip Gain",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clips?, db | delta_db}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.gain_nudge_up",
+    "label": "Nudge Clip Gain Up",
+    "menu": [],
+    "shortcut": "Ctrl+Shift+Up",
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.gain_nudge_down",
+    "label": "Nudge Clip Gain Down",
+    "menu": [],
+    "shortcut": "Ctrl+Shift+Down",
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.gain_render",
+    "label": "Render",
+    "menu": [
+      "Clip",
+      "Clip Gain"
+    ],
+    "shortcut": null,
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.gain_bypass",
+    "label": "Bypass",
+    "menu": [
+      "Clip",
+      "Clip Gain"
+    ],
+    "shortcut": null,
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.identify_sync_point",
+    "label": "Identify Sync Point",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": "Cmd+,",
+    "params": "{clip?, at?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.remove_sync_point",
+    "label": "Remove Sync Point",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "no selected clip has a sync point"
+  },
+  {
+    "id": "clip.quantize_to_grid",
+    "label": "Quantize to Grid",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": "Cmd+0",
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.color",
+    "label": "Clip Color",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clips?, color: [r,g,b] | null}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.elastic_properties",
+    "label": "Elastic Properties",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": "Alt+5",
+    "params": "{clips?, ratio?: 1.0} — on Elastic Audio tracks (polyphonic/rhythmic/monophonic/x-form) the stretch is rendered pitch-preserving; elsewhere it is varispeed",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.remove_warp",
+    "label": "Remove Warp",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.place_source",
+    "label": "Place Audio File",
+    "menu": [],
+    "shortcut": null,
+    "params": "{source: id, track?: id|name (default: a new track), at?: position}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "clip.capture",
+    "label": "Capture...",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": "Cmd+R",
+    "params": "{name?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "event.tempo",
+    "label": "Tempo Change",
+    "menu": [],
+    "shortcut": null,
+    "params": "{bpm, at?: position (default session start)}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.tempo_remove",
+    "label": "Remove Tempo Change",
+    "menu": [],
+    "shortcut": null,
+    "params": "{at}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.meter",
+    "label": "Change Meter...",
+    "menu": [
+      "Event",
+      "Time Operations"
+    ],
+    "shortcut": null,
+    "params": "{numerator, denominator, at?: position}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.tempo_scale",
+    "label": "Scale...",
+    "menu": [
+      "Event",
+      "Tempo Operations"
+    ],
+    "shortcut": null,
+    "params": "{factor}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.tempo_constant",
+    "label": "Constant...",
+    "menu": [
+      "Event",
+      "Tempo Operations"
+    ],
+    "shortcut": null,
+    "params": "{bpm, start?, end?}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.insert_time",
+    "label": "Insert Time...",
+    "menu": [
+      "Event",
+      "Time Operations"
+    ],
+    "shortcut": null,
+    "params": "{start?, length | end}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "event.cut_time",
+    "label": "Cut Time...",
+    "menu": [
+      "Event",
+      "Time Operations"
+    ],
+    "shortcut": null,
+    "params": "{start?, end?}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "event.quantize",
+    "label": "Quantize...",
+    "menu": [
+      "Event",
+      "MIDI Operations"
+    ],
+    "shortcut": "Alt+0",
+    "params": "{grid?: 1/16 | ticks, strength?: 100, swing?: 0, clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "event.transpose",
+    "label": "Transpose...",
+    "menu": [
+      "Event",
+      "MIDI Operations"
+    ],
+    "shortcut": "Alt+T",
+    "params": "{semitones, clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "event.change_velocity",
+    "label": "Change Velocity...",
+    "menu": [
+      "Event",
+      "MIDI Operations"
+    ],
+    "shortcut": null,
+    "params": "{set?|add?|scale?|min?,max?, clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "event.change_duration",
+    "label": "Change Duration...",
+    "menu": [
+      "Event",
+      "MIDI Operations"
+    ],
+    "shortcut": "Alt+P",
+    "params": "{set?|add?|scale?|legato?: gap, clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "event.remove_duplicate_notes",
+    "label": "Remove Duplicate Notes",
+    "menu": [
+      "Event"
+    ],
+    "shortcut": null,
+    "params": "{clips?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "event.add_key_change",
+    "label": "Add Key Change...",
+    "menu": [
+      "Event"
+    ],
+    "shortcut": null,
+    "params": "{key: 'C major', at?}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.renumber_bars",
+    "label": "Renumber Bars...",
+    "menu": [
+      "Event"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.all_notes_off",
+    "label": "All MIDI Notes Off",
+    "menu": [
+      "Event"
+    ],
+    "shortcut": "Cmd+Shift+.",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.midi_note",
+    "label": "Add MIDI Note",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clip, pitch, start_ticks, length_ticks, velocity?: 100}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "markers.add",
+    "label": "New Memory Location",
+    "menu": [],
+    "shortcut": "Enter",
+    "params": "{name?, at?, start?, end?, kind?: marker|selection|none, ruler?: 1..5}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "markers.delete",
+    "label": "Delete Memory Location",
+    "menu": [],
+    "shortcut": null,
+    "params": "{number | id}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "markers.edit",
+    "label": "Edit Memory Location",
+    "menu": [],
+    "shortcut": null,
+    "params": "{number | id, name?, comments?, at?, color?: [r,g,b] | null}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "markers.recall",
+    "label": "Recall Memory Location",
+    "menu": [],
+    "shortcut": "Period + n + Period",
+    "params": "{number}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "markers.next",
+    "label": "Go to Next Marker",
+    "menu": [],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "markers.previous",
+    "label": "Go to Previous Marker",
+    "menu": [],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "mix.volume",
+    "label": "Set Volume",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, db: -144..12 | delta_db}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.pan",
+    "label": "Set Pan",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, pan: -1..1, index?: 0|1}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.mute",
+    "label": "Mute",
+    "menu": [],
+    "shortcut": "Shift+M",
+    "params": "{tracks?, value?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.solo",
+    "label": "Solo",
+    "menu": [],
+    "shortcut": "Shift+S",
+    "params": "{tracks?, value?: bool, exclusive?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.solo_safe",
+    "label": "Solo Safe",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, value?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.clear_solos",
+    "label": "Clear All Solos",
+    "menu": [],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "mix.clear_mutes",
+    "label": "Clear All Mutes",
+    "menu": [],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "mix.record_arm",
+    "label": "Record Enable",
+    "menu": [],
+    "shortcut": "Shift+R",
+    "params": "{tracks?, value?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.input_monitor",
+    "label": "Input Monitoring",
+    "menu": [],
+    "shortcut": "Shift+I",
+    "params": "{tracks?, value?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.phase_invert",
+    "label": "Phase Invert",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, value?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.trim",
+    "label": "Input Trim",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, db}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.automation_mode",
+    "label": "Automation Mode",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, mode: off|read|touch|latch|touch/latch|write|trim}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.insert",
+    "label": "Insert Plugin",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, slot?: 0..9 | a..j, plugin: id, params?: {id: value}}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.insert_remove",
+    "label": "Remove Insert",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, slot}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.insert_bypass",
+    "label": "Bypass Insert",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, slot, value?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.insert_param",
+    "label": "Set Plugin Parameter",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, slot, param, value}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.insert_params",
+    "label": "Set Plugin Parameters",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, slot, params: {id: value}, preset?: name} (unknown ids and non-numeric values are errors)",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.insert_move",
+    "label": "Move Insert",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, from, to}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.send",
+    "label": "Assign Send",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, slot?: 0..9|a..j, bus: name, level_db?: 0 (kept when re-targeting), pre_fader?: false}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.send_remove",
+    "label": "Remove Send",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, slot}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.send_level",
+    "label": "Send Level",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, slot, db?, pan?, mute?, pre_fader?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.new_bus",
+    "label": "New Bus",
+    "menu": [],
+    "shortcut": null,
+    "params": "{name, format?: stereo}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "automation.set_point",
+    "label": "Add Automation Breakpoint",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, param: volume|pan|mute|send_a_level|plugin:a:<id>, at, value, from?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "automation.write_range",
+    "label": "Write Automation",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, param, start?, end?, value}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "automation.clear",
+    "label": "Clear Automation",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, param?, start?, end?}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "automation.thin",
+    "label": "Thin",
+    "menu": [
+      "Edit",
+      "Automation"
+    ],
+    "shortcut": "Cmd+Alt+T",
+    "params": "{tracks?, tolerance?: 0.1}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "automation.thin_all",
+    "label": "Thin All",
+    "menu": [
+      "Edit",
+      "Automation"
+    ],
+    "shortcut": null,
+    "params": "{tolerance?: 0.1}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "automation.write_to_current",
+    "label": "Write to Current",
+    "menu": [
+      "Edit",
+      "Automation"
+    ],
+    "shortcut": "Cmd+/",
+    "params": "{tracks?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "automation.write_to_all",
+    "label": "Write to All Enabled",
+    "menu": [
+      "Edit",
+      "Automation"
+    ],
+    "shortcut": "Cmd+Alt+/",
+    "params": "{tracks?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "automation.volume_to_clip_gain",
+    "label": "Convert Volume Automation to Clip Gain",
+    "menu": [
+      "Edit",
+      "Automation"
+    ],
+    "shortcut": null,
+    "params": "{tracks?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "automation.clip_gain_to_volume",
+    "label": "Convert Clip Gain to Volume Automation",
+    "menu": [
+      "Edit",
+      "Automation"
+    ],
+    "shortcut": null,
+    "params": "{tracks?}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "automation.copy_to_send",
+    "label": "Copy to Send...",
+    "menu": [
+      "Edit",
+      "Automation"
+    ],
+    "shortcut": "Cmd+Alt+H",
+    "params": "{tracks?, send: slot}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "options.loop_record",
+    "label": "Loop Record",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": "Alt+L",
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.quickpunch",
+    "label": "QuickPunch",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": "Cmd+Shift+P",
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.pre_post_roll",
+    "label": "Pre/Post-Roll",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": "Cmd+K",
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.loop_playback",
+    "label": "Loop Playback",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": "Cmd+Shift+L",
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.link_timeline_edit",
+    "label": "Link Timeline and Edit Selection",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": "Shift+/",
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.link_track_edit",
+    "label": "Link Track and Edit Selection",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.insertion_follows_playback",
+    "label": "Insertion Follows Playback",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.tab_to_transient",
+    "label": "Tab to Transient",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": "Cmd+Alt+Tab",
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.mirrored_midi",
+    "label": "Mirrored MIDI Editing",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.automation_follows_edit",
+    "label": "Automation Follows Edit",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.markers_follow_edit",
+    "label": "Markers Follow Edit",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.layered_editing",
+    "label": "Layered Editing",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.click",
+    "label": "Click",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.countoff",
+    "label": "Count Off",
+    "menu": [],
+    "shortcut": null,
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.midi_merge",
+    "label": "MIDI Merge",
+    "menu": [],
+    "shortcut": null,
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.pre_fader_metering",
+    "label": "Pre-Fader Metering",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.delay_compensation",
+    "label": "Delay Compensation",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.destructive_record",
+    "label": "Destructive Record",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.trackpunch",
+    "label": "TrackPunch",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": "Cmd+Shift+T",
+    "params": "{value?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.scrolling",
+    "label": "Edit Window Scrolling",
+    "menu": [
+      "Options",
+      "Edit Window Scrolling"
+    ],
+    "shortcut": null,
+    "params": "{mode: none|after_playback|page|continuous|center}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.solo_mode",
+    "label": "Solo Mode",
+    "menu": [
+      "Options",
+      "Solo Mode"
+    ],
+    "shortcut": null,
+    "params": "{mode: sip|afl|pfl, latch?: bool, xor?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.keyboard_focus",
+    "label": "Keyboard Focus",
+    "menu": [],
+    "shortcut": null,
+    "params": "{focus?: commands|clips|groups|none} — toggles Commands Keyboard Focus when omitted",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.pre_roll",
+    "label": "Pre-Roll Amount",
+    "menu": [],
+    "shortcut": null,
+    "params": "{length: samples|{seconds}}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.post_roll",
+    "label": "Post-Roll Amount",
+    "menu": [],
+    "shortcut": null,
+    "params": "{length}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.session",
+    "label": "Session",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": "Cmd+2",
+    "params": "{frame_rate?: '29.97 Drop'…, bit_depth?: 16|24|32f, timecode_start?: position, name?}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.preferences",
+    "label": "Preferences...",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.reset_edit_state",
+    "label": "Reset Edit Settings",
+    "menu": [],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "transport.play",
+    "label": "Play",
+    "menu": [],
+    "shortcut": "Space",
+    "params": "{from?: position}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "transport.stop",
+    "label": "Stop",
+    "menu": [],
+    "shortcut": "Space",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "transport.toggle",
+    "label": "Play/Stop",
+    "menu": [],
+    "shortcut": "Space",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "transport.record",
+    "label": "Record",
+    "menu": [],
+    "shortcut": "Cmd+Space",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "transport.pause",
+    "label": "Pause",
+    "menu": [],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "transport.half_speed",
+    "label": "Half-Speed Playback",
+    "menu": [],
+    "shortcut": "Shift+Space",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "transport.play_selection",
+    "label": "Play Edit",
+    "menu": [
+      "Edit",
+      "Selection"
+    ],
+    "shortcut": "Alt+[",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "transport.rtz",
+    "label": "Return to Zero",
+    "menu": [],
+    "shortcut": "Home",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "transport.go_to_end",
+    "label": "Go to End",
+    "menu": [],
+    "shortcut": "End",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "transport.rewind",
+    "label": "Rewind",
+    "menu": [],
+    "shortcut": null,
+    "params": "{seconds?: 1}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "transport.fast_forward",
+    "label": "Fast Forward",
+    "menu": [],
+    "shortcut": null,
+    "params": "{seconds?: 1}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "transport.locate",
+    "label": "Locate",
+    "menu": [],
+    "shortcut": null,
+    "params": "{at: position}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "transport.status",
+    "label": "Transport Status",
+    "menu": [],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.tab",
+    "label": "Tab",
+    "menu": [],
+    "shortcut": null,
+    "params": "{back?: bool, extend?: bool (extend the selection)}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "session.inspect",
+    "label": "Inspect Session",
+    "menu": [],
+    "shortcut": null,
+    "params": "{detail?: summary|full}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "track.inspect",
+    "label": "Inspect Track",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "clip.inspect",
+    "label": "Inspect Clip",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clip}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "engine.commands",
+    "label": "List Commands",
+    "menu": [],
+    "shortcut": null,
+    "params": "{filter?}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "engine.history",
+    "label": "Undo History",
+    "menu": [
+      "Window"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "engine.plugins",
+    "label": "List Plugins",
+    "menu": [],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "engine.parity",
+    "label": "Parity Report",
+    "menu": [],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "session.format_time",
+    "label": "Format Time",
+    "menu": [],
+    "shortcut": null,
+    "params": "{at: samples, format?: bars_beats|min_secs|timecode|feet_frames|samples}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "session.audio_health",
+    "label": "Session Audio Health",
+    "menu": [],
+    "shortcut": null,
+    "params": "{}; checks all audio clips, including inactive playlists; no filesystem or signal analysis",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "audiosuite.process",
+    "label": "AudioSuite Process",
+    "menu": [],
+    "shortcut": null,
+    "params": "{process: <built-in plugin id (engine.plugins)> | normalize | reverse | invert | gain | duplicate | time_stretch | pitch_shift | varispeed | speed_ramp | signal_generator, params?: {..}, clips?, tracks?, start?, end?} — signal_generator fills start..end (default: the selection) with a new clip on each audio track in `tracks` (default: the selected tracks); speed_ramp takes change (0 slow down, 1 speed up), selection (0 fit to, 1 extend) and fades (1 on, 0 off)",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "edit.copy_audio_as_midi",
+    "label": "Audio as MIDI",
+    "menu": [
+      "Edit",
+      "Copy Special"
+    ],
+    "shortcut": null,
+    "params": "{track?, start?, end?} — monophonic pitch tracking of the selected audio",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "midi.notes",
+    "label": "List MIDI Notes",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clip}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "midi.new_clip",
+    "label": "New MIDI Clip",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{track, start?, end?|length?} (default: the edit selection, or 1 bar)",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "midi.note_add",
+    "label": "Add Note",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clip, pitch, start_ticks, length_ticks?: 480, velocity?: 100, channel?: 0}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "midi.note_edit",
+    "label": "Edit Note",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clip, index, pitch?, start_ticks?, length_ticks?, velocity?}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "midi.note_delete",
+    "label": "Delete Notes",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clip, indices: [n]}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "midi.notes_move",
+    "label": "Move Notes",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clip, indices: [n], ticks?: 0, semitones?: 0}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_comments",
+    "label": "Comments",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_mic_preamps",
+    "label": "Mic Preamps",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_instruments",
+    "label": "Instruments",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_inserts_ae",
+    "label": "Inserts A-E",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_inserts_fj",
+    "label": "Inserts F-J",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_sends_ae",
+    "label": "Sends A-E",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_sends_fj",
+    "label": "Sends F-J",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_io",
+    "label": "I/O",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_object",
+    "label": "Object",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_realtime_properties",
+    "label": "Real-Time Properties",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_track_color",
+    "label": "Track Color",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_marker_controls",
+    "label": "Marker Controls",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_pinned_tracks",
+    "label": "Pinned Tracks",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_all",
+    "label": "All",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{} — shows every Edit window column",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.edit_minimal",
+    "label": "Minimal",
+    "menu": [
+      "View",
+      "Edit Window Views"
+    ],
+    "shortcut": null,
+    "params": "{} — hides every optional Edit window column",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.ruler_timecode2",
+    "label": "Timecode 2",
+    "menu": [
+      "View",
+      "Rulers"
+    ],
+    "shortcut": null,
+    "params": "{visible?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.ruler_markers2",
+    "label": "Markers 2",
+    "menu": [
+      "View",
+      "Rulers"
+    ],
+    "shortcut": null,
+    "params": "{visible?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.ruler_markers3",
+    "label": "Markers 3",
+    "menu": [
+      "View",
+      "Rulers"
+    ],
+    "shortcut": null,
+    "params": "{visible?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.ruler_markers4",
+    "label": "Markers 4",
+    "menu": [
+      "View",
+      "Rulers"
+    ],
+    "shortcut": null,
+    "params": "{visible?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.ruler_markers5",
+    "label": "Markers 5",
+    "menu": [
+      "View",
+      "Rulers"
+    ],
+    "shortcut": null,
+    "params": "{visible?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.ruler_all_markers",
+    "label": "All Marker Rulers",
+    "menu": [
+      "View",
+      "Rulers"
+    ],
+    "shortcut": null,
+    "params": "{visible?: bool} — shows (or hides) all five marker rulers",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.ruler_all",
+    "label": "All",
+    "menu": [
+      "View",
+      "Rulers"
+    ],
+    "shortcut": null,
+    "params": "{} — shows every ruler",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.ruler_minimal",
+    "label": "Minimal",
+    "menu": [
+      "View",
+      "Rulers"
+    ],
+    "shortcut": null,
+    "params": "{} — only the main time ruler and markers",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.ruler_tempo_editor",
+    "label": "Tempo Editor",
+    "menu": [
+      "View",
+      "Rulers",
+      "Tempo"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.ruler_key_staff",
+    "label": "Key Signature Staff",
+    "menu": [
+      "View",
+      "Rulers",
+      "Key Signature"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.marker_track_lane",
+    "label": "Track Lane",
+    "menu": [
+      "View",
+      "Marker Displays"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.marker_ruler_lines",
+    "label": "Ruler Lines",
+    "menu": [
+      "View",
+      "Marker Displays"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.marker_folder_lines",
+    "label": "Folder Lines",
+    "menu": [
+      "View",
+      "Marker Displays"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.marker_ruler_lane_color",
+    "label": "Ruler Lane Color",
+    "menu": [
+      "View",
+      "Marker Displays"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.marker_track_lane_color",
+    "label": "Track Lane Color",
+    "menu": [
+      "View",
+      "Marker Displays"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.midi_input_display",
+    "label": "MIDI Input Display",
+    "menu": [
+      "View",
+      "Other Displays"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.midi_editor_clip_effects",
+    "label": "Clip Effects",
+    "menu": [
+      "View",
+      "Other Displays",
+      "Lower Dock",
+      "MIDI Editor"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_sync_point",
+    "label": "Sync Point",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_processing_state",
+    "label": "Processing State",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_name",
+    "label": "Name",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_channel_name",
+    "label": "Channel Name",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_scene_take",
+    "label": "Scene And Take",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_rating",
+    "label": "Rating",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_overlap_shadows",
+    "label": "Overlap Shadows",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_transparency",
+    "label": "Transparency",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_overwrite_indicator",
+    "label": "Overwrite Indicator",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_copy_move_indicators",
+    "label": "Copy/Move Indicators",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_gain_line",
+    "label": "Clip Gain Line",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_gain_info",
+    "label": "Clip Gain Info",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_effects_status",
+    "label": "Clip Effects Status",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_ara_note_overlay",
+    "label": "ARA Note Overlay",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_time_current",
+    "label": "Current Time",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_time_original",
+    "label": "Original Time Stamp",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_time_user",
+    "label": "User Time Stamp",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_time_none",
+    "label": "No Time",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.clip_all_channels",
+    "label": "Display on All Channels",
+    "menu": [
+      "View",
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.waveform_peak",
+    "label": "Peak",
+    "menu": [
+      "View",
+      "Waveforms"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.waveform_power",
+    "label": "Power",
+    "menu": [
+      "View",
+      "Waveforms"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.waveform_rectified",
+    "label": "Rectified",
+    "menu": [
+      "View",
+      "Waveforms"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.waveform_outlines",
+    "label": "Outlines",
+    "menu": [
+      "View",
+      "Waveforms"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.waveform_overlapped_crossfades",
+    "label": "Overlapped Crossfades",
+    "menu": [
+      "View",
+      "Waveforms"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.automation_trim_playlist",
+    "label": "Trim Playlist",
+    "menu": [
+      "View",
+      "Automation"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.automation_composite_playlist",
+    "label": "Composite Playlist",
+    "menu": [
+      "View",
+      "Automation"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.expanded_sends_all",
+    "label": "All",
+    "menu": [
+      "View",
+      "Expanded Sends"
+    ],
+    "shortcut": null,
+    "params": "{} — expands every send in the sends view",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.expanded_sends_none",
+    "label": "None",
+    "menu": [
+      "View",
+      "Expanded Sends"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.expanded_send_a",
+    "label": "Send A",
+    "menu": [
+      "View",
+      "Expanded Sends"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.expanded_send_b",
+    "label": "Send B",
+    "menu": [
+      "View",
+      "Expanded Sends"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.expanded_send_c",
+    "label": "Send C",
+    "menu": [
+      "View",
+      "Expanded Sends"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.expanded_send_d",
+    "label": "Send D",
+    "menu": [
+      "View",
+      "Expanded Sends"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.expanded_send_e",
+    "label": "Send E",
+    "menu": [
+      "View",
+      "Expanded Sends"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.expanded_send_f",
+    "label": "Send F",
+    "menu": [
+      "View",
+      "Expanded Sends"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.expanded_send_g",
+    "label": "Send G",
+    "menu": [
+      "View",
+      "Expanded Sends"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.expanded_send_h",
+    "label": "Send H",
+    "menu": [
+      "View",
+      "Expanded Sends"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.expanded_send_i",
+    "label": "Send I",
+    "menu": [
+      "View",
+      "Expanded Sends"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.expanded_send_j",
+    "label": "Send J",
+    "menu": [
+      "View",
+      "Expanded Sends"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.track_number",
+    "label": "Track Number",
+    "menu": [
+      "View"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.track_transcription_lane",
+    "label": "Track Transcription Lane",
+    "menu": [
+      "View"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.dropped_video_frame_indicator",
+    "label": "Dropped Video Frame Indicator",
+    "menu": [
+      "View"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.transport_counters",
+    "label": "Counters",
+    "menu": [
+      "View",
+      "Transport"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.transport_midi_controls",
+    "label": "MIDI Controls",
+    "menu": [
+      "View",
+      "Transport"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.transport_synchronization",
+    "label": "Synchronization",
+    "menu": [
+      "View",
+      "Transport"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.transport_ableton_link",
+    "label": "Ableton Link",
+    "menu": [
+      "View",
+      "Transport"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.transport_output_meters",
+    "label": "Output Meters",
+    "menu": [
+      "View",
+      "Transport"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.transport_expanded",
+    "label": "Expanded",
+    "menu": [
+      "View",
+      "Transport"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.flags",
+    "label": "View Flags",
+    "menu": [],
+    "shortcut": null,
+    "params": "{prefix?} — lists the view/option flags that are on",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "track.object",
+    "label": "Object / Bed",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, object?: bool} — routes the tracks as immersive objects (true) or to the bed; toggles when `object` is omitted",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.convert_aux_to_folder",
+    "label": "Convert Aux to Routing Folder",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": null,
+    "params": "{tracks?} — aux inputs become routing folders; tracks feeding their input bus become members",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.extract_midi",
+    "label": "Extract MIDI to New Track",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": null,
+    "params": "{tracks?} — copies the MIDI clips of each MIDI/instrument track to a new MIDI track",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.save_preset",
+    "label": "Save Track Preset...",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": null,
+    "params": "{path, track?} — writes the track's type, width, mixer, inserts, sends and instrument as JSON",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.load_preset",
+    "label": "Load Track Preset",
+    "menu": [],
+    "shortcut": null,
+    "params": "{path, tracks?} — applies a saved track preset's mixer, inserts, sends and instrument",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.bypass_inserts_ae",
+    "label": "Inserts A-E",
+    "menu": [
+      "Track",
+      "Bypass Inserts"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, bypass?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.bypass_inserts_fj",
+    "label": "Inserts F-J",
+    "menu": [
+      "Track",
+      "Bypass Inserts"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, bypass?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.bypass_eq",
+    "label": "EQ",
+    "menu": [
+      "Track",
+      "Bypass Inserts"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, bypass?: bool} — EQ plug-ins only",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.bypass_dynamics",
+    "label": "Dynamics",
+    "menu": [
+      "Track",
+      "Bypass Inserts"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, bypass?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.bypass_reverb",
+    "label": "Reverb",
+    "menu": [
+      "Track",
+      "Bypass Inserts"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, bypass?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.bypass_delay",
+    "label": "Delay",
+    "menu": [
+      "Track",
+      "Bypass Inserts"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, bypass?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.bypass_modulation",
+    "label": "Modulation",
+    "menu": [
+      "Track",
+      "Bypass Inserts"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, bypass?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.mute_sends_ae",
+    "label": "Sends A-E",
+    "menu": [
+      "Track",
+      "Mute Sends"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, mute?: bool} (toggles when omitted)",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.mute_sends_fj",
+    "label": "Sends F-J",
+    "menu": [
+      "Track",
+      "Mute Sends"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, mute?: bool} (toggles when omitted)",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.write_midi_rtp",
+    "label": "Write MIDI Real-Time Properties",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": null,
+    "params": "{tracks?} — writes the track's real-time properties (velocity, transpose, duration, delay) into its notes and resets them",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.trim_automation_write",
+    "label": "Write Trim Automation",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?, db} — writes a relative volume trim (dB) over a range",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.coalesce_trim",
+    "label": "Coalesce Trim Automation",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": null,
+    "params": "{tracks?} — adds trim automation into volume automation and removes the trim",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.coalesce_vca",
+    "label": "Coalesce VCA Controller Automation",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": null,
+    "params": "{tracks?} — for selected VCA masters: folds VCA level/automation into every member's volume automation, then resets the VCA",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "track.designate_target_playlist",
+    "label": "Designate as Target Playlist",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": "Cmd+Shift+Right",
+    "params": "{tracks?, index?} — the active playlist (or `index`) becomes the target for Copy/Move Selection to",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.show_target_playlist",
+    "label": "Show Target Playlist",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": "Shift+Right",
+    "params": "{tracks?} — makes the target playlist the main playlist",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "track.toggle_recent_playlist",
+    "label": "Toggle Recent Playlist",
+    "menu": [
+      "Track"
+    ],
+    "shortcut": "Ctrl+Alt+Shift+Left",
+    "params": "{tracks?} — swaps to the previously shown playlist",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.regroup",
+    "label": "Regroup",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": "Cmd+Alt+R",
+    "params": "{clips?} — puts the clips back into one clip group (reusing their most common group)",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.unloop",
+    "label": "Unloop...",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{clips?, mode?: remove|flatten} — remove = keep only the original clip; flatten = keep the copies as ordinary clips",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.effects_set",
+    "label": "Set Clip Effects",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clips?, params: {name: number}} — stores clip-effect settings on the clips",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.effects_bypass",
+    "label": "Bypass",
+    "menu": [
+      "Clip",
+      "Clip Effects"
+    ],
+    "shortcut": null,
+    "params": "{clips?, value?: bool} (toggles when omitted)",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.effects_render",
+    "label": "Render",
+    "menu": [
+      "Clip",
+      "Clip Effects"
+    ],
+    "shortcut": null,
+    "params": "{clips?} — renders clip gain and fades into new audio and clears the clip effects",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.conform_to_tempo",
+    "label": "Conform to Tempo",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{clips?, source_bpm?} — stretches audio clips so their length in bars follows the session tempo; the first conform records the clip's tempo",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.remove_pitch_shift",
+    "label": "Remove Pitch Shift",
+    "menu": [
+      "Clip"
+    ],
+    "shortcut": null,
+    "params": "{clips?} — re-renders vari-speed (stretched) clips with pitch preserved",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "clip.clear",
+    "label": "Clear Clips",
+    "menu": [],
+    "shortcut": "Cmd+Shift+B",
+    "params": "{clips?: [id], sources?: [id], with_clips?: bool} — removes clips and audio files from the session (files stay on disk); default: the Clip List selection. A file still used on the timeline needs `with_clips: true`, which removes those clips too",
+    "enabled": false,
+    "disabled_reason": "select clips or files in the Clip List"
+  },
+  {
+    "id": "clip.auto_rename",
+    "label": "Auto Rename...",
+    "menu": [],
+    "shortcut": null,
+    "params": "{clips?: [id], name?, number?: 0..999999999, zeros?: 0..9, suffix?}: sets the names that editing gives the clips it separates from these clips (default: the Clip List's selected clips): the piece after each cut is named `name`, then `zeros` zeros, then a number counting up from `number` (default 1), then `suffix`, in one number sequence for all of them. Without a name, the clips keep their names when they are separated",
+    "enabled": false,
+    "disabled_reason": "select a clip in the Clip List"
+  },
+  {
+    "id": "event.time_ops_window",
+    "label": "Time Operations Window",
+    "menu": [
+      "Event",
+      "Time Operations"
+    ],
+    "shortcut": null,
+    "params": "{} — tempo/meter map, song start and selection for the Time Operations window",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.tempo_ops_window",
+    "label": "Tempo Operations Window",
+    "menu": [
+      "Event",
+      "Tempo Operations"
+    ],
+    "shortcut": null,
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.midi_ops_window",
+    "label": "MIDI Operations Window",
+    "menu": [
+      "Event",
+      "MIDI Operations"
+    ],
+    "shortcut": null,
+    "params": "{} — input quantize and stored performances",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.move_song_start",
+    "label": "Move Song Start...",
+    "menu": [
+      "Event",
+      "Time Operations"
+    ],
+    "shortcut": null,
+    "params": "{to: position} — moves the song start; tick-based clips and later tempo/meter events move with it",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.tempo_linear",
+    "label": "Linear...",
+    "menu": [
+      "Event",
+      "Tempo Operations"
+    ],
+    "shortcut": null,
+    "params": "{start?, end?, start_bpm?, end_bpm, resolution?: '1/8'|ticks}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.tempo_parabolic",
+    "label": "Parabolic...",
+    "menu": [
+      "Event",
+      "Tempo Operations"
+    ],
+    "shortcut": null,
+    "params": "{start?, end?, start_bpm?, end_bpm, curvature?: -1..1 (0.5), resolution?}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.tempo_s_curve",
+    "label": "S-Curve...",
+    "menu": [
+      "Event",
+      "Tempo Operations"
+    ],
+    "shortcut": null,
+    "params": "{start?, end?, start_bpm?, end_bpm, resolution?}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.tempo_stretch",
+    "label": "Stretch...",
+    "menu": [
+      "Event",
+      "Tempo Operations"
+    ],
+    "shortcut": null,
+    "params": "{start?, end?, factor? | length?: new length} — scales the tempo inside the selection so it lasts `factor` times as long",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.select_split_notes",
+    "label": "Select/Split Notes...",
+    "menu": [
+      "Event",
+      "MIDI Operations"
+    ],
+    "shortcut": null,
+    "params": "{clips?, pitch_from?: 0, pitch_to?: 127, action?: select|split} — split moves the matching notes to a new MIDI track",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "event.input_quantize",
+    "label": "Input Quantize...",
+    "menu": [
+      "Event",
+      "MIDI Operations"
+    ],
+    "shortcut": null,
+    "params": "{enabled?: bool, grid?: '1/16'|ticks, strength?: 0..100, swing?: 0..100}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.step_input",
+    "label": "Step Input...",
+    "menu": [
+      "Event",
+      "MIDI Operations"
+    ],
+    "shortcut": null,
+    "params": "{track?, pitch?: 60 | pitches?: [..], duration?: '1/8'|ticks, velocity?: 100, rest?: bool, advance?: true}",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "event.restore_performance",
+    "label": "Restore Performance...",
+    "menu": [
+      "Event",
+      "MIDI Operations"
+    ],
+    "shortcut": null,
+    "params": "{clips?} — returns MIDI clips to their stored original performance",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "event.flatten_performance",
+    "label": "Flatten Performance...",
+    "menu": [
+      "Event",
+      "MIDI Operations"
+    ],
+    "shortcut": null,
+    "params": "{clips?} — makes the current notes the performance that Restore returns to",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "event.midi_track_offsets",
+    "label": "MIDI Track Offsets",
+    "menu": [
+      "Event"
+    ],
+    "shortcut": null,
+    "params": "{track?, offset?: samples|{seconds}} — sets (or lists) per-track MIDI playback offsets",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.midi_rtp",
+    "label": "MIDI Real-Time Properties",
+    "menu": [
+      "Event"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, velocity?: ±127, transpose?: ±127, duration?: % (100), delay?: ticks, clear?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "event.extract_chords",
+    "label": "Extract Chords from Selection",
+    "menu": [
+      "Event"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?} — names the chord in each bar and adds it as a marker on Markers 2",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "event.beat_detective",
+    "label": "Beat Detective",
+    "menu": [
+      "Event"
+    ],
+    "shortcut": null,
+    "params": "{tracks?, start?, end?, sensitivity?: 0.5, separate?: false, set_tempo?: false}",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "event.identify_beat",
+    "label": "Identify Beat...",
+    "menu": [
+      "Event"
+    ],
+    "shortcut": "Cmd+I",
+    "params": "{start?, end?, bars?: 1, beats?: 0} — sets the tempo so the selection lasts that many bars",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  },
+  {
+    "id": "event.retrospective_record",
+    "label": "Retrospective Record",
+    "menu": [
+      "Event"
+    ],
+    "shortcut": null,
+    "params": "{track?, notes?: [{pitch, start?: position | start_ticks?, length_ticks?: 240, velocity?: 100}]} — turns captured MIDI into a clip (input quantize applies)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.destructive_punch",
+    "label": "DestructivePunch",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.transport_online",
+    "label": "Transport Online",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.dynamic_transport",
+    "label": "Dynamic Transport",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.marker_target_follows_selection",
+    "label": "Marker Target Follows First Selected Track",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.midi_thru",
+    "label": "MIDI Thru",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.auto_spot_clips",
+    "label": "Auto-Spot Clips",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.keyboard_lock",
+    "label": "Edit/Tool Mode Keyboard Lock",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.calibration_mode",
+    "label": "Calibration Mode",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.midi_live_mode",
+    "label": "MIDI Live Mode",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.low_latency_monitoring",
+    "label": "Low Latency Monitoring",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "options.prepare_dpe_tracks",
+    "label": "Prepare DPE Tracks",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{tracks?} — consolidates each record-armed (or given) audio track into one continuous clip for destructive punch",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.hardware",
+    "label": "Hardware...",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": null,
+    "params": "{device?: output name, buffer_size?: 16..=8192 or null} — output device and buffer. Applied only in the desktop app (Playback Engine window / ui.audio_device), which returns the open device. Headless stores the request and returns applied: false; buffer_size is null when unset. Any integer in range, not rounded to the window's power-of-two sizes. Sample rate is the session's",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.playback_engine",
+    "label": "Playback Engine...",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": null,
+    "params": "{device?: output name, buffer_size?: 16..=8192 or null, delay_compensation?: bool} — device and buffer as setup.hardware (applied only in the desktop app, or via ui.audio_device); delay_compensation is applied here too. Headless returns applied: false and does not invent a buffer",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.disk_allocation",
+    "label": "Disk Allocation...",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": null,
+    "params": "{path?, track?} — the record folder for the session, or for one track",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.peripherals",
+    "label": "Peripherals...",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": null,
+    "params": "{settings?: {name: number|bool|string}} — control surface / sync device settings",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.io",
+    "label": "I/O...",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": null,
+    "params": "{action?: list|create_bus|rename_bus|delete_bus|create_output|rename_output|delete_output, name?, new_name?, format?: stereo, first_channel?: 0}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.current_timecode",
+    "label": "Current Timecode Position...",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": null,
+    "params": "{timecode: 'HH:MM:SS:FF'} — sets the session start so the insertion point reads this timecode",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.current_feet_frames",
+    "label": "Current Feet+Frames Position...",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": null,
+    "params": "{feet_frames: 'F+FF'} — the feet+frames reading at the insertion point",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.external_timecode_offset",
+    "label": "External Timecode Offset...",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": null,
+    "params": "{frames?: ±, samples?: ±} — offset applied to incoming timecode",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.video_sync_offset",
+    "label": "Video Sync Offset...",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": null,
+    "params": "{frames?: ±, samples?: ±} — offset between audio and video playback",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.click_countoff",
+    "label": "Click/Countoff...",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": null,
+    "params": "{volume_db?: -60..12, accent_note?: 0..127, normal_note?: 0..127, accent_velocity?, normal_velocity?, countoff?: bool, countoff_bars?: 1..16, only_during_record?: bool}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.keyboard_shortcuts",
+    "label": "Keyboard Shortcuts...",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": null,
+    "params": "{filter?} — every command shortcut",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.midi_studio",
+    "label": "MIDI Studio...",
+    "menu": [
+      "Setup",
+      "MIDI"
+    ],
+    "shortcut": null,
+    "params": "{devices?: [names]} — the MIDI devices in the studio",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.midi_beat_clock",
+    "label": "MIDI Beat Clock...",
+    "menu": [
+      "Setup",
+      "MIDI"
+    ],
+    "shortcut": null,
+    "params": "{enabled?: bool, offset?: samples, destination?: name}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.midi_input_filter",
+    "label": "MIDI Input Filter...",
+    "menu": [
+      "Setup",
+      "MIDI"
+    ],
+    "shortcut": null,
+    "params": "{filter?: [notes|pitch_bend|mono_aftertouch|poly_aftertouch|program|cc|sysex|realtime], allow?: [...]} — filtered kinds are not recorded",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.midi_input_devices",
+    "label": "MIDI Input Devices...",
+    "menu": [
+      "Setup",
+      "MIDI"
+    ],
+    "shortcut": null,
+    "params": "{enable?: [names], disable?: [names]}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "setup.transcription_settings",
+    "label": "Transcription Settings...",
+    "menu": [
+      "Setup"
+    ],
+    "shortcut": null,
+    "params": "{enabled?: bool, language?: 'en'}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "file.import_session_data",
+    "label": "Session Data...",
+    "menu": [
+      "File",
+      "Import"
+    ],
+    "shortcut": "Alt+Shift+I",
+    "params": "{path, tracks?: [names]} — imports tracks (clips, playlists, mixer, automation, audio) from another session",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "engine.clap_plugins",
+    "label": "List CLAP Plugins",
+    "menu": [],
+    "shortcut": null,
+    "params": "{rescan?: bool} → [{id: \"clap:…\", plugin_id, name, vendor, version, description, features, category, is_instrument, path}]",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "engine.vst3_plugins",
+    "label": "List VST3 Plugins",
+    "menu": [],
+    "shortcut": null,
+    "params": "{rescan?: bool} → [{id: \"vst3:<class id hex>\", class_id, name, vendor, version, sdk_version, sub_categories, category, is_instrument, path}]",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "mix.surround_pan",
+    "label": "Set Surround Pan",
+    "menu": [],
+    "shortcut": null,
+    "params": "{tracks?, x?: -1..1 (left..right), y?: -1..1 (back..front), z?: 0..1 (height), divergence?: 0..1, center?: 0..100, lfe_db?: -144..12, clear?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.send_surround_pan",
+    "label": "Set Send Surround Pan",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, slot: 0..9|a..j, x?, y?, z?, divergence?, center?, lfe_db?, clear?: bool}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "setup.main_format",
+    "label": "Main Output Format",
+    "menu": [],
+    "shortcut": null,
+    "params": "{format: stereo|LCR|Quad|5.0|5.1|6.1|7.0|7.1|7.1.2|5.1.4|7.1.4|9.1.6|1st Order Ambisonics…}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "mix.insert_state",
+    "label": "Store Plugin State",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track, slot: 0..9 | \"a\"..\"j\" | \"instrument\", state: base64 | null} → {bytes}. Not undoable and not journaled (states can be large).",
+    "enabled": false,
+    "disabled_reason": "the session has no tracks"
+  },
+  {
+    "id": "mix.instrument",
+    "label": "Set Instrument",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, plugin: id, params?: {id: value}} — an instrument track's instrument: built-in, `clap:`, `vst3:` or `au:` id; `params` sets built-in parameters (clamped into range; unknown ids and other fields are errors)",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.instrument_param",
+    "label": "Set Instrument Parameter",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, param, value}: one parameter of an instrument track's built-in instrument (clamped into range)",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.sampler_load",
+    "label": "Load Sampler Sample",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?, path, params?: {root_note, key_low, key_high, attack, loop_mode, …}}: an instrument track plays the file through the built-in Sampler (made its instrument if it is not already) → {track, source, name, frames, channels, sample_rate}",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "mix.sampler_clear",
+    "label": "Clear Sampler Sample",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?}: the track's Sampler stops playing its sample",
+    "enabled": false,
+    "disabled_reason": "nothing is selected"
+  },
+  {
+    "id": "video.online",
+    "label": "Video Track Online",
+    "menu": [
+      "Options"
+    ],
+    "shortcut": null,
+    "params": "{value?: bool} (toggles when omitted) — when offline the Video window and the Video track stop decoding pictures",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "video.offset",
+    "label": "Set Video Start",
+    "menu": [],
+    "shortcut": null,
+    "params": "{track?: video track (default: the first), at: position} — moves the track's video clips so the picture starts at `at` (e.g. '01:00:00:00')",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "video.list",
+    "label": "Movies",
+    "menu": [],
+    "shortcut": null,
+    "params": "{} — movies used by Video tracks (path, size, rate, codec, online file, why it is offline)",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.zoom_toggle",
+    "label": "Zoom Toggle",
+    "menu": [],
+    "shortcut": null,
+    "params": "{width_px?: 1200, height_px?: 600}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "view.zoom_toggle_cancel",
+    "label": "Cancel Zoom Toggle",
+    "menu": [],
+    "shortcut": "Alt+Shift+E",
+    "params": "{}",
+    "enabled": true,
+    "disabled_reason": null
+  },
+  {
+    "id": "edit.strip_silence_preview",
+    "label": "Strip Silence Rectangles",
+    "menu": [],
+    "shortcut": null,
+    "params": "{threshold_db?: -48, min_length_ms?: 50, pad_before_ms?: 5, pad_after_ms?: 20, tracks?, start?, end?} (the ranges edit.strip_silence finds with the same settings, padded, on each track: what Strip keeps and the Strip Silence window draws as rectangles; changes nothing)",
+    "enabled": false,
+    "disabled_reason": "make an edit selection first"
+  }
+]

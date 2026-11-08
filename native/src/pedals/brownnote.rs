@@ -32,7 +32,8 @@ impl fmt::Display for CatalogError {
             Self::Path(error) => write!(f, "Pedals unavailable; base pads still play. {error}"),
             Self::NoBench(detail) => write!(
                 f,
-                "Pedals need the GuitarPedal bench: set BROWNNOTE_BENCH or run `make -C vendor/GuitarPedal/Validation bench`. {detail}"
+                "Pedals need the GuitarPedal bench: set BROWNNOTE_BENCH or run `make -C vendor/GuitarPedal/Validation bench`.{}{detail}",
+                if detail.is_empty() { "" } else { " " }
             ),
             Self::Failed { code, stderr } => {
                 let first = stderr.lines().next().unwrap_or("no message");

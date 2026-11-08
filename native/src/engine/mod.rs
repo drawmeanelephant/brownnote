@@ -6,10 +6,13 @@
 //! The callback never allocates, frees, locks, or changes an `Arc` count.
 use std::sync::{
     Arc,
-    atomic::{AtomicU32, AtomicU64, Ordering::Relaxed},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed},
 };
 
 pub const VOICES: usize = 32;
+/// Extra fading voices, not counted by pad meters. At most 40 voices render.
+/// A ninth overlapping steal cuts the oldest tail, never delays the new hit.
+pub const STEAL_TAILS: usize = 8;
 pub const QUEUE_CAPACITY: usize = 256;
 /// Sample slots. 0..5 hold the kit's files; renders take free slots above.
 pub const SLOTS: usize = 64;
@@ -101,9 +104,15 @@ pub enum Returned {
 }
 
 pub struct Meters {
+    /// Active voices per pad (including choke/panic fades), excluding steal tails.
     pub pads: [AtomicU32; 16],
-    /// Maximum since the UI last exchanged it for zero (positive f32 bits).
+    /// Mastered stereo peak before clamping, since the UI last exchanged it
+    /// for zero (positive f32 bits). Saturates at f32::MAX.
     pub peak: AtomicU32,
+    /// Either mastered channel exceeded ±1 before clamping. Stays set until
+    /// the UI exchanges it for false; the UI owns the 1.5-second clip latch.
+    /// Independent of `peak`, whose f32 rounding can hide a tiny overload.
+    pub clipped: AtomicBool,
     pub frames: AtomicU64,
 }
 
@@ -112,6 +121,7 @@ impl Default for Meters {
         Self {
             pads: std::array::from_fn(|_| AtomicU32::new(0)),
             peak: AtomicU32::new(0),
+            clipped: AtomicBool::new(false),
             frames: AtomicU64::new(0),
         }
     }
@@ -141,6 +151,7 @@ pub struct Mixer {
     /// Set by `Unload`; the sample leaves the slot once no voice reads it.
     retiring: Box<[bool]>,
     voices: [Option<Voice>; VOICES],
+    tails: [Option<Voice>; STEAL_TAILS],
     /// Samples ready to go back to the UI. Pushing moves the `Arc`; it never
     /// changes its count.
     retired: rtrb::Producer<Returned>,
@@ -168,6 +179,7 @@ impl Mixer {
             slots: slots.0,
             retiring: vec![false; SLOTS].into_boxed_slice(),
             voices: [None; VOICES],
+            tails: [None; STEAL_TAILS],
             retired,
             overflow: std::array::from_fn(|_| None),
             rate,
@@ -185,7 +197,7 @@ impl Mixer {
             Command::SetMaster(v) => self.target_master = v,
             Command::SetChoke(on) => self.choke = on,
             Command::Panic => {
-                for v in self.voices.iter_mut().flatten() {
+                for v in self.voices.iter_mut().chain(&mut self.tails).flatten() {
                     v.fade = Some(v.fade.unwrap_or(self.fade_frames).min(self.fade_frames));
                 }
             }
@@ -218,6 +230,7 @@ impl Mixer {
                     for v in self
                         .voices
                         .iter_mut()
+                        .chain(&mut self.tails)
                         .flatten()
                         .filter(|v| v.group == group)
                     {
@@ -235,6 +248,22 @@ impl Mixer {
                             .min_by_key(|(_, v)| v.map_or(u64::MAX, |v| v.age))
                             .map_or(0, |(i, _)| i)
                     });
+                if let Some(mut old) = self.voices[voice].take() {
+                    // Preserve a fade already in progress, including its phase.
+                    old.fade = Some(old.fade.unwrap_or(self.fade_frames).min(self.fade_frames));
+                    let tail = self
+                        .tails
+                        .iter()
+                        .position(Option::is_none)
+                        .unwrap_or_else(|| {
+                            self.tails
+                                .iter()
+                                .enumerate()
+                                .min_by_key(|(_, v)| v.map_or(u64::MAX, |v| v.age))
+                                .map_or(0, |(i, _)| i)
+                        });
+                    self.tails[tail] = Some(old);
+                }
                 let theta = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
                 self.age += 1;
                 self.voices[voice] = Some(Voice {
@@ -280,7 +309,13 @@ impl Mixer {
             if !self.retiring[index] {
                 continue;
             }
-            if self.voices.iter().flatten().any(|v| v.slot == index) {
+            if self
+                .voices
+                .iter()
+                .chain(&self.tails)
+                .flatten()
+                .any(|v| v.slot == index)
+            {
                 continue;
             }
             let Some(sample) = self.slots[index].take() else {
@@ -333,11 +368,11 @@ impl Mixer {
         }
         let frames = output.len() / channels;
         let start_master = self.master;
-        let mut peak = 0.0_f32;
+        let mut peak = 0.0_f64;
         for (i, frame) in output.chunks_exact_mut(channels).enumerate() {
             let mut left = 0.0_f64;
             let mut right = 0.0_f64;
-            for slot in &mut self.voices {
+            for slot in self.voices.iter_mut().chain(&mut self.tails) {
                 let Some(v) = slot else { continue };
                 let src = match &self.slots[v.slot] {
                     Some(sample) => &sample.data,
@@ -365,9 +400,11 @@ impl Mixer {
             }
             let master =
                 start_master + (self.target_master - start_master) * (i + 1) as f32 / frames as f32;
-            let left = (left * f64::from(master)).clamp(-1.0, 1.0) as f32;
-            let right = (right * f64::from(master)).clamp(-1.0, 1.0) as f32;
+            let left = left * f64::from(master);
+            let right = right * f64::from(master);
             peak = peak.max(left.abs()).max(right.abs());
+            let left = left.clamp(-1.0, 1.0) as f32;
+            let right = right.clamp(-1.0, 1.0) as f32;
             frame.fill(convert(0.0));
             if channels == 1 {
                 frame[0] = convert((left + right) * 0.5);
@@ -388,6 +425,10 @@ impl Mixer {
         for (meter, count) in self.meters.pads.iter().zip(counts) {
             meter.store(count, Relaxed);
         }
+        if peak > 1.0 {
+            self.meters.clipped.store(true, Relaxed);
+        }
+        let peak = peak.min(f64::from(f32::MAX)) as f32;
         self.meters.peak.fetch_max(peak.to_bits(), Relaxed);
         self.meters.frames.fetch_add(frames as u64, Relaxed);
     }

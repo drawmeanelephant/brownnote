@@ -61,7 +61,7 @@ fn wav(path: &Path, amplitude: i16) {
         },
     )
     .unwrap();
-    for _ in 0..128 {
+    for _ in 0..44_100 {
         writer.write_sample(amplitude).unwrap();
     }
     writer.finalize().unwrap();
@@ -335,6 +335,73 @@ fn explicit_paths_beat_environment_for_every_resource_including_relative_overrid
             explicit.join("bench").as_os_str()
         ]
     );
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn actual_app_keeps_default_samples_after_relocation_without_optional_tools() {
+    let fixture = Fixture::new();
+    let original = fixture.0.join("original app");
+    let relocated = fixture.0.join("relocated app");
+    let cwd = fixture.0.join("unrelated");
+    let home = fixture.0.join("user");
+    fs::create_dir_all(&cwd).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    samples(&cwd.join("recordings"), 0);
+    samples(&original.join("resources/recordings"), 8192);
+    fs::copy(
+        env!("CARGO_BIN_EXE_brownnote-native"),
+        original.join("brownnote-native"),
+    )
+    .unwrap();
+
+    for root in [&original, &relocated] {
+        if root == &relocated {
+            copy_tree(&original, &relocated);
+            fs::remove_dir_all(&original).unwrap();
+        }
+        let tree_path = root.join("playing.json");
+        let mut command = Command::new(root.join("brownnote-native"));
+        command
+            .current_dir(&cwd)
+            .env("HOME", &home)
+            .args(["--scene", "playing", "--at", "0.08", "--tree"])
+            .arg(&tree_path);
+        for variable in [
+            "BROWNNOTE_SAMPLES",
+            "BROWNNOTE_BIN",
+            "BROWNNOTE_BENCH",
+            "BROWNNOTE_CACHE",
+            "BROWNNOTE_RECOVERY",
+        ] {
+            command.env_remove(variable);
+        }
+        let result = command.output().unwrap();
+        assert!(
+            result.status.success(),
+            "actual relocated app failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let tree: serde_json::Value =
+            serde_json::from_slice(&fs::read(tree_path).unwrap()).unwrap();
+        let elements = tree["elements"].as_array().unwrap();
+        assert!(
+            !elements
+                .iter()
+                .any(|element| element["key"] == "asset-errors")
+        );
+        let voices = elements
+            .iter()
+            .find(|element| element["key"] == "pad-0-voices")
+            .unwrap();
+        assert_eq!(voices["text"], "▶ 1");
+        let meter = elements
+            .iter()
+            .find(|element| element["key"] == "meter")
+            .unwrap();
+        assert_ne!(meter["text"], "−∞ dB");
+        assert_eq!(tree["warnings"].as_array().unwrap().len(), 0);
+    }
 }
 
 #[test]

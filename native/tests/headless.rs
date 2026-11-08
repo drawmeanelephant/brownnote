@@ -108,7 +108,7 @@ mod tests {
         let unavailable = run("pedals-unavailable", &["--scene", "pedals-unavailable"]);
         assert_eq!(
             text(&unavailable, "pedal-status"),
-            "Pedals need the GuitarPedal bench: run `make -C vendor/GuitarPedal/Validation bench`"
+            "Pedals need the GuitarPedal bench: set BROWNNOTE_BENCH or run `make -C vendor/GuitarPedal/Validation bench`."
         );
         assert_eq!(unavailable["warnings"].as_array().unwrap().len(), 0);
     }

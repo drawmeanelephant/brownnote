@@ -30,7 +30,7 @@ fn options(args: Vec<String>) -> Result<Options, String> {
         check_audio: false,
         list_pedals: false,
         brownnote: DEFAULT_BIN.into(),
-        pedal_cache: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/target/pedal-cache")),
+        pedal_cache: brownnote_native::paths::DEFAULT_CACHE.into(),
     };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -136,4 +136,37 @@ fn main() {
         move || ui::State::with_cache(kit, rune::is_headless(), options.no_audio, cache, brownnote)
     })
     .run();
+}
+
+#[cfg(test)]
+mod option_tests {
+    use super::{DEFAULT_BIN, DEFAULT_SAMPLES, options};
+    use brownnote_native::paths::DEFAULT_CACHE;
+    use std::path::PathBuf;
+
+    #[test]
+    fn runtime_defaults_are_shared_by_cli_and_pedal_ui() {
+        let defaults = options(Vec::new()).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(defaults.samples, PathBuf::from(DEFAULT_SAMPLES));
+        assert_eq!(defaults.brownnote, PathBuf::from(DEFAULT_BIN));
+        assert_eq!(defaults.pedal_cache, PathBuf::from(DEFAULT_CACHE));
+        assert_eq!(super::ui::pedals::default_cache(), defaults.pedal_cache);
+    }
+
+    #[test]
+    fn explicit_resource_options_replace_runtime_defaults() {
+        let arguments = [
+            "--samples",
+            "/chosen/samples",
+            "--brownnote",
+            "/chosen/brownnote",
+            "--pedal-cache",
+            "/chosen/cache",
+        ];
+        let selected = options(arguments.into_iter().map(String::from).collect())
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(selected.samples, PathBuf::from("/chosen/samples"));
+        assert_eq!(selected.brownnote, PathBuf::from("/chosen/brownnote"));
+        assert_eq!(selected.pedal_cache, PathBuf::from("/chosen/cache"));
+    }
 }

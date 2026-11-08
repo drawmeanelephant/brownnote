@@ -1,0 +1,65 @@
+{
+  "fixture_version": 1,
+  "fixture_id": "native-workflow-first-slice-v1",
+  "scope": "fixture-integrity-only",
+  "tempo_bpm": 120,
+  "beats_per_bar": 4,
+  "loop_bars": 2,
+  "loop_ns": 4000000000,
+  "reference_unit": "nanoseconds",
+  "instrument_gate": {
+    "issue": 108,
+    "decision": "D18",
+    "status": "unresolved",
+    "backend": null,
+    "asset": null
+  },
+  "custom_pad": {
+    "label": "synthetic-custom-pad",
+    "choke": false,
+    "source": {
+      "file": "workflow-pad-v1.wav",
+      "sample_rate": 48000,
+      "channels": 1,
+      "bits_per_sample": 16,
+      "frames": 48000,
+      "period_frames": 240,
+      "peak_pcm": 4096,
+      "fade_frames": 240
+    },
+    "required_pedal_order": ["Rat Sketch", "Tape Echo"],
+    "pedal_settings": "catalog defaults; capture resolved values at runtime"
+  },
+  "takes": [
+    {"label": "base", "mode": "initial"},
+    {"label": "overdub", "mode": "overdub"}
+  ],
+  "score_columns": ["cue", "take", "destination", "pitch", "channel", "onset_ns", "span_ns", "velocity"],
+  "score": [
+    ["pad-a", "base", "custom-pad", null, 1, 60000000, 1000000000, 48],
+    ["pad-b", "base", "custom-pad", null, 1, 185000000, 1000000000, 112],
+    ["note-a", "base", "instrument", 60, 1, 510000000, 1000000000, 80],
+    ["note-b", "base", "instrument", 60, 1, 760000000, 1000000000, 96],
+    ["pad-c", "overdub", "custom-pad", null, 1, 2060000000, 1000000000, 72],
+    ["note-c", "overdub", "instrument", 67, 1, 2510000000, 1000000000, 88]
+  ],
+  "note_offs_columns": ["offset_ns", "channel", "pitch", "oldest_cue_ended"],
+  "note_offs": [
+    [1510000000, 1, 60, "note-a"],
+    [1760000000, 1, 60, "note-b"],
+    [3510000000, 1, 67, "note-c"]
+  ],
+  "expectations": {
+    "base_count": 4,
+    "overdub_count": 2,
+    "combined_count": 6,
+    "pad_count": 3,
+    "note_count": 3,
+    "quantize_grid_ns": 125000000,
+    "quantized_onsets_ns": [0, 125000000, 500000000, 750000000, 2000000000, 2500000000],
+    "move_note_c_after_quantize_ns": 2625000000,
+    "delete_pad_b_count": 5,
+    "one_bar_visible_cues": ["pad-a", "pad-b", "note-a", "note-b"],
+    "restored_onsets_ns": [60000000, 185000000, 510000000, 760000000, 2060000000, 2510000000]
+  }
+}
