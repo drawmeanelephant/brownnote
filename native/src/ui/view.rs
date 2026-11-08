@@ -3,7 +3,9 @@ use super::{
     control::{Control, slider},
     devices,
     graphics::{led, logo, meter, waveform},
-    ink, pedals,
+    ink,
+    media::controls as import,
+    pedals,
 };
 use brownnote_native::{engine::Command, kit::PADS};
 use rune::{Cx, Drag, El, Phase, TextStyle, col, el, row, text};
@@ -97,7 +99,9 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .child(caption("01—16    /    PRESSURE PADS").color(ink("#c0cbbf")))
                 .child(caption("HIT HIGHER. GO LOUDER.")),
         )
-        .children(if s.devices.visible {
+        .children(if s.media.controls.visible {
+            vec![import::panel(s)]
+        } else if s.devices.visible {
             vec![devices::panel(s)]
         } else {
             vec![grid, editor(s)]
@@ -273,6 +277,7 @@ fn editor(s: &State) -> El {
                 row()
                     .gap(4.0)
                     .center_y()
+                    .child(import::header(s))
                     .child(tab("editor-tab-shape", "SHAPE", Tab::Shape))
                     .child(tab("editor-tab-pedals", "PEDALS", Tab::Pedals))
                     .child(if pedals_tab {

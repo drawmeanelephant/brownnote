@@ -10,6 +10,20 @@ use brownnote_native::{
 };
 use std::{path::PathBuf, sync::Arc};
 
+#[path = "import.rs"]
+pub(crate) mod controls;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ImportStatus {
+    #[default]
+    Idle,
+    Importing,
+    Waiting,
+    Success(String),
+    Error(String),
+    Cancelled,
+}
+
 pub(super) fn pad_id(index: usize) -> PadId {
     // All callers use indices into the fixed sixteen-pad bank.
     assert!(index < 16);
@@ -27,21 +41,33 @@ struct Pending {
 
 pub struct Media {
     pub owned: Arc<SessionMedia>,
+    pub controls: controls::Controls,
     service: Result<ImportService, String>,
     pending: [Option<Pending>; 16],
+    status: [ImportStatus; 16],
 }
 
 impl Media {
     pub fn with_service(owned: Arc<SessionMedia>, service: Result<ImportService, String>) -> Self {
         Self {
             owned,
+            controls: controls::Controls::default(),
             service,
             pending: std::array::from_fn(|_| None),
+            status: std::array::from_fn(|_| ImportStatus::Idle),
         }
     }
 
     pub fn busy(&self) -> bool {
         self.pending.iter().any(Option::is_some)
+    }
+
+    pub fn import_status(&self, pad: usize) -> &ImportStatus {
+        &self.status[pad]
+    }
+
+    pub fn importing(&self, pad: usize) -> bool {
+        self.pending[pad].is_some()
     }
 }
 
@@ -100,7 +126,6 @@ pub(super) fn bootstrap(kit: &Kit) -> (AssetRegistry, Media) {
 
 impl State {
     /// Service entry point only. No picker, document write or file I/O here.
-    #[allow(dead_code)] // Public service entry for the next, separately scoped import UI.
     pub fn import_sample(&mut self, pad: usize, path: Option<PathBuf>) -> Result<(), StartError> {
         let Some(path) = path else {
             self.cancel_import(pad);
@@ -120,6 +145,7 @@ impl State {
             job,
             ready: None,
         });
+        self.media.status[pad] = ImportStatus::Importing;
         if let Some(wake) = &self.wake {
             wake();
         }
@@ -130,6 +156,7 @@ impl State {
         if let Some(pending) = self.media.pending[pad].take() {
             pending.job.cancel();
             self.assets.cancel(pending.ticket);
+            self.media.status[pad] = ImportStatus::Cancelled;
         }
     }
 
@@ -180,6 +207,9 @@ pub(super) fn poll(s: &mut State) -> bool {
             continue;
         };
         if !s.assets.current(pending.ticket) {
+            pending.job.cancel();
+            s.media.status[pad] = ImportStatus::Cancelled;
+            changed = true;
             continue;
         }
         if pending.ready.is_none() {
@@ -188,6 +218,9 @@ pub(super) fn poll(s: &mut State) -> bool {
                 Some(Err(error)) => {
                     if error.failure != ImportFailure::Cancelled {
                         s.assets.report_error(pending.ticket, error.to_string());
+                        s.media.status[pad] = ImportStatus::Error(error.to_string());
+                    } else {
+                        s.media.status[pad] = ImportStatus::Cancelled;
                     }
                     changed = true;
                     continue;
@@ -203,12 +236,22 @@ pub(super) fn poll(s: &mut State) -> bool {
                 |command| s.output.send(command),
             ) {
                 Ok(()) => {
+                    s.media.status[pad] = ImportStatus::Success(imported.label.clone());
                     pedals::source_changed(s, pad);
                     changed = true;
                     continue;
                 }
-                Err(RegistryError::QueueFull | RegistryError::Full) => {}
-                Err(_) => continue,
+                Err(RegistryError::QueueFull | RegistryError::Full) => {
+                    changed |= s.media.status[pad] != ImportStatus::Waiting;
+                    s.media.status[pad] = ImportStatus::Waiting;
+                }
+                Err(error) => {
+                    let message = format!("Cannot assign imported sample: {error:?}");
+                    s.assets.report_error(pending.ticket, message.clone());
+                    s.media.status[pad] = ImportStatus::Error(message);
+                    changed = true;
+                    continue;
+                }
             }
         }
         s.media.pending[pad] = Some(pending);
