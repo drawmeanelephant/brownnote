@@ -8,6 +8,7 @@
 
 use brownnote_native::{
     kit,
+    paths::{PathErrorKind, Resolver, Resource},
     pedals::{
         brownnote::{self, CatalogError, DEFAULT_BIN},
         catalog::Catalog,
@@ -22,9 +23,10 @@ use std::{
 };
 
 fn binary() -> PathBuf {
-    std::env::var_os("BROWNNOTE_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| DEFAULT_BIN.into())
+    Resolver::current()
+        .unwrap()
+        .resolve(Resource::Brownnote, None)
+        .unwrap()
 }
 
 /// Skipping needs a reason, and `BROWNNOTE_REQUIRE_BENCH=1` makes it a failure
@@ -38,19 +40,20 @@ fn skip(reason: &str) {
 }
 
 fn catalog() -> Option<Catalog> {
-    let path = binary();
-    if !path.exists() {
-        skip(&format!("no brownnote at {}", path.display()));
-        return None;
-    }
-    match brownnote::list(&path, Duration::from_secs(5)) {
+    match brownnote::list(Path::new(DEFAULT_BIN), Duration::from_secs(5)) {
         Ok(catalog) => Some(catalog),
         Err(CatalogError::NoBench(_)) => {
             skip("brownnote found no GuitarPedal bench");
             None
         }
-        Err(CatalogError::NotFound(_)) => {
+        Err(CatalogError::NotFound(path)) => {
             skip(&format!("no brownnote at {}", path.display()));
+            None
+        }
+        Err(CatalogError::Path(error))
+            if error.resource == Resource::Bench && error.kind == PathErrorKind::Missing =>
+        {
+            skip(&error.to_string());
             None
         }
         Err(error) => panic!("brownnote --list failed: {error}"),
@@ -99,9 +102,7 @@ fn the_real_list_parses_and_lists_the_named_effects() {
 fn routable_effects_render_and_system_blocks_are_refused_by_the_real_bench() {
     let Some(catalog) = catalog() else { return };
     let path = binary();
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join(format!("pedals-live-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("pedals-live-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let input = dir.join("silence.wav");
     let output = dir.join("out.wav");
@@ -140,16 +141,10 @@ fn rms(samples: &[f32]) -> f32 {
 fn live_renders_change_the_sound_ring_out_and_then_hit_the_cache() {
     let Some(catalog) = catalog() else { return };
     let catalog = std::sync::Arc::new(catalog);
-    let source = kit::load_wav(
-        &Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("recordings/fart_dry.wav"),
-    )
-    .unwrap();
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join(format!("pedals-live-render-{}", std::process::id()));
+    let kit = kit::Kit::load(Path::new(kit::DEFAULT_SAMPLES));
+    assert!(kit.banner.is_empty(), "{}", kit.banner);
+    let source = kit.samples[0].clone();
+    let dir = std::env::temp_dir().join(format!("pedals-live-render-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let job = |stages: Vec<Stage>| RenderJob {
         brownnote: binary(),

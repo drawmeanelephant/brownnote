@@ -8,7 +8,7 @@ use crate::{
 use std::{
     fmt,
     fs::{self, File},
-    io::{ErrorKind, Read},
+    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Arc,
@@ -70,6 +70,7 @@ impl fmt::Debug for Rendered {
 pub enum RenderError {
     Invalid(String),
     NotFound(PathBuf),
+    Path(crate::paths::PathError),
     NoBench(String),
     Usage(String),
     NotRoutable(String),
@@ -85,11 +86,13 @@ impl fmt::Display for RenderError {
             Self::Invalid(message) => f.write_str(message),
             Self::NotFound(path) => write!(
                 f,
-                "Pedals need brownnote: run `make` (looked for {})",
+                "Pedals need brownnote: run `make` or set --brownnote PATH / BROWNNOTE_BIN (looked for {})",
                 path.display()
             ),
-            Self::NoBench(_) => f.write_str(
-                "Pedals need the GuitarPedal bench: run `make -C vendor/GuitarPedal/Validation bench`",
+            Self::Path(error) => write!(f, "Pedals: {error}"),
+            Self::NoBench(detail) => write!(
+                f,
+                "Pedals need the GuitarPedal bench: set BROWNNOTE_BENCH or run `make -C vendor/GuitarPedal/Validation bench`. {detail}"
             ),
             Self::Usage(message) => write!(f, "Pedals: brownnote rejected the command: {message}"),
             Self::NotRoutable(message) => write!(f, "Pedals: {message}"),
@@ -341,9 +344,12 @@ static TEMP: AtomicU64 = AtomicU64::new(0);
 /// thread. Identical jobs hit the cache instead of running brownnote.
 pub fn render(job: &RenderJob) -> Result<Rendered, RenderError> {
     validate(&job.chain, &job.catalog).map_err(RenderError::Invalid)?;
+    let cache = crate::paths::Resolver::current()
+        .and_then(|paths| paths.resolve(crate::paths::Resource::Cache, Some(&job.cache)))
+        .map_err(RenderError::Path)?;
     let args = argv(&job.chain);
     let key = cache_key(job, &args);
-    let cache_file = job.cache.join(format!("{key:016x}.wav"));
+    let cache_file = cache.join(format!("{key:016x}.wav"));
     // The bench writes the source plus the tail, which is longer than the
     // 30-second kit limit once a source is long in its own right.
     let limit = job.source.data.len() + tail_frames(job.source.rate);
@@ -359,12 +365,10 @@ pub fn render(job: &RenderJob) -> Result<Rendered, RenderError> {
         });
     }
 
-    fs::create_dir_all(&job.cache)
-        .map_err(|error| RenderError::Io(format!("{}: {error}", job.cache.display())))?;
     let unique = TEMP.fetch_add(1, Relaxed);
     let stem = format!("{key:016x}.{}.{unique}", std::process::id());
-    let input = job.cache.join(format!("{stem}.in.wav"));
-    let temp = job.cache.join(format!("{stem}.tmp"));
+    let input = cache.join(format!("{stem}.in.wav"));
+    let temp = cache.join(format!("{stem}.tmp"));
 
     let result = run(job, &args, &input, &temp);
     let _ = fs::remove_file(&input);
@@ -380,7 +384,7 @@ pub fn render(job: &RenderJob) -> Result<Rendered, RenderError> {
         RenderError::Io(format!("{}: {error}", cache_file.display()))
     })?;
     write_clip(&cache_file, clipped);
-    evict(&job.cache);
+    evict(&cache);
     Ok(Rendered {
         sample,
         cached: false,
@@ -399,18 +403,28 @@ fn run(
         .map_err(|error| RenderError::Io(format!("{}: {error}", input.display())))?;
     let stdout = File::create(temp)
         .map_err(|error| RenderError::Io(format!("{}: {error}", temp.display())))?;
-    let mut child = Command::new(&job.brownnote)
+    let mut command = crate::paths::Resolver::current()
+        .and_then(|paths| paths.pedal_command(Some(&job.brownnote), None))
+        .map_err(|error| {
+            if error.resource == crate::paths::Resource::Brownnote
+                && error.kind == crate::paths::PathErrorKind::Missing
+            {
+                RenderError::NotFound(error.path.clone().unwrap_or_else(|| job.brownnote.clone()))
+            } else {
+                RenderError::Path(error)
+            }
+        })?;
+    let mut child = command
         .args(args)
         .stdin(Stdio::from(stdin))
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| {
-            if error.kind() == ErrorKind::NotFound {
-                RenderError::NotFound(job.brownnote.clone())
-            } else {
-                RenderError::Io(error.to_string())
-            }
+            RenderError::Io(format!(
+                "{}: {error}",
+                command.get_program().to_string_lossy()
+            ))
         })?;
     let deadline = Instant::now() + job.timeout;
     let status = loop {
