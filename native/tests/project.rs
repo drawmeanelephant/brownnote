@@ -1,8 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-// Bootstrap until the integrator exports project and adds serde/sha2.
-use brownnote_native::pedals;
-#[path = "../src/project/mod.rs"]
-mod project;
+use brownnote_native::{pedals, project};
 
 use pedals::render::{Chain, Stage};
 use project::{

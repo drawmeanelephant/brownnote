@@ -40,9 +40,9 @@ Machine audio/MIDI device selection, window layout and cache location are
 excluded (D8). Project MIDI mappings and instruments will be added with their
 own feature contracts, not serialized from runtime state.
 
-## Integrator wiring and validation
+## Library integration and validation
 
-Add `pub mod project;` to `native/src/lib.rs`. Add regular dependencies:
+`native/src/lib.rs` exports `project`. Its regular dependencies are:
 
 ```toml
 serde = { version = "1", features = ["derive"] }
@@ -50,14 +50,13 @@ serde_json = "1"
 sha2 = "=0.10.9"
 ```
 
-Move the existing test-only `serde_json` entry to regular dependencies and
-update the lockfile. No UI fields, polls, view slots or engine edits are needed.
+`serde_json` is a regular dependency, and the lockfile records the hash
+dependency. No UI fields, polls, view slots or engine edits are needed.
 
-`python3 native/tests/check_contracts.py project` bootstraps these dependencies
-in an ignored manifest, compiling the exact new project source and the actual
-existing pedal/engine/kit source. It does not validate the exported app artifact.
-The integration test includes `project` by path until the integrator wires it;
-then change it to import `brownnote_native::project` and run:
+`python3 native/tests/check_contracts.py project` runs the real manifest's
+project target and honors `CARGO_TARGET_DIR`. The integration test imports
+`brownnote_native::project`, so it validates the exported library rather than
+a path-included copy. Run:
 
 ```sh
 CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR="$PWD/native/target/lane-a" \
