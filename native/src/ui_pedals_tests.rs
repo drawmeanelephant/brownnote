@@ -540,9 +540,18 @@ fn cancelling_a_mix_drag_restores_a_moved_value() {
 #[test]
 fn a_load_the_queue_refused_is_landed_once_it_drains() {
     let recorder = Arc::new(Recorder::default());
-    let mut rt = runtime(recorder);
+    let mut rt = runtime(recorder.clone());
     pedals_tab(&mut rt, 4);
+    let held = recorder.hold();
     add(&mut rt, "Rat Sketch");
+
+    // Keep the answer from landing during add's frames before the queue fills.
+    let mut filled = 0;
+    while rt.state.output.send(Command::SetMaster(0.5)) {
+        filled += 1;
+        assert!(filled < 1024, "the queue never filled");
+    }
+    drop(held);
 
     // Let the answer land in `Latest` without running a frame, which is the
     // state a slow worker leaves the strip in when the queue is full.
@@ -552,11 +561,6 @@ fn a_load_the_queue_refused_is_landed_once_it_drains() {
     }
     assert!(!rt.state.pedals.pads[4].render.is_pending());
 
-    let mut filled = 0;
-    while rt.state.output.send(Command::SetMaster(0.5)) {
-        filled += 1;
-        assert!(filled < 1024, "the queue never filled");
-    }
     ui::pedals::poll(&mut rt.state);
     assert_eq!(
         rt.state.pedals.pads[4].slot, 1,
