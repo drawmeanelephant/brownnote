@@ -1,6 +1,7 @@
 use crate::engine::Sample;
 use std::{
     fmt,
+    io::{BufReader, Read},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -75,11 +76,28 @@ pub fn load_wav(path: &Path) -> Result<Sample, KitError> {
 /// as a render whose pedal added a ring-out tail. `max` gets the file's rate
 /// and returns the longest frame count to accept.
 pub fn load_wav_max(path: &Path, max: impl Fn(u32) -> u64) -> Result<Sample, KitError> {
+    let reader = std::fs::File::open(path).map_err(|e| KitError {
+        path: path.to_path_buf(),
+        reason: e.to_string(),
+    })?;
+    decode_wav_max(BufReader::new(reader), path, max)
+}
+
+/// Decode the same byte snapshot that import hashes and publishes.
+pub fn decode_wav(reader: impl Read, path: &Path) -> Result<Sample, KitError> {
+    decode_wav_max(reader, path, |rate| u64::from(rate) * KIT_SECONDS)
+}
+
+fn decode_wav_max(
+    reader: impl Read,
+    path: &Path,
+    max: impl Fn(u32) -> u64,
+) -> Result<Sample, KitError> {
     let error = |reason: String| KitError {
         path: path.to_path_buf(),
         reason,
     };
-    let mut reader = hound::WavReader::open(path).map_err(|e| error(e.to_string()))?;
+    let mut reader = hound::WavReader::new(reader).map_err(|e| error(e.to_string()))?;
     let spec = reader.spec();
     if !matches!(spec.channels, 1 | 2) {
         return Err(error("expected mono or stereo".into()));
@@ -122,6 +140,26 @@ pub fn load_wav_max(path: &Path, max: impl Fn(u32) -> u64) -> Result<Sample, Kit
         data,
         rate: spec.sample_rate,
     })
+}
+
+pub const WAVEFORM_BINS: usize = 96;
+pub type Waveform = [[f32; 2]; WAVEFORM_BINS];
+
+/// Peak-preserving normalized preview, computed off the audio callback.
+pub fn waveform(sample: &Sample) -> Waveform {
+    let mut bins = [[0.0_f32; 2]; WAVEFORM_BINS];
+    for (i, value) in sample.data.iter().enumerate() {
+        let bin = i * WAVEFORM_BINS / sample.data.len();
+        bins[bin][0] = bins[bin][0].min(*value);
+        bins[bin][1] = bins[bin][1].max(*value);
+    }
+    let peak = bins.iter().flatten().fold(0.0_f32, |a, b| a.max(b.abs()));
+    if peak > 0.0 {
+        for value in bins.iter_mut().flatten() {
+            *value /= peak;
+        }
+    }
+    bins
 }
 
 pub struct Kit {
