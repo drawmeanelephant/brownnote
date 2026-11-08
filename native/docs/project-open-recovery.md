@@ -154,11 +154,20 @@ Version 0/newer inputs in tests are rejection probes only, not invented schemas.
 
 ## Verification and limits
 
-Run `cargo test --manifest-path native/Cargo.toml --test project_store --
---nocapture`, `cargo test --manifest-path native/Cargo.toml --test project`,
-and `make native-test`, under the swarm's shared validation lock/target wrapper.
-The store tests import the real `brownnote_native` library; no path-included
-stand-in is used.
+Run `python3 native/tests/check_project_recovery.py` under the swarm's shared
+validation lock and target wrapper. It runs:
+
+```sh
+cargo test --manifest-path native/Cargo.toml --test project_store -- --nocapture
+cargo test --manifest-path native/Cargo.toml --test project
+make native-test
+```
+
+The store tests import the real `brownnote_native` library. The script forces
+this package's library and owned inputs fresh without a second target or cache
+deletion. It checks the actual passing fixture names against this checkout's
+source after both store runs. A stale binary from another worktree cannot
+produce a passing validation report merely by exiting successfully.
 
 The existing filesystem injector now covers evidence publication as well as
 the original save transaction. Every save operation is failed before and
