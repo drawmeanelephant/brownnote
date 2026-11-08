@@ -3,6 +3,7 @@
 //! D3/D4/D8: project.json + media/<sha256>.wav; required renders are retained.
 //! The v1 kit boundary remains provisional until the #104 contract lands.
 pub mod media;
+pub mod store;
 
 use crate::pedals::render::{Chain, MAX_STAGES, Stage};
 pub use media::{Asset, AssetId, AssetRef, MediaKind};
