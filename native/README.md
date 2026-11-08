@@ -59,6 +59,10 @@ says what to build.
 
 ### Controls
 
+- **AUDIO OUTPUT** opens the device and configuration panel. Tab, arrow keys,
+  and Space reach its controls. **BACK TO PADS** restores the pads.
+  Device or rate changes stop current voices. See the
+  [output guide](docs/output-selection.md) for preference paths and recovery.
 - Play `1234` / `QWER` / `ASDF` / `ZXCV`, matching the four grid rows.
   Keyboard hits use full velocity; held keys do not repeat.
 - Click higher on a pad for a louder hit (top 100%, bottom 40%).
@@ -80,8 +84,10 @@ says what to build.
 
 Pitch changes playback speed and duration using linear interpolation; this
 is not time stretching or a bandlimited pitch shifter. Pan is constant power.
-The engine hard-clamps output to ±1. There are at most 32 voices; when full,
-the oldest stops immediately, which can click. Settings reset on launch.
+The engine hard-clamps output to ±1. It has 32 active voices and 8 fading
+stealing tails. A new hit starts immediately at capacity. If every tail is
+occupied, the oldest tail stops, which can still click. Pad settings reset
+on launch. Machine output preferences persist separately.
 
 | Keys | Pads |
 |---|---|
@@ -155,22 +161,25 @@ did nothing.
 Tested on macOS 27.3, Apple silicon, rustc 1.99.0. Other platforms are untested.
 Rust edition 2024, minimum Rust 1.99. No project toolchain override is installed.
 
-Exact direct dependencies:
+Direct dependencies:
 
 - Rune git revision `cbaf637dfe5fcf3ec8b3f1c3ad27246b69742fbf`,
   default features, from <https://github.com/anomalyco/rune>.
 - rune-fx from the same revision, and wgpu 30 for the compositor hook's types
   (features come from Rune's own wgpu). Only the look showcase draws with them.
 - cpal `=0.18.2`, rtrb `=0.4.1`, hound `=3.5.1`.
-- `Cargo.lock` fixes transitive versions; serde_json is test-only.
+- serde with derive, serde_json, and sha2 `=0.10.9` support project data,
+  machine preferences, and content hashes. `Cargo.lock` fixes resolved versions.
 
 Linux build packages (unverified): `libxkbcommon-dev` and `libwayland-dev`
 for Rune, `libasound2-dev` for cpal. Headless rendering still requires a GPU
 adapter (Metal on the tested Mac).
 
-The default device/config is used. Supported output formats: F32, I16, U16,
-I32. Stereo goes to channels 0 and 1, additional channels get silence, and a
-mono device receives `(L + R) / 2`. No device picker or latency claim.
+The main pad app loads the saved output choice before opening a stream.
+**AUDIO OUTPUT** offers explicit selection, remembered retry, and a
+system-default fallback. Supported formats are F32, I16, U16, and I32.
+Stereo goes to channels 0 and 1, additional channels get silence, and a mono
+device receives `(L + R) / 2`. No latency claim is made.
 
 ## Verify
 
@@ -270,5 +279,5 @@ mixer holds 64 slots, so 5 kit files plus renders for every pad fit with room
 for retirements in flight.
 
 Also deferred: sequencer, desk/mixer, library, loop station, recording,
-NINJAM, MIDI, sample browsing, hot reload, a device picker, web/WASM, mobile,
+NINJAM, MIDI, sample browsing, hot reload, web/WASM, mobile,
 and Linux/Windows pedal verification.

@@ -1,13 +1,39 @@
 use super::{State, pedals};
 use brownnote_native::{
-    engine::{Command, SLOTS},
-    output::Output,
+    engine::{Command, SLOTS, Slots},
+    output::{Output, OutputSelection},
 };
 
 impl State {
     pub(super) fn retry(&mut self) {
+        let selection = self.output.selection().clone();
+        self.stop_for_output_change(selection.clone(), "Retrying selected output".into());
+        self.open_output_selection(&selection, &|slots, selection| {
+            Output::open_selected(slots, selection).map_err(|error| error.to_string())
+        });
+    }
+
+    pub(super) fn stop_for_output_change(&mut self, selection: OutputSelection, reason: String) {
         self.prune_slots();
-        let output = self.output.retry(self.slots.clone());
+        let output = Output::silent_selected(self.slots.clone(), selection, reason);
+        self.install(output);
+    }
+
+    pub(super) fn open_output_selection(
+        &mut self,
+        selection: &OutputSelection,
+        open: &dyn Fn(Slots, &OutputSelection) -> Result<Output, String>,
+    ) {
+        // The stop phase has already dropped the previous device stream.
+        // Prune again: a render may have retired while opening was pending.
+        self.prune_slots();
+        let output = match open(self.slots.clone(), selection) {
+            Ok(mut output) => {
+                output.status.push_str(" · Playing voices stopped");
+                output
+            }
+            Err(error) => Output::silent_selected(self.slots.clone(), selection.clone(), error),
+        };
         self.install(output);
     }
 
@@ -32,6 +58,8 @@ impl State {
 
     fn install(&mut self, output: Output) {
         self.output = output;
+        self.counts = [0; 16];
+        self.peak = 0.0;
         self.output.send(Command::SetMaster(self.master));
         self.output.send(Command::SetChoke(self.choke));
         if let Some(wake) = &self.wake {
@@ -43,14 +71,15 @@ impl State {
         let Some(error) = self.output.take_error() else {
             return false;
         };
-        self.prune_slots();
-        let output = Output::silent_selected(
-            self.slots.clone(),
+        self.recover_audio_error(error);
+        true
+    }
+
+    pub(super) fn recover_audio_error(&mut self, error: String) {
+        self.stop_for_output_change(
             self.output.selection().clone(),
             format!("Audio error: {error}"),
         );
-        self.install(output);
-        true
     }
 }
 

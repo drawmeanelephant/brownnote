@@ -1,5 +1,6 @@
 mod audio;
 mod control;
+pub(crate) mod devices;
 mod graphics;
 pub(crate) mod pedals;
 mod view;
@@ -35,6 +36,7 @@ pub struct State {
     pub counts: [u32; 16],
     pub peak: f32,
     pub pedals: pedals::Pedals,
+    pub devices: devices::Devices,
     /// The waveform of each pad's rendered sample, if it has one.
     pub render_waves: [Option<graphics::Envelope>; 16],
     now: f64,
@@ -64,20 +66,24 @@ impl State {
         let waveforms = std::array::from_fn(|i| envelope(&kit.samples[i]));
         let pedals = pedals::Pedals::with_bin(pedal_cache, brownnote);
         let slots = Slots::from(kit.samples.clone());
-        let output = if headless || no_audio {
-            Output::virtual_driver(
-                slots.clone(),
-                if headless {
-                    "Headless: no audio device".into()
-                } else {
-                    "Audio off (--no-audio)".into()
-                },
-                false,
-            )
+        let devices = if headless || no_audio {
+            devices::Devices::disabled()
         } else {
-            Output::open(slots.clone())
-                .unwrap_or_else(|e| Output::virtual_driver(slots.clone(), e.to_string(), true))
+            let root = brownnote_native::paths::Resolver::current()
+                .and_then(|paths| {
+                    paths.resolve(brownnote_native::paths::Resource::Preferences, None)
+                })
+                .map_err(|error| error.to_string());
+            devices::Devices::load(root)
         };
+        let output = devices.initial_output(
+            slots.clone(),
+            if headless {
+                "Headless: no audio device".into()
+            } else {
+                "Audio off (--no-audio)".into()
+            },
+        );
         Self {
             kit,
             output,
@@ -93,6 +99,7 @@ impl State {
             counts: [0; 16],
             peak: 0.0,
             pedals,
+            devices,
             render_waves: std::array::from_fn(|_| None),
             now: 0.0,
             flashes: [0.0; 16],
@@ -172,6 +179,10 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let was_lit = s.flashes.map(|until| until > s.now);
     s.now = clock;
     let failed = s.recover_stream_error();
+    let devices_changed = devices::poll(s);
+    if s.devices.busy() {
+        tx.wake_after(Duration::from_millis(1));
+    }
     s.output.advance(elapsed);
     let pedals_changed = pedals::poll(s);
     let counts = s.output.meters.counts();
@@ -179,7 +190,8 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let peak = fresh_peak.max(s.peak * (-elapsed as f32 * 7.0).exp());
     let peak = if peak < 0.001 { 0.0 } else { peak };
     let lit = s.flashes.map(|until| until > clock);
-    let changed = failed
+    let changed = devices_changed
+        || failed
         || pedals_changed
         || counts != s.counts
         || peak != s.peak
@@ -195,6 +207,15 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
 
 type Scene = (&'static str, fn(&mut State));
 pub const SCENES: &[Scene] = &[
+    ("output-selection", |s| {
+        devices::scene(s, devices::SceneKind::Selection)
+    }),
+    ("output-missing", |s| {
+        devices::scene(s, devices::SceneKind::Missing)
+    }),
+    ("output-invalid", |s| {
+        devices::scene(s, devices::SceneKind::Invalid)
+    }),
     ("playing", |s| {
         for pad in [0, 4, 10] {
             s.trigger(pad, 1.0);

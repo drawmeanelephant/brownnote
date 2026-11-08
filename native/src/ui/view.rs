@@ -1,6 +1,7 @@
 use super::{
     State, Tab, accent, button, caption,
     control::{Control, slider},
+    devices,
     graphics::{led, logo, meter, waveform},
     ink, pedals,
 };
@@ -43,9 +44,14 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                     tx.wake_after(Duration::from_millis(1));
                 }),
         );
+    controls = controls.child(devices::header(s));
     if s.output.failed {
-        controls = controls
-            .child(button("retry-audio", "RETRY AUDIO").on_press(|s: &mut State| s.retry()));
+        controls = controls.child(
+            button("retry-audio", "RETRY AUDIO")
+                .disabled(s.devices.busy())
+                .focusable(!s.devices.busy())
+                .on_press(|s: &mut State| s.retry()),
+        );
     }
     let mut grid = col().key("pads").grow(1.0).min_h(0.0).gap(8.0);
     for r in 0..4 {
@@ -94,8 +100,11 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .child(caption("01—16    /    PRESSURE PADS").color(ink("#c0cbbf")))
                 .child(caption("HIT HIGHER. GO LOUDER.")),
         )
-        .child(grid)
-        .child(editor(s))
+        .children(if s.devices.visible {
+            vec![devices::panel(s)]
+        } else {
+            vec![grid, editor(s)]
+        })
         .child(
             row()
                 .h(14.0)
