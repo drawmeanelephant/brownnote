@@ -2,23 +2,12 @@ use super::{caption, ink};
 use brownnote_native::engine::Sample;
 use rune::{Color, El, Shape, canvas, col, el, row};
 
-pub(super) const BINS: usize = 96;
-pub(super) type Envelope = [[f32; 2]; BINS];
+#[cfg(test)]
+pub(super) const BINS: usize = brownnote_native::kit::WAVEFORM_BINS;
+pub(super) type Envelope = brownnote_native::kit::Waveform;
 
 pub(super) fn envelope(sample: &Sample) -> Envelope {
-    let mut bins = [[0.0_f32; 2]; BINS];
-    for (i, value) in sample.data.iter().enumerate() {
-        let bin = i * BINS / sample.data.len();
-        bins[bin][0] = bins[bin][0].min(*value);
-        bins[bin][1] = bins[bin][1].max(*value);
-    }
-    let peak = bins.iter().flatten().fold(0.0_f32, |a, b| a.max(b.abs()));
-    if peak > 0.0 {
-        for value in bins.iter_mut().flatten() {
-            *value /= peak;
-        }
-    }
-    bins
+    brownnote_native::kit::waveform(sample)
 }
 
 pub(super) fn waveform(data: &Envelope, color: Color, detailed: bool) -> El {

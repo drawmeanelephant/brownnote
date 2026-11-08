@@ -32,7 +32,8 @@ pub fn default_bin() -> PathBuf {
 
 /// Renders wait for a pause in editing before they start.
 pub const DEBOUNCE: Duration = Duration::from_millis(250);
-/// Slots 0..5 hold the kit's files and never unload; renders take free slots.
+/// Legacy scene/test boundary. Allocation uses actual slot occupancy instead.
+/// The integrator can remove this with the old ui.rs re-export.
 pub const FIRST_RENDER_SLOT: usize = 5;
 
 pub type CatalogFn = Arc<dyn Fn() -> Result<Catalog, CatalogError> + Send + Sync>;
@@ -198,9 +199,16 @@ pub fn scene(s: &mut State, kind: SceneKind) {
                 }
                 _ => {
                     let sample = s.kit.samples[PADS[4].sample].clone();
-                    let slot = FIRST_RENDER_SLOT;
-                    s.slots.set(slot, Some(sample.clone()));
-                    s.output.send(Command::Load { slot, sample });
+                    let Some(slot) = free_slot(s) else {
+                        return;
+                    };
+                    if !s.output.send(Command::Load {
+                        slot,
+                        sample: sample.clone(),
+                    }) {
+                        return;
+                    }
+                    s.slots.set(slot, Some(sample));
                     s.pedals.pads[4].slot = slot;
                     s.pedals.pads[4].rendered_slot = Some(slot);
                     s.pedals.pads[4].status = Status::Ready {
@@ -236,7 +244,7 @@ pub fn status_text(status: &Status) -> String {
 }
 
 fn free_slot(s: &State) -> Option<usize> {
-    (FIRST_RENDER_SLOT..SLOTS).find(|slot| s.slots.is_empty(*slot))
+    (0..SLOTS).find(|slot| s.slots.is_empty(*slot))
 }
 
 /// Point a pad back at its base file and release any rendered slot.
