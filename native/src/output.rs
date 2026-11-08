@@ -1,17 +1,25 @@
 use crate::engine::{Command, Meters, Mixer, QUEUE_CAPACITY, Returned, SLOTS, Sample, Slots};
 use cpal::{
-    SampleFormat, Stream, StreamConfig,
+    BufferSize, DeviceId, OutputStreamTimestamp, SampleFormat, Stream, StreamConfig,
+    SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use std::{
     fmt,
-    sync::{Arc, OnceLock, mpsc},
+    num::NonZeroU32,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering::Relaxed},
+        mpsc,
+    },
     time::Duration,
 };
 
 #[derive(Debug)]
 pub enum AudioError {
     NoDevice,
+    SelectedDeviceUnavailable,
+    UnsupportedConfiguration,
     UnsupportedFormat(SampleFormat),
     Device(String),
 }
@@ -20,6 +28,16 @@ impl fmt::Display for AudioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoDevice => write!(f, "No default output device"),
+            Self::SelectedDeviceUnavailable => write!(
+                f,
+                "Selected output is unavailable; retry it or explicitly choose system default"
+            ),
+            Self::UnsupportedConfiguration => {
+                write!(
+                    f,
+                    "Unsupported output channel, sample-rate or buffer configuration"
+                )
+            }
             Self::UnsupportedFormat(format) => write!(f, "Unsupported audio format: {format}"),
             Self::Device(message) => write!(f, "Audio error: {message}"),
         }
@@ -29,6 +47,222 @@ impl std::error::Error for AudioError {}
 
 fn device_error(e: impl fmt::Display) -> AudioError {
     AudioError::Device(e.to_string())
+}
+
+/// Machine-local preference, never portable project data (D8).
+/// A name is deliberately not an identity or a fallback.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OutputSelection {
+    /// None explicitly follows the system default, Some requires this CPAL ID.
+    pub device_id: Option<DeviceId>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u16>,
+    /// A fixed size is a request, not a guarantee about callback buffer lengths.
+    pub buffer_size: BufferSize,
+}
+
+#[derive(Clone, Debug)]
+pub struct DeviceInfo {
+    pub id: DeviceId,
+    pub name: String,
+    pub default_config: SupportedStreamConfig,
+    pub supported_configs: Vec<SupportedStreamConfigRange>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutputConfiguration {
+    pub stream: StreamConfig,
+    pub format: SampleFormat,
+}
+
+impl OutputSelection {
+    /// Resolve a discovery snapshot by ID only. Missing/stale IDs never select
+    /// a namesake or silently change to the default.
+    pub fn resolve<'a>(
+        &self,
+        devices: &'a [DeviceInfo],
+        default_id: Option<&DeviceId>,
+    ) -> Result<&'a DeviceInfo, AudioError> {
+        let id = self
+            .device_id
+            .as_ref()
+            .or(default_id)
+            .ok_or(AudioError::NoDevice)?;
+        devices
+            .iter()
+            .find(|device| &device.id == id)
+            .ok_or(if self.device_id.is_some() {
+                AudioError::SelectedDeviceUnavailable
+            } else {
+                AudioError::NoDevice
+            })
+    }
+}
+
+impl DeviceInfo {
+    fn query(device: &cpal::Device) -> Result<Self, AudioError> {
+        Ok(Self {
+            id: device.id().map_err(device_error)?,
+            name: device
+                .description()
+                .map_err(device_error)?
+                .name()
+                .to_owned(),
+            default_config: device.default_output_config().map_err(device_error)?,
+            supported_configs: device
+                .supported_output_configs()
+                .map_err(device_error)?
+                .collect(),
+        })
+    }
+
+    /// Unspecified fields retain this device's defaults, including sample
+    /// format. Validate the whole tuple, not each field in unrelated ranges.
+    /// Unknown buffer bounds permit only the platform default.
+    pub fn configuration(
+        &self,
+        selection: &OutputSelection,
+    ) -> Result<OutputConfiguration, AudioError> {
+        let format = self.default_config.sample_format();
+        if !matches!(
+            format,
+            SampleFormat::F32 | SampleFormat::I16 | SampleFormat::U16 | SampleFormat::I32
+        ) {
+            return Err(AudioError::UnsupportedFormat(format));
+        }
+        let stream = StreamConfig {
+            channels: selection.channels.unwrap_or(self.default_config.channels()),
+            sample_rate: selection
+                .sample_rate
+                .unwrap_or(self.default_config.sample_rate()),
+            buffer_size: selection.buffer_size,
+        };
+        let valid = stream.channels > 0
+            && stream.sample_rate > 0
+            && self.supported_configs.iter().any(|range| {
+                range.channels() == stream.channels
+                    && range.sample_format() == format
+                    && range.contains_rate(stream.sample_rate)
+                    && match (stream.buffer_size, range.buffer_size()) {
+                        (BufferSize::Default, _) => true,
+                        (BufferSize::Fixed(size), SupportedBufferSize::Range { min, max }) => {
+                            size > 0 && (*min..=*max).contains(&size)
+                        }
+                        (BufferSize::Fixed(_), SupportedBufferSize::Unknown) => false,
+                    }
+            });
+        if !valid {
+            return Err(AudioError::UnsupportedConfiguration);
+        }
+        Ok(OutputConfiguration { stream, format })
+    }
+}
+
+/// Off-thread discovery, with CPAL's host-qualified stable IDs and raw ranges.
+/// Device IDs can contain identifying information; do not publish them in logs.
+pub fn output_devices() -> Result<Vec<DeviceInfo>, AudioError> {
+    cpal::default_host()
+        .output_devices()
+        .map_err(device_error)?
+        .map(|device| DeviceInfo::query(&device))
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct StreamId(u64);
+
+/// One callback's first output frame and CPAL's predicted presentation time.
+/// Instants may only be compared within the same stream_id. This is not a
+/// wall-clock mapping, a scheduler, or a round-trip latency measurement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaybackTimestamp {
+    pub stream_id: StreamId,
+    pub first_frame: u64,
+    pub frames: usize,
+    pub sample_rate: NonZeroU32,
+    pub timestamp: OutputStreamTimestamp,
+}
+
+const TIMESTAMP_CAPACITY: usize = 64;
+static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Construct off-thread, then move into the callback. Publishing is bounded,
+/// allocation/lock/I/O-free, and advances frame identity even when full.
+pub struct PlaybackClock {
+    stream_id: StreamId,
+    sample_rate: NonZeroU32,
+    next_frame: u64,
+    sender: rtrb::Producer<PlaybackTimestamp>,
+    dropped: Arc<AtomicU64>,
+}
+
+pub struct PlaybackTimestamps {
+    pub stream_id: StreamId,
+    receiver: rtrb::Consumer<PlaybackTimestamp>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl PlaybackClock {
+    pub fn new(sample_rate: NonZeroU32) -> (Self, PlaybackTimestamps) {
+        let stream_id = StreamId(NEXT_STREAM_ID.fetch_add(1, Relaxed));
+        let (sender, receiver) = rtrb::RingBuffer::new(TIMESTAMP_CAPACITY);
+        let dropped = Arc::new(AtomicU64::new(0));
+        (
+            Self {
+                stream_id,
+                sample_rate,
+                next_frame: 0,
+                sender,
+                dropped: dropped.clone(),
+            },
+            PlaybackTimestamps {
+                stream_id,
+                receiver,
+                dropped,
+            },
+        )
+    }
+
+    pub fn publish(&mut self, frames: usize, timestamp: OutputStreamTimestamp) {
+        let item = PlaybackTimestamp {
+            stream_id: self.stream_id,
+            first_frame: self.next_frame,
+            frames,
+            sample_rate: self.sample_rate,
+            timestamp,
+        };
+        self.next_frame = self.next_frame.saturating_add(frames as u64);
+        if self.sender.push(item).is_err() {
+            self.dropped.fetch_add(1, Relaxed);
+        }
+    }
+}
+
+impl PlaybackTimestamps {
+    /// Drain a bounded queue on the consumer thread. Overflow drops new
+    /// observations, not audio; first_frame still counts every rendered frame.
+    pub fn take_latest(&mut self) -> Option<PlaybackTimestamp> {
+        let mut latest = None;
+        for _ in 0..TIMESTAMP_CAPACITY {
+            match self.receiver.pop() {
+                Ok(item) => latest = Some(item),
+                Err(_) => break,
+            }
+        }
+        latest
+    }
+
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Relaxed)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct OpenedOutput {
+    pub device_id: DeviceId,
+    pub name: String,
+    pub configuration: OutputConfiguration,
+    pub stream_id: StreamId,
 }
 
 enum Driver {
@@ -45,6 +279,9 @@ enum Driver {
 
 pub struct Output {
     driver: Driver,
+    selection: OutputSelection,
+    opened: Option<OpenedOutput>,
+    timestamps: Option<PlaybackTimestamps>,
     wake: Arc<OnceLock<rune::Waker>>,
     pub commands: rtrb::Producer<Command>,
     /// Samples the mixer has finished with, for the UI thread to drop.
@@ -61,6 +298,9 @@ impl Output {
         let (retired_commands, retired) = rtrb::RingBuffer::new(SLOTS);
         let meters = Arc::new(Meters::default());
         Self {
+            selection: OutputSelection::default(),
+            opened: None,
+            timestamps: None,
             driver: Driver::Virtual {
                 mixer: Box::new(Mixer::new(
                     slots.into(),
@@ -82,20 +322,40 @@ impl Output {
     }
 
     pub fn open(slots: impl Into<Slots>) -> Result<Self, AudioError> {
-        let device = cpal::default_host()
-            .default_output_device()
-            .ok_or(AudioError::NoDevice)?;
-        let supported = device.default_output_config().map_err(device_error)?;
-        let format = supported.sample_format();
-        let config: StreamConfig = supported.into();
-        let name = device
-            .description()
-            .map_err(device_error)?
-            .name()
-            .to_owned();
+        Self::open_selected(slots, &OutputSelection::default())
+    }
+
+    /// Every open creates a fresh mixer; replacing an Output stops its voices.
+    /// Explicit selections are never replaced with a silent default fallback.
+    pub fn open_selected(
+        slots: impl Into<Slots>,
+        selection: &OutputSelection,
+    ) -> Result<Self, AudioError> {
+        let host = cpal::default_host();
+        let device = match &selection.device_id {
+            Some(id) => host
+                .device_by_id(id)
+                .ok_or(AudioError::SelectedDeviceUnavailable)?,
+            None => host.default_output_device().ok_or(AudioError::NoDevice)?,
+        };
+        let info = DeviceInfo::query(&device)?;
+        let configuration = info.configuration(selection)?;
+        let OutputConfiguration {
+            stream: config,
+            format,
+        } = configuration;
+        let rate =
+            NonZeroU32::new(config.sample_rate).ok_or(AudioError::UnsupportedConfiguration)?;
+        let (clock, timestamps) = PlaybackClock::new(rate);
+        let opened = OpenedOutput {
+            device_id: info.id,
+            name: info.name,
+            configuration,
+            stream_id: timestamps.stream_id,
+        };
         let status = format!(
-            "Output: {name} · {} Hz · {format:?} · {} ch",
-            config.sample_rate, config.channels
+            "Output: {} · {} Hz · {format:?} · {} ch",
+            opened.name, config.sample_rate, config.channels
         );
         let (commands, consumer) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
         let (retired_commands, retired) = rtrb::RingBuffer::new(SLOTS);
@@ -113,14 +373,17 @@ impl Output {
             wake: wake.clone(),
         };
         let stream = match format {
-            SampleFormat::F32 => build::<f32>(&device, config, mixer, consumer, send_error),
-            SampleFormat::I16 => build::<i16>(&device, config, mixer, consumer, send_error),
-            SampleFormat::U16 => build::<u16>(&device, config, mixer, consumer, send_error),
-            SampleFormat::I32 => build::<i32>(&device, config, mixer, consumer, send_error),
+            SampleFormat::F32 => build::<f32>(&device, config, mixer, consumer, send_error, clock),
+            SampleFormat::I16 => build::<i16>(&device, config, mixer, consumer, send_error, clock),
+            SampleFormat::U16 => build::<u16>(&device, config, mixer, consumer, send_error, clock),
+            SampleFormat::I32 => build::<i32>(&device, config, mixer, consumer, send_error, clock),
             other => return Err(AudioError::UnsupportedFormat(other)),
         }?;
         stream.play().map_err(device_error)?;
         Ok(Self {
+            selection: selection.clone(),
+            opened: Some(opened),
+            timestamps: Some(timestamps),
             driver: Driver::Device {
                 _stream: stream,
                 errors,
@@ -133,6 +396,53 @@ impl Output {
             failed: false,
             dropped: 0,
         })
+    }
+
+    pub fn selection(&self) -> &OutputSelection {
+        &self.selection
+    }
+
+    /// None for a silent mixer: virtual time never claims device timestamps.
+    pub fn opened(&self) -> Option<&OpenedOutput> {
+        self.opened.as_ref()
+    }
+
+    pub fn timestamps(&mut self) -> Option<&mut PlaybackTimestamps> {
+        self.timestamps.as_mut()
+    }
+
+    pub fn silent_selected(
+        slots: impl Into<Slots>,
+        selection: OutputSelection,
+        reason: String,
+    ) -> Self {
+        let mut output = Self::virtual_driver(
+            slots,
+            format!("Silent: {reason} · Playing voices stopped"),
+            true,
+        );
+        output.selection = selection;
+        output
+    }
+
+    /// Retry exactly the remembered preference, preserving it on failure.
+    /// System-default fallback requires a separate explicit selection.
+    pub fn retry(&self, slots: impl Into<Slots>) -> Self {
+        Self::retry_with(slots.into(), &self.selection, Self::open_selected)
+    }
+
+    fn retry_with(
+        slots: Slots,
+        selection: &OutputSelection,
+        open: impl FnOnce(Slots, &OutputSelection) -> Result<Self, AudioError>,
+    ) -> Self {
+        match open(slots.clone(), selection) {
+            Ok(mut output) => {
+                output.status.push_str(" · Playing voices stopped");
+                output
+            }
+            Err(error) => Self::silent_selected(slots, selection.clone(), error.to_string()),
+        }
     }
 
     /// Queues a command. Returns false when the queue was full and the command
@@ -214,12 +524,14 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
     mut mixer: Mixer,
     mut commands: rtrb::Consumer<Command>,
     errors: ErrorSink,
+    mut clock: PlaybackClock,
 ) -> Result<Stream, AudioError> {
     let channels = usize::from(config.channels);
     device
         .build_output_stream(
             config,
-            move |data: &mut [T], _| {
+            move |data: &mut [T], info| {
+                clock.publish(data.len() / channels, info.timestamp());
                 mixer.drain(&mut commands);
                 mixer.render_into(data, channels, T::from_sample);
             },
@@ -268,6 +580,29 @@ pub fn check_audio(samples: Box<[Sample]>) -> Result<String, AudioError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_retry_passes_exact_selection_and_slots_and_remembers_them() {
+        let selection = OutputSelection {
+            device_id: Some(DeviceId::new(cpal::default_host().id(), "missing")),
+            sample_rate: Some(48_000),
+            ..Default::default()
+        };
+        let slots = Slots::from_samples([Sample {
+            data: Arc::from([0.1; 8]),
+            rate: 44_100,
+        }]);
+        let failed = Output::retry_with(slots, &selection, |slots, requested| {
+            assert_eq!(requested, &selection);
+            assert!(slots.get(0).is_some());
+            Err(AudioError::SelectedDeviceUnavailable)
+        });
+        assert_eq!(failed.selection(), &selection);
+        assert!(failed.failed);
+        assert!(failed.opened().is_none());
+        assert!(failed.status.contains("explicitly choose system default"));
+        assert!(failed.status.contains("voices stopped"));
+    }
 
     #[test]
     fn stream_error_reports_and_wakes_even_when_ui_is_idle() {
