@@ -1,8 +1,9 @@
 # Project store, first slice (#100)
 
 Refs #100. The save transaction and read-only inspection are implemented.
-#100 remains open: recovery selection, migration policy, open/apply integration,
-save/open UI, and autosave are later slices.
+The follow-up [open/recovery API and version policy](project-open-recovery.md)
+add explicit backend recovery selection. #100 remains open: runtime apply
+integration, save/open/recovery UI, and D6 autosave are later slices.
 
 ## Layout and commit point
 
@@ -13,9 +14,11 @@ project/
   .brownnote-store/
     lock                            # OS exclusive writer lock
     versions/<document-sha256>.json  # complete immutable document snapshots
+    committed/<document-sha256>      # empty immutable commit evidence
     staging/
       document.tmp
       version.tmp
+      commit.tmp
       media-<sha256>.tmp
 ```
 
@@ -40,7 +43,9 @@ not a pointer or new schema. Before that operation:
 6. Write, flush, sync, and publish the candidate's complete document snapshot.
    Sync `versions/`, staging, the private directory, and the project root.
 7. Commit the document rename. Sync both the source staging directory and
-   destination project directory before returning a successful receipt.
+   destination project directory. Record and sync evidence that the new
+   generation committed before returning a successful receipt. Observed old
+   current generations have evidence recorded before replacement too.
 
 This is not JSON-only atomicity: both old and new document media closures
 exist before the switch, and neither media nor snapshots are overwritten or
@@ -51,7 +56,9 @@ inspection sees complete old or complete new, not mixed media.
 All complete snapshots are retained in this first slice, including candidates
 that reached snapshot publication but never committed. Snapshot presence
 therefore does **not** prove a document was ever the user's saved version.
-No automatic recovery choice is made. Keeping all snapshots is conservative;
+The follow-up records commit evidence separately; only evidenced, validated
+snapshots are offered as saved recovery choices. No automatic recovery choice
+is made. Keeping all snapshots is conservative;
 bounded retention and media collection need a later policy that protects both
 saved and separate recovery roots. D6's later recovery writer must call this
 same transaction API with its separate recovery root.
@@ -91,7 +98,7 @@ operations succeed. On failure, branch on `SaveFailure::commit`:
 |---|---|
 | `Unchanged` | No commit was attempted. The saved document is untouched. |
 | `Unknown(candidate)` | Publish returned an error and may have taken effect. Inspect current state; do not report rollback or durable success. |
-| `PublishedNotDurable(candidate)` | Publish succeeded, but a postcommit directory sync failed. The new complete document is visible; durability is unproven. |
+| `PublishedNotDurable(candidate)` | Publish succeeded, but postcommit sync or commit-evidence recording failed. The new complete document is visible; completion/durability is unproven. |
 
 Retry after any failure, including after an uncertain commit. The lock is
 released on all exits. Retries verify existing immutable content, remove only
