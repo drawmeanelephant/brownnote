@@ -1,7 +1,8 @@
-# Performance contract, pure first slice (#104)
+# Performance contract (#104)
 
-This contract depends on #98's `AssetId` and `PadId`; land #98 first.
-It is not an audio scheduler or a recorder, and owns no JSON serialization.
+This contract uses #98's `AssetId` and `PadId` and owns no JSON serialization.
+The pure first slice is now integrated with the bounded engine scheduler
+described in [scheduled-engine.md](scheduled-engine.md). It is not a recorder.
 
 ## Identity and originals
 
@@ -51,7 +52,7 @@ original musical positions before quantization. Shortening hides, never
 deletes. A visible note snapped to loop end plays at the next iteration's
 zero; its duration remains unwrapped. Loop scheduling/repetition is later work.
 
-## Clock and bounded scheduler policy (later integration)
+## Clock and bounded scheduler policy
 
 `ClockAnchor` maps a monotonic host timestamp to take nanoseconds off callback.
 It permits timestamps before the anchor when still after take start. Reject
@@ -59,14 +60,15 @@ timestamps before take start, overflow, and stale stream epochs. #101 supplies
 the CPAL playback/host anchor; stream reopen/device change needs a fresh epoch
 and anchor, not reuse of reset meter frame counts.
 
-The additive scheduled-trigger path will carry event identity, stream epoch
+The additive scheduled-trigger path carries event identity, stream epoch
 and an absolute integer frame deadline, alongside existing immediate triggers.
-The producer converts/sorts events off callback into preallocated bounded
-storage, with stable arrival order for equal deadlines. Capacity is 256 and
+The producer converts events off callback into preallocated bounded
+storage, with stable arrival order for equal deadlines. Sorting is not required
+by the handoff and never happens in the callback. Capacity is 256 and
 lookahead is at most two device seconds; farther events remain with the
 producer and are retried later, never inserted into the callback queue.
 
-Admission laws in this slice are pure decisions, not a queue implementation:
+The pure admission laws and integrated queue follow this policy:
 
 - Full: reject the new event, increment a full/drop counter, and return
   rejection to the caller. Never claim it was sounded/recorded successfully.
@@ -84,10 +86,10 @@ Rejected note-off must trigger a reported bounded release/panic recovery,
 not silently leave a held voice. Callback integration must use no locks,
 sorting, allocation, destruction of shared samples, logging or I/O.
 
-Only scalar admission/block-placement laws and fixtures land here. Actual
-queues, counters, CPAL consumption, variable-buffer audio rendering and
-scheduled-traffic allocator proof wait for #101 and #102 and remain #104
-close gates. Pure block-offset equality is not an audio render measurement.
+`performance::scheduler`, `engine` and `output` implement the queues, counters,
+CPAL conversion and sample-offset rendering. `tests/scheduling.rs` measures
+actual rendered positions; `tests/rt_alloc.rs` covers scheduled callback work.
+Pure block-offset equality alone is not an audio render measurement.
 
 ## Library integration and validation
 
