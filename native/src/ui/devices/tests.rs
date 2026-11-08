@@ -1,18 +1,10 @@
 #![allow(clippy::unwrap_used)]
 use super::*;
-use brownnote_native::{
-    engine::Sample,
-    kit::{DEFAULT_SAMPLES, Kit},
-};
 use rune::{Env, Key, KeyEvent, Mods, Runtime};
 use std::{
     cell::RefCell,
     fs,
-    path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering::Relaxed},
-    },
+    sync::atomic::{AtomicUsize, Ordering::Relaxed},
 };
 
 fn id(value: &str) -> DeviceId {
@@ -62,13 +54,7 @@ impl Drop for Root {
 type Calls = Rc<RefCell<Vec<OutputSelection>>>;
 
 fn state() -> (State, Calls) {
-    let mut kit = Kit::load(Path::new(DEFAULT_SAMPLES));
-    kit.samples = (0..5)
-        .map(|_| Sample {
-            data: Arc::from(vec![0.25; 44_100]),
-            rate: 44_100,
-        })
-        .collect();
+    let kit = crate::ui_test_support::kit(0.25, 44_100, 44_100);
     let mut s = State::new(kit, true, true);
     s.pedals.auto_load = false;
     s.devices = Devices::disabled();
@@ -198,12 +184,14 @@ fn loss_while_voices_run_stops_them_and_preserves_prune_and_master_choke_state()
         device_id: Some(id("fixture-a")),
         ..Default::default()
     };
-    s.output = Output::silent_selected(s.slots.clone(), selection.clone(), "fixture".into());
+    s.install_output(Output::silent_selected(
+        s.assets.slots().clone(),
+        selection.clone(),
+        "fixture".into(),
+    ));
     s.master = 0.0;
     s.choke = false;
-    let retired_slot = super::super::pedals::FIRST_RENDER_SLOT + 1;
-    s.slots.set(retired_slot, s.slots.get(0).cloned());
-    s.pedals.unloads.push(retired_slot);
+    let retired_slot = crate::ui_test_support::retire_one(&mut s, 15);
     s.trigger(0, 1.0);
     s.output.advance(0.01);
     s.counts = s.output.meters.counts();
@@ -214,8 +202,9 @@ fn loss_while_voices_run_stops_them_and_preserves_prune_and_master_choke_state()
     assert_eq!(s.counts, [0; 16]);
     assert_eq!(s.peak, 0.0);
     assert_eq!(s.output.meters.counts(), [0; 16]);
-    assert!(s.slots.is_empty(retired_slot));
-    assert!(s.pedals.unloads.is_empty());
+    s.output.advance(0.01);
+    s.poll_assets();
+    assert!(s.assets.slots().is_empty(retired_slot));
     assert!(status(&s).contains("Fixture stream lost"));
     assert!(status(&s).contains("voices stopped"));
     // SetMaster ramps over the first block, as it does for existing callers.
@@ -272,7 +261,7 @@ fn preferences_survive_failed_reopen_and_a_new_feature_instance() {
     let mut reopened = Devices::load(Ok(root.0.clone()));
     reopened.discover = Rc::new(|| Ok(discovery()));
     reopened.open = s.devices.open.clone();
-    s.output = reopened.initial_output(s.slots.clone(), "test".into());
+    s.output = reopened.initial_output(s.assets.slots().clone(), "test".into());
     s.devices = reopened;
     finish(&mut s);
     assert_eq!(calls.borrow().len(), 2);
@@ -298,7 +287,7 @@ fn corrupt_invalid_version_and_invalid_ids_stay_silent_without_overwriting_file(
         assert!(!loaded.busy());
         loaded.discover = Rc::new(|| Ok(discovery()));
         loaded.open = s.devices.open.clone();
-        s.output = loaded.initial_output(s.slots.clone(), "test".into());
+        s.output = loaded.initial_output(s.assets.slots().clone(), "test".into());
         s.devices = loaded;
         poll(&mut s);
         assert!(status(&s).starts_with("SILENT"));
@@ -380,7 +369,7 @@ fn startup_retries_a_stale_saved_id_even_if_system_default_is_present() {
     let mut loaded = Devices::load(Ok(root.0.clone()));
     loaded.discover = Rc::new(|| Ok(discovery()));
     loaded.open = s.devices.open.clone();
-    s.output = loaded.initial_output(s.slots.clone(), "test".into());
+    s.output = loaded.initial_output(s.assets.slots().clone(), "test".into());
     s.devices = loaded;
     finish(&mut s);
     assert_eq!(calls.borrow()[0], selection);
@@ -412,7 +401,7 @@ fn missing_preference_file_starts_with_device_defaults_without_writing_a_file() 
     assert_eq!(loaded.draft, OutputSelection::default());
     loaded.discover = Rc::new(|| Ok(discovery()));
     loaded.open = s.devices.open.clone();
-    s.output = loaded.initial_output(s.slots.clone(), "test".into());
+    s.output = loaded.initial_output(s.assets.slots().clone(), "test".into());
     s.devices = loaded;
     finish(&mut s);
     assert_eq!(calls.borrow()[0], OutputSelection::default());
@@ -427,7 +416,7 @@ fn missing_preference_root_waits_for_explicit_fallback_without_disabling_audio()
     assert!(!loaded.busy());
     loaded.discover = Rc::new(|| Ok(discovery()));
     loaded.open = s.devices.open.clone();
-    s.output = loaded.initial_output(s.slots.clone(), "unused disabled reason".into());
+    s.output = loaded.initial_output(s.assets.slots().clone(), "unused disabled reason".into());
     s.devices = loaded;
     poll(&mut s);
     assert!(calls.borrow().is_empty());

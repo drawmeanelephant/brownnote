@@ -1,7 +1,8 @@
 # Sample import and runtime registry
 
 Refs #99. First service/registry slice only, under D3 and D7. #99 remains open.
-There is no import UI, picker, project document writer, or save/reopen path here.
+There is no import UI, picker, or application save/reopen UI here. Adoption
+uses the existing project store, never a second document writer.
 
 ## Import boundary
 
@@ -45,6 +46,27 @@ failure can leave unreferenced immutable media. Do not delete it from an import
 callback, since another pad or transaction may reference it. Store-owned
 collection must account for saved versions and recovery. Media is not cache.
 
+### Unsaved application ownership
+
+The real app starts with an explicit `Arc<SessionMedia>` owner. This
+`MediaPublisher` keeps exact encoded bytes in memory until the unsaved session
+ends. It is not durable, never participates in pedal-cache eviction, and makes
+no saved-project claim. Kit sources are captured into this owner at startup;
+imports and required retained renders publish into it on their workers.
+
+Before a future save can succeed, the storage worker calls
+`SessionMedia::adopt(&dyn MediaPublisher)` with the real store owner's
+coordinated immutable publisher. Adoption snapshots owned byte references and
+publishes them without holding the session lock during file I/O. It is safe to
+retry after partial publication. With `ProjectMedia` publishing into the same
+private destination, `Store::save(document, &[])` then verifies the published
+media. A different destination can use the existing `MediaSource` copy
+contract. Adoption writes no document and is not a successful save.
+
+This first slice retains all published session objects until session end,
+including cancelled/unreferenced results. Store-owned collection, history,
+recovery and save coordination remain later application work.
+
 ## Runtime boundary
 
 `AssetRegistry` is the sole allocator of its `Slots`. It maps stable `AssetId`
@@ -83,24 +105,46 @@ discard the old Output and its return queue, then call `output_rebuilt()` and
 `flush_unloads` on the new output. Fresh streams stop voices (D16); previously
 admitted unloads need admission to the new queue.
 
-## Integrator request and evidence boundary
+## Mounted application
 
-- Add `pub mod import; pub mod assets;` to `native/src/lib.rs`. No dependency
-  changes are needed. The path-bootstrap test must then be replaced by imports
-  from `brownnote_native::{assets, import}` and rerun against the real manifest.
-  Until then, exported-artifact verification is blocked.
-- Add an `AssetRegistry` to shared `State`, initialize it from authoritative kit
-  media, and make it the one source of slot ownership. Do not run the old pedal
-  allocator alongside it. Route triggers through `playback(PadId)` and preview/
-  label/error reads through `source`, `audible`, and `pad`.
-- Wire poll retirement, pending unload retries, and output rebuild notifications
-  as above. Replace the shared `FIRST_RENDER_SLOT` re-export/recovery range.
-  The lane-owned pedal allocator now scans actual slot occupancy, not a fixed
-  boundary; legacy scene/test names remain until shared wiring lands.
-- Import UI, State import-job polling, keyboard/path/drag-and-drop interaction,
-  pedal completion invalidation, and the real #100 save/reopen/relocation path
-  remain integration gates. Do not infer them from service tests.
+- `brownnote_native::{assets, import}` are exported. `import_assets` imports the
+  real library, with no path bootstrap.
+- `Kit::load` reads each file once. `Kit::from_encoded` hashes, decodes and
+  previews each owned snapshot. `State::new` and `with_cache` automatically
+  register this authoritative metadata, deduplicating identical encoded media.
+  The legacy decoded kit view is not an alternative source of asset identity.
+  Kit choke groups preserve the existing per-kit-file behavior, even if two
+  filenames contain identical encoded bytes and share a slot. Imports use
+  explicit content-asset choke identity, independently of slot reuse.
+- `State` owns one registry. Triggers use its playback/choke mapping; duration,
+  audible/source waveform, filename, error and assignment reads use its getters.
+  A failed replacement reports an error without disabling a playable old pad.
+- `State::import_sample(pad_index, Some(path))` queues service work and a registry
+  ticket. `None` or `cancel_import` cancels it. Queue/slot refusal retains the
+  prepared result for retry without changing the current assignment. Busy
+  service admission leaves previous work alone. Polling drives completion;
+  setup's waker starts polling when a request is queued.
+- Pedal edits and imports invalidate each other's tickets. Pedal workers
+  encode/hash/publish required float32 WAV media before admission, even on a
+  cache hit. No render-only allocator, slot boundary or parallel waveform
+  ownership remains. An edit keeps the previously audible sound until its new
+  render is admitted; removing the last stage returns to the assigned source.
+- Poll routes retirement through `returned`, retries pending unloads and keeps
+  waking while retirement is outstanding. Every fresh output, including device
+  UI stop/open, retry, silent recovery and scenes, uses the registry snapshot
+  and calls `output_rebuilt` after discarding the previous output.
 
 `native/tests/import_assets.rs` generates WAV fixtures and drives the real
-decoder, project types, bounded queues, and mixer. It is a bootstrap test, not
-proof of library exports, native interaction, hardware output, or listening.
+decoder, project types, bounded queues, and mixer. Mounted tests in
+`ui_import_tests.rs`, `ui_pedals_tests.rs` and `ui/devices/tests.rs` drive the
+actual State/Runtime, output queues, pointer/keyboard callers and worker
+completions. Encoded fixtures use valid WAV bytes, not fabricated asset IDs.
+
+## Remaining issue gates
+
+The second #99 slice supplies the keyboard-accessible typed-path/drag-and-drop
+UI. The actual application save/reopen/relocation flow, history/recovery and
+store-owner coordination still belong to #100 and later integration. Tests
+of session adoption through the real store do not claim that save UI exists.
+Listening and physical-device/controller evidence are not supplied by these
+headless/mixer tests. #99 remains open.

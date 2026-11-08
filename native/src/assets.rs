@@ -137,6 +137,12 @@ impl AssetRegistry {
         &self.slots
     }
 
+    pub fn has_retirements(&self) -> bool {
+        self.states
+            .iter()
+            .any(|state| matches!(state, SlotState::PendingUnload | SlotState::Retiring))
+    }
+
     pub fn asset(&self, id: AssetId) -> Option<&RuntimeAsset> {
         self.assets.get(&id)
     }
@@ -285,7 +291,7 @@ impl AssetRegistry {
         Ok(slot)
     }
 
-    fn current(&self, replacement: Replacement) -> bool {
+    pub fn current(&self, replacement: Replacement) -> bool {
         self.pad(replacement.pad).generation == replacement.generation
     }
 

@@ -1,19 +1,9 @@
 use crate::ui::{self, State};
-use brownnote_native::{
-    engine::{Command, Sample},
-    kit::{DEFAULT_SAMPLES, Kit},
-};
+use brownnote_native::engine::Command;
 use rune::{Env, Key, KeyEvent, Mods, Runtime, Tx};
-use std::{path::Path, sync::Arc};
 
 fn runtime() -> Runtime<State> {
-    let mut kit = Kit::load(Path::new(DEFAULT_SAMPLES));
-    kit.samples = (0..5)
-        .map(|_| Sample {
-            data: Arc::from(vec![0.5; 44_100]),
-            rate: 44_100,
-        })
-        .collect();
+    let kit = crate::ui_test_support::kit(0.5, 44_100, 44_100);
     let state = State::new(kit, true, true);
     let mut rt = Runtime::new(state, ui::view, (960.0, 680.0), Env::new(true, 2.0));
     rt.on_key = Some(ui::on_key);
@@ -222,8 +212,10 @@ fn slider_drag_cancel_restores_original_value() {
 #[test]
 fn missing_pad_does_nothing_while_good_pads_still_play() {
     let mut rt = runtime();
-    rt.state.kit.errors[0] = Some("fart_dry.wav: missing".into());
-    rt.state.kit.banner = "fart_dry.wav: missing".into();
+    let mut kit = crate::ui_test_support::kit(0.5, 44_100, 44_100);
+    kit.media[0] = None;
+    kit.errors[0] = Some("fart_dry.wav: missing".into());
+    rt.state = State::new(kit, true, true);
     rt.frame(0.0);
     tap(&mut rt, "pad-0");
     key(&mut rt, Key::Text("1".into()));
@@ -251,8 +243,13 @@ fn all_pads_and_controls_fit_minimum_window_even_with_long_asset_errors() {
         let mut state = ui::init();
         if missing {
             let error = format!("{}fart_dry.wav: missing file", "/long/path/".repeat(100));
-            state.kit.errors = std::array::from_fn(|_| Some(error.clone()));
-            state.kit.banner = error;
+            state = State::new(
+                brownnote_native::kit::Kit::from_encoded(std::array::from_fn(|_| {
+                    Err(error.clone())
+                })),
+                true,
+                true,
+            );
         }
         let mut rt = Runtime::new(state, ui::view, (820.0, 600.0), Env::new(true, 2.0));
         rt.frame(0.0);

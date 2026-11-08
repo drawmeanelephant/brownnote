@@ -1,11 +1,5 @@
-// Bootstrap until the integrator exports these modules from the real library.
-// All domain, decoder, command, queue and mixer types are the shipped types.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use brownnote_native::{engine, kit, project};
-#[path = "../src/assets.rs"]
-mod assets;
-#[path = "../src/import.rs"]
-mod import;
+use brownnote_native::{assets, engine, import, kit, project};
 
 use assets::{AssetRegistry, ChokeIdentity, RegistryError};
 use engine::{Command, Meters, Mixer, Returned, SLOTS, Sample, Slots};

@@ -1,4 +1,6 @@
+pub mod assets;
 pub mod engine;
+pub mod import;
 pub mod kit;
 pub mod look;
 pub mod midi;

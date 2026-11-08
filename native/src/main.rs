@@ -2,6 +2,8 @@ mod ui;
 #[cfg(test)]
 mod ui_pedals_tests;
 #[cfg(test)]
+mod ui_test_support;
+#[cfg(test)]
 mod ui_tests;
 
 use brownnote_native::{

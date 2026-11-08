@@ -6,15 +6,16 @@
 //! playing keeps the sample it started with.
 mod view;
 
-use super::State;
+use super::{State, media::pad_id};
 use brownnote_native::{
-    engine::{Command, Returned, SLOTS, Sample},
-    kit::PADS,
+    assets::{RegistryError, Replacement},
+    import::{Imported, retain},
     pedals::{
         brownnote::{self, CatalogError, DEFAULT_BIN},
         catalog::{Catalog, Effect, MixLaw},
         render::{self, Chain, RenderError, RenderJob, Rendered, Stage},
     },
+    project::MediaKind,
 };
 use rune::Latest;
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -32,9 +33,6 @@ pub fn default_bin() -> PathBuf {
 
 /// Renders wait for a pause in editing before they start.
 pub const DEBOUNCE: Duration = Duration::from_millis(250);
-/// Legacy scene/test boundary. Allocation uses actual slot occupancy instead.
-/// The integrator can remove this with the old ui.rs re-export.
-pub const FIRST_RENDER_SLOT: usize = 5;
 
 pub type CatalogFn = Arc<dyn Fn() -> Result<Catalog, CatalogError> + Send + Sync>;
 pub type RenderFn = Arc<dyn Fn(&RenderJob) -> Result<Rendered, RenderError> + Send + Sync>;
@@ -63,20 +61,21 @@ pub struct PadPedals {
     pub chain: Chain,
     /// The stage whose pots are shown.
     pub focus: Option<usize>,
-    pub render: Latest<Result<Rendered, RenderError>>,
+    pub render: Latest<(Replacement, Result<Prepared, RenderError>)>,
     pub status: Status,
-    /// The slot a trigger reads right now.
-    pub slot: usize,
-    /// The rendered slot this pad is using, if any.
-    pub rendered_slot: Option<usize>,
     /// A render that landed while every slot was busy, with the chain it was
     /// rendered from so a newer edit can discard it.
-    pub pending: Option<(Chain, Rendered)>,
+    pub pending: Option<(Chain, Replacement, Prepared)>,
     /// The chain the last render was asked for. Comparing against it is how an
     /// edit that changes nothing keeps the answer it already has.
     requested: Option<Chain>,
     /// The chain the current slot was rendered from, and whether it clipped.
     landed: Option<(Chain, bool)>,
+}
+
+pub struct Prepared {
+    imported: Imported,
+    clipped: bool,
 }
 
 pub struct Pedals {
@@ -92,9 +91,6 @@ pub struct Pedals {
     pub render_fn: RenderFn,
     /// An in-app pedal list, used where the platform has no native menus.
     pub add_open: bool,
-    /// Rendered slots the mixer still holds for us, waiting for an `Unload`
-    /// the command queue had no room for.
-    pub unloads: Vec<usize>,
     catalog_request: Latest<Result<Catalog, CatalogError>>,
 }
 
@@ -106,13 +102,11 @@ impl Pedals {
         let list_bin = bin.clone();
         Self {
             catalog: CatalogState::Loading,
-            pads: std::array::from_fn(|pad| PadPedals {
+            pads: std::array::from_fn(|_| PadPedals {
                 chain: Chain::default(),
                 focus: None,
                 render: Latest::default().debounce(DEBOUNCE),
                 status: Status::Base,
-                slot: PADS[pad].sample,
-                rendered_slot: None,
                 pending: None,
                 requested: None,
                 landed: None,
@@ -124,7 +118,6 @@ impl Pedals {
             catalog_fn: Arc::new(move || brownnote::list(&list_bin, Duration::from_secs(5))),
             render_fn: Arc::new(render::render),
             add_open: false,
-            unloads: Vec::new(),
             catalog_request: Latest::default(),
         }
     }
@@ -198,19 +191,18 @@ pub fn scene(s: &mut State, kind: SceneKind) {
                         Status::Error("Rat Sketch / Distortion takes 0..120, not 200".into());
                 }
                 _ => {
-                    let sample = s.kit.samples[PADS[4].sample].clone();
-                    let Some(slot) = free_slot(s) else {
+                    let Some(source) = s.assets.source(pad_id(4)) else {
                         return;
                     };
-                    if !s.output.send(Command::Load {
-                        slot,
-                        sample: sample.clone(),
-                    }) {
+                    let mut imported = source.imported.clone();
+                    imported.asset.kind = MediaKind::RetainedRender;
+                    let ticket = s.assets.begin(pad_id(4));
+                    if s.assets
+                        .replace_retained(ticket, &imported, |command| s.output.send(command))
+                        .is_err()
+                    {
                         return;
                     }
-                    s.slots.set(slot, Some(sample));
-                    s.pedals.pads[4].slot = slot;
-                    s.pedals.pads[4].rendered_slot = Some(slot);
                     s.pedals.pads[4].status = Status::Ready {
                         seconds: 0.4,
                         clipped: false,
@@ -243,36 +235,35 @@ pub fn status_text(status: &Status) -> String {
     }
 }
 
-fn free_slot(s: &State) -> Option<usize> {
-    (0..SLOTS).find(|slot| s.slots.is_empty(*slot))
-}
-
 /// Point a pad back at its base file and release any rendered slot.
 fn reset_to_base(s: &mut State, pad: usize) {
-    if let Some(slot) = s.pedals.pads[pad].rendered_slot.take() {
-        queue_unload(s, slot);
-    }
-    s.pedals.pads[pad].slot = PADS[pad].sample;
+    s.assets
+        .reset_to_source(pad_id(pad), |command| s.output.send(command));
     s.pedals.pads[pad].status = Status::Base;
     s.pedals.pads[pad].pending = None;
     s.pedals.pads[pad].requested = None;
     s.pedals.pads[pad].landed = None;
-    s.rebuild_wave(pad, None);
 }
 
-/// Ask the mixer to drop a slot we no longer point at. It keeps holding the
-/// sample until the voice reading it ends, so the slot only comes back through
-/// `take_retired`. A full command queue must not lose the request.
-fn queue_unload(s: &mut State, slot: usize) {
-    if !s.pedals.unloads.contains(&slot) {
-        s.pedals.unloads.push(slot);
-    }
+pub(super) fn cancel_work(s: &mut State, pad: usize) {
+    s.pedals.pads[pad].render.cancel();
+    s.pedals.pads[pad].pending = None;
+    s.pedals.pads[pad].requested = None;
+    let (seconds, _) = s.pad_audio(pad);
+    s.pedals.pads[pad].status = match &s.pedals.pads[pad].landed {
+        Some((_, clipped)) => Status::Ready {
+            seconds,
+            clipped: *clipped,
+        },
+        None => Status::Base,
+    };
 }
 
-fn flush_unloads(s: &mut State) {
-    let mut pending = std::mem::take(&mut s.pedals.unloads);
-    pending.retain(|slot| !s.output.send(Command::Unload { slot: *slot }));
-    s.pedals.unloads = pending;
+pub(super) fn source_changed(s: &mut State, pad: usize) {
+    cancel_work(s, pad);
+    s.pedals.pads[pad].landed = None;
+    s.pedals.pads[pad].status = Status::Base;
+    request(s, pad);
 }
 
 /// Ask for a render of this pad's chain, or cancel it when the chain is empty.
@@ -282,6 +273,7 @@ pub fn request(s: &mut State, pad: usize) {
     }
     let chain = s.pedals.pads[pad].chain.clone();
     if chain.stages.is_empty() {
+        s.cancel_import(pad);
         s.pedals.pads[pad].render.cancel();
         reset_to_base(s, pad);
         return;
@@ -292,6 +284,9 @@ pub fn request(s: &mut State, pad: usize) {
     if s.pedals.pads[pad].requested.as_ref() == Some(&chain) {
         return;
     }
+    s.cancel_import(pad);
+    let ticket = s.assets.begin(pad_id(pad));
+    s.pedals.pads[pad].pending = None;
     // An edit that goes back to the chain the pad already plays cancels the
     // request and puts its answer back, so Escape on a cancelled drag costs
     // nothing.
@@ -307,7 +302,12 @@ pub fn request(s: &mut State, pad: usize) {
     let Some(catalog) = s.pedals.ready() else {
         return;
     };
-    let source = s.kit.samples[PADS[pad].sample].clone();
+    let Some(source) = s.assets.source(pad_id(pad)) else {
+        return;
+    };
+    let label = source.imported.label.clone();
+    let source = source.imported.sample.clone();
+    let owned = s.media.owned.clone();
     let (brownnote, cache, render_fn) = (
         s.pedals.brownnote.clone(),
         s.pedals.cache.clone(),
@@ -324,7 +324,13 @@ pub fn request(s: &mut State, pad: usize) {
             chain,
             timeout: Duration::from_secs(10),
         };
-        render_fn(&job)
+        let result = render_fn(&job).and_then(|rendered| {
+            let clipped = rendered.clipped.is_some_and(|count| count > 0);
+            retain(rendered.sample, label, owned.as_ref())
+                .map(|imported| Prepared { imported, clipped })
+                .map_err(|error| RenderError::Io(error.to_string()))
+        });
+        (ticket, result)
     });
 }
 
@@ -434,17 +440,12 @@ pub fn poll(s: &mut State) -> bool {
         };
         changed = true;
     }
-    flush_unloads(s);
-    let retired = s.output.take_retired();
-    for item in retired {
-        if let Returned::Retired { slot, .. } = item {
-            s.slots.set(slot, None);
-            changed = true;
-        }
-    }
+    changed |= s.poll_assets();
     for pad in 0..16 {
         let landed = s.pedals.pads[pad].render.take();
-        if let Some(result) = landed {
+        if let Some((ticket, result)) = landed
+            && s.assets.current(ticket)
+        {
             changed = true;
             match result {
                 Ok(rendered) => {
@@ -455,81 +456,57 @@ pub fn poll(s: &mut State) -> bool {
                         .clone()
                         .unwrap_or_else(|| s.pedals.pads[pad].chain.clone());
                     s.pedals.pads[pad].pending = None;
-                    land(s, pad, Some(chain), rendered);
+                    land(s, pad, chain, ticket, rendered);
                 }
                 Err(error) => {
+                    s.assets.report_error(ticket, error.to_string());
                     s.pedals.pads[pad].status = Status::Error(error.to_string());
                 }
             }
         }
-        retry_pending(s, pad);
+        changed |= retry_pending(s, pad);
     }
     changed
 }
 
 /// Try a render that was waiting for a free slot. Its chain must still be the
 /// one the pad holds, or it would put the sound of an abandoned edit back.
-fn retry_pending(s: &mut State, pad: usize) {
-    let Some((chain, _)) = s.pedals.pads[pad].pending.as_ref() else {
-        return;
+fn retry_pending(s: &mut State, pad: usize) -> bool {
+    let Some((chain, ticket, _)) = s.pedals.pads[pad].pending.as_ref() else {
+        return false;
     };
-    if chain != &s.pedals.pads[pad].chain {
+    if chain != &s.pedals.pads[pad].chain || !s.assets.current(*ticket) {
         s.pedals.pads[pad].pending = None;
-        return;
+        return true;
     }
-    let Some((chain, rendered)) = s.pedals.pads[pad].pending.take() else {
-        return;
+    let Some((chain, ticket, rendered)) = s.pedals.pads[pad].pending.take() else {
+        return false;
     };
-    land(s, pad, Some(chain), rendered);
+    land(s, pad, chain, ticket, rendered)
 }
 
 /// Give a render a slot and point the pad at it, or leave it waiting for a
 /// later poll when the slot table or the command queue has no room. Nothing is
 /// committed until the mixer has accepted the sample, so the slot stays
 /// provably free for the retry.
-fn land(s: &mut State, pad: usize, chain: Option<Chain>, rendered: Rendered) {
-    let hold = |s: &mut State, rendered: Rendered| {
-        let chain = chain
-            .clone()
-            .unwrap_or_else(|| s.pedals.pads[pad].chain.clone());
-        s.pedals.pads[pad].pending = Some((chain, rendered));
-    };
-    let Some(slot) = free_slot(s) else {
-        hold(s, rendered);
-        return;
-    };
-    // A `Load` dropped on a full queue would leave the slot reserved by the UI
-    // and empty in the mixer, which is a silent pad for good.
-    if !s.output.send(Command::Load {
-        slot,
-        sample: rendered.sample.clone(),
-    }) {
-        hold(s, rendered);
-        return;
-    }
-    let seconds = rendered.sample.data.len() as f32 / rendered.sample.rate as f32;
-    let clipped = rendered.clipped.is_some_and(|count| count > 0);
-    s.slots.set(slot, Some(rendered.sample.clone()));
-    if let Some(previous) = s.pedals.pads[pad].rendered_slot.replace(slot)
-        && previous != slot
+fn land(s: &mut State, pad: usize, chain: Chain, ticket: Replacement, rendered: Prepared) -> bool {
+    match s
+        .assets
+        .replace_retained(ticket, &rendered.imported, |command| s.output.send(command))
     {
-        queue_unload(s, previous);
-        flush_unloads(s);
-    }
-    s.pedals.pads[pad].slot = slot;
-    s.pedals.pads[pad].status = Status::Ready { seconds, clipped };
-    s.pedals.pads[pad].landed = chain.map(|chain| (chain, clipped));
-    s.rebuild_wave(pad, Some(&rendered.sample));
-}
-
-impl State {
-    fn rebuild_wave(&mut self, pad: usize, sample: Option<&Sample>) {
-        self.render_waves[pad] = sample.map(super::graphics::envelope);
-    }
-
-    pub fn pad_wave(&self, pad: usize) -> &super::graphics::Envelope {
-        self.render_waves[pad]
-            .as_ref()
-            .unwrap_or(&self.waveforms[PADS[pad].sample])
+        Ok(()) => {
+            let (seconds, _) = s.pad_audio(pad);
+            s.pedals.pads[pad].status = Status::Ready {
+                seconds,
+                clipped: rendered.clipped,
+            };
+            s.pedals.pads[pad].landed = Some((chain, rendered.clipped));
+            true
+        }
+        Err(RegistryError::Full | RegistryError::QueueFull) => {
+            s.pedals.pads[pad].pending = Some((chain, ticket, rendered));
+            false
+        }
+        Err(_) => false,
     }
 }

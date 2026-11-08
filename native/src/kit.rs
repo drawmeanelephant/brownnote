@@ -145,6 +145,37 @@ fn decode_wav_max(
 pub const WAVEFORM_BINS: usize = 96;
 pub type Waveform = [[f32; 2]; WAVEFORM_BINS];
 
+/// Lossless float32 WAV snapshot for retained renders and encoded fixtures.
+pub fn encode_wav(sample: &Sample) -> std::io::Result<Vec<u8>> {
+    use std::io::{Cursor, Error, ErrorKind};
+    if !(8_000..=192_000).contains(&sample.rate)
+        || sample.data.is_empty()
+        || sample.data.iter().any(|value| !value.is_finite())
+    {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "invalid retained sample",
+        ));
+    }
+    let mut bytes = Cursor::new(Vec::new());
+    let error = |e: hound::Error| Error::other(e.to_string());
+    let mut writer = hound::WavWriter::new(
+        &mut bytes,
+        hound::WavSpec {
+            channels: 1,
+            sample_rate: sample.rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        },
+    )
+    .map_err(error)?;
+    for value in sample.data.iter() {
+        writer.write_sample(*value).map_err(error)?;
+    }
+    writer.finalize().map_err(error)?;
+    Ok(bytes.into_inner())
+}
+
 /// Peak-preserving normalized preview, computed off the audio callback.
 pub fn waveform(sample: &Sample) -> Waveform {
     let mut bins = [[0.0_f32; 2]; WAVEFORM_BINS];
@@ -164,11 +195,70 @@ pub fn waveform(sample: &Sample) -> Waveform {
 
 pub struct Kit {
     pub samples: Box<[Sample]>,
+    pub media: [Option<EncodedSample>; 5],
     pub errors: [Option<String>; 5],
     pub banner: String,
 }
 
+pub struct EncodedSample {
+    pub imported: crate::import::Imported,
+    pub bytes: Arc<[u8]>,
+}
+
 impl Kit {
+    /// Capture, identify and decode one snapshot per file, before audio starts.
+    pub fn from_encoded(files: [Result<Vec<u8>, String>; 5]) -> Self {
+        let mut errors = std::array::from_fn(|_| None);
+        let mut media = std::array::from_fn(|_| None);
+        let samples = files
+            .into_iter()
+            .enumerate()
+            .map(|(i, bytes)| {
+                let decoded = bytes.and_then(|bytes| {
+                    decode_wav(bytes.as_slice(), Path::new(FILES[i]))
+                        .map(|sample| (bytes, sample))
+                        .map_err(|e| e.to_string())
+                });
+                match decoded {
+                    Ok((bytes, sample)) => {
+                        media[i] = Some(EncodedSample {
+                            imported: crate::import::Imported {
+                                asset: crate::project::Asset {
+                                    reference: crate::project::AssetRef::of(&bytes),
+                                    kind: crate::project::MediaKind::Source,
+                                },
+                                waveform: waveform(&sample),
+                                sample: sample.clone(),
+                                label: FILES[i].into(),
+                            },
+                            bytes: bytes.into(),
+                        });
+                        sample
+                    }
+                    Err(error) => {
+                        errors[i] = Some(error);
+                        Sample {
+                            data: Arc::from([]),
+                            rate: 44_100,
+                        }
+                    }
+                }
+            })
+            .collect();
+        let banner = errors
+            .iter()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        Self {
+            samples,
+            media,
+            errors,
+            banner,
+        }
+    }
+
     pub fn load(folder: &Path) -> Self {
         let folder = match crate::paths::Resolver::current()
             .and_then(|paths| paths.resolve(crate::paths::Resource::Samples, Some(folder)))
@@ -183,50 +273,15 @@ impl Kit {
                 } else {
                     error.to_string()
                 };
-                return Self {
-                    samples: (0..FILES.len())
-                        .map(|_| Sample {
-                            data: Arc::from([]),
-                            rate: 44_100,
-                        })
-                        .collect(),
-                    errors: std::array::from_fn(|_| Some(message.clone())),
-                    banner: message,
-                };
+                let mut kit = Self::from_encoded(std::array::from_fn(|_| Err(message.clone())));
+                kit.banner = message;
+                return kit;
             }
         };
-        let mut errors = std::array::from_fn(|_| None);
-        let samples = FILES
-            .iter()
-            .enumerate()
-            .map(|(i, file)| {
-                load_wav(&folder.join(file)).unwrap_or_else(|e| {
-                    errors[i] = Some(e.to_string());
-                    Sample {
-                        data: Arc::from([]),
-                        rate: 44_100,
-                    }
-                })
-            })
-            .collect();
-        let banner = if !folder.is_dir() {
-            format!(
-                "Sample folder not found: {}. Pass --samples DIR.",
-                folder.display()
-            )
-        } else {
-            errors
-                .iter()
-                .flatten()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(" · ")
-        };
-        Self {
-            samples,
-            errors,
-            banner,
-        }
+        Self::from_encoded(std::array::from_fn(|i| {
+            let path = folder.join(FILES[i]);
+            std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
+        }))
     }
 }
 

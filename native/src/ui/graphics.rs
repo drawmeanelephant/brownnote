@@ -1,4 +1,5 @@
 use super::{caption, ink};
+#[cfg(test)]
 use brownnote_native::engine::Sample;
 use rune::{Color, El, Shape, canvas, col, el, row};
 
@@ -6,6 +7,7 @@ use rune::{Color, El, Shape, canvas, col, el, row};
 pub(super) const BINS: usize = brownnote_native::kit::WAVEFORM_BINS;
 pub(super) type Envelope = brownnote_native::kit::Waveform;
 
+#[cfg(test)]
 pub(super) fn envelope(sample: &Sample) -> Envelope {
     brownnote_native::kit::waveform(sample)
 }

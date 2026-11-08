@@ -1,9 +1,11 @@
 //! Bounded worker for D3/D7 imports. No document writes or UI dependencies.
+mod session;
 use crate::{
     engine::Sample,
     kit::{Waveform, decode_wav, waveform},
     project::{Asset, AssetRef, MediaKind},
 };
+pub use session::SessionMedia;
 use std::{
     fmt,
     fs::{self, File, OpenOptions},
@@ -23,6 +25,26 @@ pub struct Imported {
     pub sample: Sample,
     pub waveform: Waveform,
     pub label: String,
+}
+
+/// Encode required retained audio and transfer ownership on the render worker.
+pub fn retain(
+    sample: Sample,
+    label: String,
+    publisher: &dyn MediaPublisher,
+) -> io::Result<Imported> {
+    let bytes = crate::kit::encode_wav(&sample)?;
+    let reference = AssetRef::of(&bytes);
+    publisher.publish(&reference, &bytes)?;
+    Ok(Imported {
+        asset: Asset {
+            reference,
+            kind: MediaKind::RetainedRender,
+        },
+        waveform: waveform(&sample),
+        sample,
+        label,
+    })
 }
 
 #[derive(Clone, Default)]
@@ -64,8 +86,9 @@ impl std::error::Error for ImportError {}
 pub type ReadFile = Arc<dyn Fn(&Path, &Cancellation) -> io::Result<Vec<u8>> + Send + Sync>;
 
 /// #100's boundary: publish these exact encoded bytes under reference.id,
-/// durably and without replacing an existing object. No project document
-/// mutation. Implementations must verify an existing object, not trust its name.
+/// without replacing an existing object. Durable publishers sync media before
+/// returning; SessionMedia explicitly owns unsaved bytes until adoption. No
+/// project document mutation. Verify existing objects, not just their names.
 pub trait MediaPublisher: Send + Sync {
     fn publish(&self, reference: &AssetRef, bytes: &[u8]) -> io::Result<()>;
 }

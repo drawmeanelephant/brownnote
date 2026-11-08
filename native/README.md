@@ -8,7 +8,9 @@ Play the included recordings, shape the next hit, and stop everything with Esc.
 The hardware-style panel has illuminated, color-coded pads, a selected-sample
 display, and a segmented output meter. Waveforms are peak-preserving,
 normalized previews of the actual WAVs, not live scopes or spectra. They are
-computed once when the kit loads, off the audio thread. Pad lights follow
+computed from owned media, off the audio thread. The pads show source
+waveforms; the selected display follows the currently audible retained render.
+Pad lights follow
 actual voice counts, with a short input flash even on muted hits. The output
 meter shows the engine's peak in dBFS with a decaying release; it is not a
 calibrated loudness meter. The UI stops requesting animation frames at rest.
@@ -124,8 +126,9 @@ changes.
 A chain edit renders in the background through `brownnote`, and the pad's
 next hit plays the result; the status reads `RENDERING…` then
 `READY 0.4 s`, with `· CLIPPED` when the bench reported clipping. A hit
-before the render lands uses the base sample, and a voice already playing
-keeps the sample it started with. The render includes 2 s of silence after
+before the first render lands uses the assigned source. Further edits keep the
+previous audible sound until the replacement is admitted, and a voice already
+playing keeps the sample it started with. The render includes 2 s of silence after
 the source so echoes and reverb ring out; trailing digital silence is trimmed
 before playback.
 
@@ -133,8 +136,11 @@ Renders are cached on disk by content, so the same chain on the same sample
 runs once; the clipping warning is cached with the audio, so it survives a
 hit. The resolved user cache lives in `$HOME/Library/Caches/Brownnote/pedals`
 (override with `--pedal-cache DIR` or `BROWNNOTE_CACHE`) and keeps the newest
-256 entries. Main/UI default wiring is an explicit integrator prerequisite
-in [Runtime paths](docs/paths.md), not a completed packaging claim. `--pedal-cache` may
+256 entries. Required source and retained-render bytes are separately owned by
+the unsaved session, never only by this evictable cache. See
+[Import and runtime ownership](docs/import-contract.md) for the service and
+store-adoption boundary. Runtime defaults follow
+[Runtime paths](docs/paths.md); this is not a packaging claim. `--pedal-cache` may
 name an existing folder of recordings: eviction only ever deletes files this
 cache wrote, whose names are 16 hex digits. Only the moved pots are passed,
 with names exactly as `--list` prints them.
@@ -275,8 +281,16 @@ Recovering or retrying a failed device starts a fresh voice pool.
 Pedal chains and renders do not survive a quit, and there is no patch
 persistence. Effects never run inside the audio callback: a render completes
 off the UI thread, and swapping it in is a `Load` on the command queue. The
-mixer holds 64 slots, so 5 kit files plus renders for every pad fit with room
-for retirements in flight.
+mixer holds 64 slots. One asset registry allocates sources and retained renders
+together; shared encoded assets reuse a slot. Replacements wait rather than
+overwrite occupied slots, and retired slots become reusable only after the
+mixer returns them.
+
+The import service is mounted through `State::import_sample`, without an
+import control yet. Decoding, hashing, copying and retained-media preparation
+run off the audio callback and ongoing UI interaction. The current session
+owns encoded source/render bytes in memory. They are not durable until adopted
+and saved through the real project store; no application save UI is claimed.
 
 Also deferred: sequencer, desk/mixer, library, loop station, recording,
 NINJAM, MIDI, sample browsing, hot reload, web/WASM, mobile,
