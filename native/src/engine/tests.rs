@@ -747,12 +747,17 @@ fn steal_tail_worst_phase_first_frame_improves_on_immediate_steal_fixture() {
 
 #[test]
 fn steal_tail_rendered_recordings_obey_fade_and_discontinuity_bounds() {
+    let samples = crate::paths::Resolver::current()
+        .unwrap()
+        .resolve(
+            crate::paths::Resource::Samples,
+            Some(std::path::Path::new(crate::kit::DEFAULT_SAMPLES)),
+        )
+        .unwrap();
     for rate in [44_100, 48_000] {
         let n = (f64::from(rate) / 200.0).ceil() as usize;
         for file in crate::kit::FILES {
-            let source =
-                crate::kit::load_wav(&std::path::Path::new(crate::kit::DEFAULT_SAMPLES).join(file))
-                    .unwrap();
+            let source = crate::kit::load_wav(&samples.join(file)).unwrap();
             let frames = (source.data.len() as f64 * f64::from(rate) / f64::from(source.rate))
                 .ceil() as usize;
             let (mut solo, _) = rig(vec![source.clone()], rate);

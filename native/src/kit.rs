@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-pub const DEFAULT_SAMPLES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../recordings");
+pub use crate::paths::DEFAULT_SAMPLES;
 pub const FILES: [&str; 5] = [
     "fart_dry.wav",
     "fart_fuzz.wav",
@@ -132,6 +132,31 @@ pub struct Kit {
 
 impl Kit {
     pub fn load(folder: &Path) -> Self {
+        let folder = match crate::paths::Resolver::current()
+            .and_then(|paths| paths.resolve(crate::paths::Resource::Samples, Some(folder)))
+        {
+            Ok(folder) => folder,
+            Err(error) => {
+                let message = if error.kind == crate::paths::PathErrorKind::Missing {
+                    format!(
+                        "Sample folder not found: {}. Pass --samples DIR.",
+                        error.path.as_deref().unwrap_or(folder).display()
+                    )
+                } else {
+                    error.to_string()
+                };
+                return Self {
+                    samples: (0..FILES.len())
+                        .map(|_| Sample {
+                            data: Arc::from([]),
+                            rate: 44_100,
+                        })
+                        .collect(),
+                    errors: std::array::from_fn(|_| Some(message.clone())),
+                    banner: message,
+                };
+            }
+        };
         let mut errors = std::array::from_fn(|_| None);
         let samples = FILES
             .iter()

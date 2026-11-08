@@ -1,22 +1,20 @@
-//! Finding and running the `brownnote` binary. The bench is brownnote's
-//! business: this module never passes `--bench`, so its own discovery
-//! (`--bench`, `BROWNNOTE_BENCH`, `vendor/GuitarPedal/...`) still applies.
+//! Finding and running optional pedal tooling through the runtime resolver.
 use super::catalog::{Catalog, ParseError};
 use std::{
     fmt,
-    io::{ErrorKind, Read},
+    io::Read,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     thread,
     time::{Duration, Instant},
 };
 
-/// The binary `make` builds, resolved at compile time.
-pub const DEFAULT_BIN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../build/brownnote");
+pub use crate::paths::DEFAULT_BIN;
 
 #[derive(Debug)]
 pub enum CatalogError {
     NotFound(PathBuf),
+    Path(crate::paths::PathError),
     NoBench(String),
     Failed { code: i32, stderr: String },
     Timeout,
@@ -28,12 +26,14 @@ impl fmt::Display for CatalogError {
         match self {
             Self::NotFound(path) => write!(
                 f,
-                "Pedals need brownnote: run `make` (looked for {})",
+                "Pedals need brownnote: run `make` or set --brownnote PATH / BROWNNOTE_BIN (looked for {}). Base pads still play.",
                 path.display()
             ),
-            Self::NoBench(_) => write!(
+            Self::Path(error) => write!(f, "Pedals unavailable; base pads still play. {error}"),
+            Self::NoBench(detail) => write!(
                 f,
-                "Pedals need the GuitarPedal bench: run `make -C vendor/GuitarPedal/Validation bench`"
+                "Pedals need the GuitarPedal bench: set BROWNNOTE_BENCH or run `make -C vendor/GuitarPedal/Validation bench`.{}{detail}",
+                if detail.is_empty() { "" } else { " " }
             ),
             Self::Failed { code, stderr } => {
                 let first = stderr.lines().next().unwrap_or("no message");
@@ -48,21 +48,26 @@ impl std::error::Error for CatalogError {}
 
 /// Run `path --list` and parse what it prints.
 pub fn list(path: &Path, timeout: Duration) -> Result<Catalog, CatalogError> {
-    let mut child = Command::new(path)
+    let mut command = crate::paths::Resolver::current()
+        .and_then(|paths| paths.pedal_command(Some(path), None))
+        .map_err(|error| {
+            if error.resource == crate::paths::Resource::Brownnote
+                && error.kind == crate::paths::PathErrorKind::Missing
+            {
+                CatalogError::NotFound(error.path.clone().unwrap_or_else(|| path.into()))
+            } else {
+                CatalogError::Path(error)
+            }
+        })?;
+    let mut child = command
         .arg("--list")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| {
-            if error.kind() == ErrorKind::NotFound {
-                CatalogError::NotFound(path.to_path_buf())
-            } else {
-                CatalogError::Failed {
-                    code: -1,
-                    stderr: error.to_string(),
-                }
-            }
+        .map_err(|error| CatalogError::Failed {
+            code: -1,
+            stderr: format!("{}: {error}", command.get_program().to_string_lossy()),
         })?;
     let deadline = Instant::now() + timeout;
     let status = loop {

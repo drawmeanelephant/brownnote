@@ -146,7 +146,14 @@ fn missing_folder_is_nonfatal_and_bad_file_only_disables_its_pads() {
     let directory = std::env::temp_dir().join(format!("brownnote-partial-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::copy(
-        Path::new(DEFAULT_SAMPLES).join(FILES[0]),
+        crate::paths::Resolver::current()
+            .unwrap()
+            .resolve(
+                crate::paths::Resource::Samples,
+                Some(Path::new(DEFAULT_SAMPLES)),
+            )
+            .unwrap()
+            .join(FILES[0]),
         directory.join(FILES[0]),
     )
     .unwrap();

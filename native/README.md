@@ -30,10 +30,11 @@ On this Mac, if `cargo` is not found:
 export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
 ```
 
-The app loads the five WAVs in the repository's `recordings/` directory.
-It does not need Python, GuitarPedal, kujamba, or a server. The default path
-is fixed at build time relative to `CARGO_MANIFEST_DIR`; when moving the
-binary elsewhere, supply your sample directory:
+The app loads five WAVs without Python, GuitarPedal, kujamba, or a server.
+Runtime defaults use the bounded executable-relative resource layout in
+[Runtime paths](docs/paths.md), with a narrow development layout for the
+commands above. No build-time checkout path is embedded in sample/tool
+defaults. An arbitrary binary location can use explicit paths:
 
 ```sh
 native/target/release/brownnote-native --samples /path/to/recordings
@@ -124,15 +125,21 @@ before playback.
 
 Renders are cached on disk by content, so the same chain on the same sample
 runs once; the clipping warning is cached with the audio, so it survives a
-hit. The cache lives in `native/target/pedal-cache` (override with
-`--pedal-cache DIR`) and keeps the newest 256 entries. `--pedal-cache` may
+hit. The resolved user cache lives in `$HOME/Library/Caches/Brownnote/pedals`
+(override with `--pedal-cache DIR` or `BROWNNOTE_CACHE`) and keeps the newest
+256 entries. Main/UI default wiring is an explicit integrator prerequisite
+in [Runtime paths](docs/paths.md), not a completed packaging claim. `--pedal-cache` may
 name an existing folder of recordings: eviction only ever deletes files this
 cache wrote, whose names are 16 hex digits. Only the moved pots are passed,
 with names exactly as `--list` prints them.
 
 `--brownnote PATH` points at a different `brownnote` binary for both the
-catalog and the renders; it defaults to `build/brownnote`. Bench discovery
-stays brownnote's own (`--bench`, `BROWNNOTE_BENCH`, `vendor/GuitarPedal/...`).
+catalog and the renders. Its runtime default is `tools/brownnote` beside
+the executable, or `build/brownnote` in the bounded development layout.
+`BROWNNOTE_BIN` also overrides it. `BROWNNOTE_BENCH` selects the bench;
+otherwise it uses `tools/bench` (the checkout vendor path in development).
+Both catalog and render calls pin this path with the C CLI's `--bench`,
+so another working directory cannot supply a different vendor tree.
 
 `--list-pedals` prints the routable catalog and exits without a window or an
 audio device; a missing binary, a missing bench or an unparsable list prints

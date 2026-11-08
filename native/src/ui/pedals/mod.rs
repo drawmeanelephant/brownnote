@@ -20,9 +20,9 @@ use rune::Latest;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 pub use view::{header, strip, tag};
 
-/// The cache `--pedal-cache` defaults to, under `native/target/`.
+/// The runtime resolver chooses the default writable machine cache.
 pub fn default_cache() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/target/pedal-cache"))
+    brownnote_native::paths::DEFAULT_CACHE.into()
 }
 
 /// The `brownnote` the app runs when `--brownnote` is absent.
