@@ -6,16 +6,20 @@ introduction, not a second full manual.
 
 ## Toolchain and local build
 
-- Zig **0.16.0**, Git, Bash, and `jq`.
-- Boris **`08969742f85238443ce5cd1cd53ceab1b1f3f85a`**, recorded once in
-  `docs/boris-pin.txt`. Its dependencies retain Boris's content-hash pins.
+- Zig **0.17.1**, pinned in `.zigversion`, plus Git, Bash, and `jq`.
+- Boris, pinned in `docs/boris-pin.txt`. The selected revision supports Zig
+  0.17, and its dependencies retain Boris's content-hash pins.
 - No Node, npm, bundler, or browser framework is needed.
 
 ```bash
 bash docs/build.sh
 ```
 
-The script fetches the exact compiler commit into an ignored, task-owned
+Local builds and CI read the same Zig version from `.zigversion`. The
+script rejects a different compiler before fetching Boris. CI verifies the
+Linux compiler archive with a pinned SHA-256 checksum.
+
+The script fetches the exact Boris commit into an ignored, task-owned
 `zig-cache` directory, builds it, validates the profile/content, compiles the
 site, enforces `boris proof verify`, and uses Boris's own artifact verifier.
 An existing mismatched or dirty checkout fails rather than being reset.
@@ -24,7 +28,8 @@ without permitting the script to replace it.
 
 Generated HTML goes to `docs/site/dist/`. Each build produces a fresh evidence
 directory containing the normalized plan, proof reports, compiler/source pins,
-artifact verification, and a **public-only** subtree. These paths are ignored.
+artifact verification, and a **public-only** subtree. Toolchain evidence
+includes the Zig version. These paths are ignored.
 Do not upload the entire repository or copy `_boris/proof` into Pages.
 
 ## Local preview and authoring
@@ -53,7 +58,19 @@ Keep brand/layout changes in `site/themes/brownnote/`. The shell and inline
 search derive from Boris's default theme, with its MIT notice shipped in assets.
 Do not add remote fonts, linked JS, trackers, or a second docs compiler.
 
-## Validate the binary
+## Run checks
+
+Check the docs toolchain gate without building Boris:
+
+```bash
+python3 tests/docs_toolchain.py
+```
+
+The test uses a temporary fixture to check accepted, unsupported, and malformed
+version pins. It needs Python 3 and never fetches a compiler or modifies a
+cached checkout.
+
+The C binary has a separate test suite:
 
 ```bash
 make test
@@ -86,7 +103,9 @@ HTTP audit; inspect the published navigation/search after the first merge.
 ## Update Boris deliberately
 
 Change `boris-pin.txt` only after checking upstream behavior and dependency
-pins. Rebuild, rerun proof/artifact checks, and test desktop,
-mobile, nested navigation, search, and no-JS navigation. Update the compiler
-provenance in the theme README if those sources change.
+pins. When changing Zig, update `.zigversion` and the official Linux archive's
+SHA-256 checksum in `.github/workflows/docs.yml`. Rebuild, rerun proof/artifact
+checks, and test desktop, mobile, nested navigation, search, and no-JS
+navigation. Update the compiler provenance in the theme README if those
+sources change.
 Keep docs authority separate from mutable test counts or historical receipts.

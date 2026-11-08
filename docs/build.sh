@@ -5,6 +5,8 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SITE="$ROOT/docs/site"
+ZIG_VERSION=$(tr -d '\r\n' < "$ROOT/.zigversion")
+[[ "$ZIG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid Zig version pin" >&2; exit 1; }
 PIN=$(tr -d '\r\n' < "$ROOT/docs/boris-pin.txt")
 [[ "$PIN" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid Boris commit pin" >&2; exit 1; }
 [[ $# -le 1 ]] || { echo "usage: bash docs/build.sh [PROFILE]" >&2; exit 2; }
@@ -22,7 +24,8 @@ jq -e '.input == "content" and (.targets | length == 1) and
   .targets[0].name == "public" and .targets[0].output == "dist" and
   .targets[0].public == true' "$PROFILE" >/dev/null ||
   { echo "docs profile must own content -> public/dist" >&2; exit 1; }
-[[ "$(zig version)" = "0.16.0" ]] || { echo "Zig 0.16.0 is required" >&2; exit 1; }
+command -v zig >/dev/null || { echo "Zig $ZIG_VERSION is required" >&2; exit 1; }
+[[ "$(zig version)" = "$ZIG_VERSION" ]] || { echo "Zig $ZIG_VERSION is required" >&2; exit 1; }
 
 if [[ ! -e "$SOURCE" ]]; then
   [[ -z "${BORIS_CHECKOUT:-}" ]] || { echo "external Boris checkout is missing" >&2; exit 1; }
@@ -47,8 +50,9 @@ fi
 DIRTY=false
 [[ -z "$(git -C "$ROOT" status --porcelain)" ]] || DIRTY=true
 jq -n --arg source "$(git -C "$ROOT" rev-parse HEAD)" \
-  --arg pin "$PIN" --arg compiler "$("$BORIS" --version)" --argjson dirty "$DIRTY" \
-  '{source_commit: $source, source_dirty: $dirty, boris_commit: $pin, compiler: $compiler}' \
+  --arg pin "$PIN" --arg zig "$ZIG_VERSION" \
+  --arg compiler "$("$BORIS" --version)" --argjson dirty "$DIRTY" \
+  '{source_commit: $source, source_dirty: $dirty, boris_commit: $pin, zig_version: $zig, compiler: $compiler}' \
   > "$EVIDENCE/toolchain.json"
 "$BORIS" validate --profile "$PROFILE"
 "$BORIS" plan --profile "$PROFILE" > "$EVIDENCE/publication-plan.json"

@@ -28,6 +28,7 @@ The brown note must flow.
 <div class="home-actions">
 <a href="getting-started.html">Run your first effect</a>
 <a href="guides/pipeline.html">Wire the pipeline</a>
+<a href="roadmap.html">Explore the roadmap</a>
 </div>
 
 <div class="specimen-card">
@@ -62,6 +63,14 @@ propagate unchanged.
 - [[getting-started|Start here]] for a working first run.
 - [[guides/index|Guides]] for the file pipeline, live rooms, [[guides/studio|preset songs and 16-step Studio UI]], and the recorded evidence.
 - [[reference/index|Reference]] for flags, effects, formats, and exit codes.
+
+## Where brownnote goes next
+
+The [[roadmap|public roadmap]] sets a native-first direction: portable
+projects, faithful loop recording, playable instruments, LADSPA and CLAP
+plugins, and editable sessions in SoundCraft. It separates proposed goals
+from today's features and lays out the milestones needed to prove them.
+Feedback from musicians and contributors is welcome.
 
 No tracking, remote fonts, or application framework. This manual is compiled
 to static files by [Boris](https://github.com/drawmeanelephant/boris).
