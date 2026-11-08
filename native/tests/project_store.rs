@@ -6,6 +6,7 @@ use brownnote_native::{
     pedals::render::{Chain, Stage},
     project::{
         Asset, AssetId, AssetRef, Document, DocumentError, MediaKind, SampleAssignment, media,
+        recovery::OpenChoice,
         store::{CommitState, FileSystem, GenerationId, MediaSource, Store, StoreError, SystemFs},
     },
 };
@@ -310,7 +311,7 @@ impl FileSystem for FaultFs {
         self.moving("rename", from, to, |fs| fs.rename(from, to))
     }
     fn link(&mut self, from: &Path, to: &Path) -> io::Result<()> {
-        let race = self.race_import;
+        let race = self.race_import && to.parent().is_some_and(|path| path.ends_with("media"));
         self.moving("link", from, to, |fs| {
             if race {
                 // Another immutable publisher wins just before our no-replace link.
@@ -452,8 +453,21 @@ fn every_save_boundary_before_after_and_partial_write_is_retryable() {
                     }
                     CommitState::Unknown(_) => assert_eq!(event.kind, "publish"),
                     CommitState::PublishedNotDurable(_) => {
-                        assert_eq!(event.kind, "sync_dir");
+                        // Publication is complete even if later sync/evidence fails.
+                        assert!(fs.events.iter().any(|event| event.kind == "publish"));
                         assert_eq!(current.unwrap().document, fixture.b);
+                    }
+                }
+                let options = Store::new(fixture.root.clone()).recovery_options();
+                if let Ok(options) = options {
+                    for id in options.recoverable {
+                        let recovered = Store::new(fixture.root.clone())
+                            .open(OpenChoice::Committed(id))
+                            .unwrap();
+                        if matches!(failure.commit, CommitState::Unchanged) {
+                            assert_eq!(Some(id), previous);
+                            assert_eq!(recovered.document(), &fixture.a);
+                        }
                     }
                 }
                 if let Some(id) = previous {
@@ -594,9 +608,11 @@ fn real_filesystem_relocation_shared_media_retained_wav_without_bench() {
         fs::remove_file(path).unwrap();
     }
     let mut store = Store::new(relocated.clone());
-    let loaded = store.inspect_committed().unwrap().unwrap();
+    let prepared = store.open(OpenChoice::Current).unwrap();
+    let loaded = prepared.inspection();
     assert_eq!(loaded.document, fixture.b);
-    assert_eq!(store.inspect_snapshot(first).unwrap().document, fixture.a);
+    let previous = store.open(OpenChoice::Committed(first)).unwrap();
+    assert_eq!(previous.document(), &fixture.a);
     assert!(!fixture.root.exists());
     // Two generations share one source and retain both authoritative renders.
     assert_eq!(fs::read_dir(relocated.join("media")).unwrap().count(), 3);
@@ -611,6 +627,12 @@ fn real_filesystem_relocation_shared_media_retained_wav_without_bench() {
             .reference;
         let path = media::resolve_verified(&relocated, reference).unwrap();
         let sample = kit::load_wav(&path).unwrap();
+        let owned = kit::decode_wav(
+            Cursor::new(&prepared.media()[&audible][..]),
+            Path::new("relocated-retained.wav"),
+        )
+        .unwrap();
+        assert_eq!(&*owned.data, &*sample.data);
         assert_eq!(sample.rate, 48_000);
         assert_eq!(sample.data.len(), 480);
         assert!(sample.data.iter().all(|&v| v == -12_000.0 / 32768.0));
@@ -635,6 +657,390 @@ fn real_filesystem_relocation_shared_media_retained_wav_without_bench() {
     let same = store.save(&loaded.document, &[]).unwrap();
     assert_eq!(same.generation, receipt.generation);
     assert_eq!(same.previous, Some(receipt.generation));
+}
+
+// One deterministic byte-level witness for all read-only failure/retry checks.
+fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, path: &Path, result: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            if path.is_dir() {
+                result.insert(relative, Vec::new());
+                visit(root, &path, result);
+            } else {
+                result.insert(relative, fs::read(path).unwrap());
+            }
+        }
+    }
+    let mut result = BTreeMap::new();
+    visit(root, root, &mut result);
+    result
+}
+
+#[test]
+fn complete_candidates_and_abandoned_staging_are_not_committed_history() {
+    let fixture = Fixture::new();
+    let first = fixture.seed();
+    let mut failed = Store::with_fs(
+        fixture.root.clone(),
+        FaultFs {
+            fault: Some(Fault::Publish),
+            ..Default::default()
+        },
+    );
+    let CommitState::Unknown(candidate) = failed
+        .save(&fixture.b, &fixture.sources_b)
+        .unwrap_err()
+        .commit
+    else {
+        panic!("fixture must fail just before publish")
+    };
+    // The old API quite deliberately allows this complete, uncommitted snapshot.
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .inspect_snapshot(candidate)
+            .unwrap()
+            .document,
+        fixture.b
+    );
+    fixture.abandoned();
+    let before = tree(&fixture.root);
+    let mut store = Store::new(fixture.root.clone());
+    let options = store.recovery_options().unwrap();
+    assert_eq!(options.current, Ok(Some(first)));
+    assert_eq!(options.recoverable, vec![first]);
+    assert_eq!(options.unconfirmed, vec![candidate]);
+    assert!(options.rejected.is_empty());
+    assert_eq!(
+        store.open(OpenChoice::Committed(candidate)).unwrap_err(),
+        StoreError::UncommittedGeneration(candidate)
+    );
+    assert_eq!(
+        store.open(OpenChoice::Current).unwrap().document(),
+        &fixture.a
+    );
+    assert_eq!(store.recovery_options().unwrap(), options);
+    assert_eq!(tree(&fixture.root), before);
+}
+
+#[test]
+fn corrupt_current_offers_explicit_complete_recovery_without_rewriting_anything() {
+    for corruption in ["document", "missing-render", "changed-render"] {
+        let fixture = Fixture::new();
+        let first = fixture.seed();
+        let latest = Store::new(fixture.root.clone())
+            .save(&fixture.b, &fixture.sources_b)
+            .unwrap()
+            .generation;
+        let rendered = fixture
+            .root
+            .join(fixture.b.assets[1].reference.id.relative_path());
+        match corruption {
+            "document" => fs::write(fixture.root.join("project.json"), b"{broken").unwrap(),
+            "missing-render" => fs::remove_file(&rendered).unwrap(),
+            _ => {
+                let mut bytes = fs::read(&rendered).unwrap();
+                bytes[44] ^= 1;
+                fs::write(&rendered, bytes).unwrap();
+            }
+        }
+        let before = tree(&fixture.root);
+        let mut active = fixture.b.clone();
+        let mut store = Store::new(fixture.root.clone());
+        let result = store.open(OpenChoice::Current);
+        if let Ok(prepared) = &result {
+            active = prepared.document().clone();
+        }
+        assert!(result.is_err());
+        let options = store.recovery_options().unwrap();
+        assert!(options.current.is_err());
+        assert!(options.recoverable.contains(&first));
+        if corruption == "document" {
+            assert!(options.recoverable.contains(&latest));
+        } else {
+            assert!(!options.recoverable.contains(&latest));
+            assert!(options.rejected.iter().any(|(id, _)| *id == latest));
+            assert!(store.open(OpenChoice::Committed(latest)).is_err());
+        }
+        // Nothing changes until a caller explicitly chooses a recovery identity.
+        assert_eq!(active, fixture.b);
+        let selected = store.open(OpenChoice::Committed(first)).unwrap();
+        assert_eq!(selected.document(), &fixture.a);
+        for asset in &fixture.a.assets {
+            assert_eq!(
+                &*selected.media()[&asset.reference.id],
+                fs::read(fixture.root.join(asset.reference.id.relative_path())).unwrap()
+            );
+        }
+        assert_eq!(active, fixture.b);
+        assert_eq!(store.recovery_options().unwrap(), options);
+        assert_eq!(tree(&fixture.root), before);
+    }
+}
+
+#[test]
+fn every_open_and_recovery_read_fault_preserves_active_project_and_source_bytes() {
+    let fixture = Fixture::new();
+    let first = fixture.seed();
+    fixture.abandoned();
+    let before = tree(&fixture.root);
+    let mut cases = 0;
+    for choice in [OpenChoice::Current, OpenChoice::Committed(first)] {
+        let mut baseline = Store::with_fs(fixture.root.clone(), FaultFs::default());
+        baseline.open(choice).unwrap();
+        let events = baseline.into_fs().events;
+        for index in 0..events.len() {
+            for moment in [Moment::Before, Moment::After] {
+                let mut active = fixture.b.clone();
+                let mut store =
+                    Store::with_fs(fixture.root.clone(), FaultFs::failing(index, moment));
+                // Exercise the caller's apply-on-success pattern with an existing kit.
+                let result = store.open(choice);
+                if let Ok(prepared) = &result {
+                    active = prepared.document().clone();
+                }
+                assert!(result.is_err());
+                assert_eq!(active, fixture.b);
+                let fs = store.into_fs();
+                assert!(fs.fired);
+                assert!(
+                    fs.events
+                        .iter()
+                        .all(|e| ["check_dir", "read"].contains(&e.kind))
+                );
+                assert_eq!(tree(&fixture.root), before);
+                assert_eq!(
+                    Store::new(fixture.root.clone())
+                        .open(choice)
+                        .unwrap()
+                        .document(),
+                    &fixture.a
+                );
+                cases += 1;
+            }
+        }
+    }
+    let mut baseline = Store::with_fs(fixture.root.clone(), FaultFs::default());
+    baseline.recovery_options().unwrap();
+    let events = baseline.into_fs().events;
+    for index in 0..events.len() {
+        for moment in [Moment::Before, Moment::After] {
+            let mut store = Store::with_fs(fixture.root.clone(), FaultFs::failing(index, moment));
+            let result = store.recovery_options();
+            match result {
+                Err(_) => {}
+                Ok(options) => assert!(
+                    options.current.is_err() || !options.rejected.is_empty(),
+                    "fault must not disappear from recovery diagnostics"
+                ),
+            }
+            let fs = store.into_fs();
+            assert!(fs.fired);
+            assert!(
+                fs.events
+                    .iter()
+                    .all(|e| ["check_dir", "list", "read"].contains(&e.kind))
+            );
+            assert_eq!(tree(&fixture.root), before);
+            cases += 1;
+        }
+    }
+    println!("exercised {cases} open/recovery read fault cases");
+}
+
+#[test]
+fn legacy_snapshots_stay_unconfirmed_until_observed_as_current() {
+    let fixture = Fixture::new();
+    let first = fixture.seed();
+    // This is the real first-slice layout, which had snapshots but no evidence.
+    fs::remove_dir_all(fixture.root.join(".brownnote-store/committed")).unwrap();
+    let mut store = Store::new(fixture.root.clone());
+    assert_eq!(
+        store.open(OpenChoice::Current).unwrap().document(),
+        &fixture.a
+    );
+    let before = tree(&fixture.root);
+    assert!(store.recovery_options().unwrap().recoverable.is_empty());
+    assert_eq!(tree(&fixture.root), before);
+    store.save(&fixture.b, &fixture.sources_b).unwrap();
+    fs::write(fixture.root.join("project.json"), b"{broken").unwrap();
+    assert_eq!(
+        store.open(OpenChoice::Committed(first)).unwrap().document(),
+        &fixture.a
+    );
+}
+
+#[test]
+fn invalid_evidence_or_snapshot_never_becomes_a_recovery_choice() {
+    for corrupt in ["evidence", "snapshot", "missing-snapshot"] {
+        let fixture = Fixture::new();
+        let first = fixture.seed();
+        match corrupt {
+            "evidence" => fs::write(
+                fixture
+                    .root
+                    .join(".brownnote-store/committed")
+                    .join(first.to_string()),
+                b"partial or foreign marker",
+            )
+            .unwrap(),
+            "snapshot" => fs::write(fixture.root.join(first.relative_path()), b"{}").unwrap(),
+            _ => fs::remove_file(fixture.root.join(first.relative_path())).unwrap(),
+        }
+        let before = tree(&fixture.root);
+        let mut store = Store::new(fixture.root.clone());
+        let options = store.recovery_options().unwrap();
+        assert!(options.recoverable.is_empty());
+        assert_eq!(options.rejected.len(), 1);
+        assert_eq!(options.rejected[0].0, first);
+        assert!(store.open(OpenChoice::Committed(first)).is_err());
+        assert_eq!(
+            store.open(OpenChoice::Current).unwrap().document(),
+            &fixture.a
+        );
+        assert_eq!(tree(&fixture.root), before);
+    }
+}
+
+#[test]
+fn prepared_open_owns_verified_media_instead_of_reopening_paths() {
+    let fixture = Fixture::new();
+    fixture.seed();
+    let prepared = Store::new(fixture.root.clone())
+        .open(OpenChoice::Current)
+        .unwrap();
+    fs::remove_dir_all(&fixture.root).unwrap();
+    for source in &fixture.sources_a {
+        fs::remove_file(&source.path).unwrap();
+    }
+    for asset in &fixture.a.assets {
+        assert_eq!(
+            AssetRef::of(&prepared.media()[&asset.reference.id]),
+            asset.reference
+        );
+    }
+    let audible = prepared.document().pads[0]
+        .sample
+        .as_ref()
+        .unwrap()
+        .audible();
+    let sample = kit::decode_wav(
+        Cursor::new(&prepared.media()[&audible][..]),
+        Path::new("owned-retained.wav"),
+    )
+    .unwrap();
+    assert!(sample.data.iter().all(|&value| value == 8_000.0 / 32768.0));
+}
+
+#[test]
+fn absent_current_is_not_silently_recovered_and_missing_source_is_identified() {
+    let fixture = Fixture::new();
+    let first = fixture.seed();
+    fs::remove_file(fixture.root.join("project.json")).unwrap();
+    let before = tree(&fixture.root);
+    let mut store = Store::new(fixture.root.clone());
+    assert_eq!(
+        store.open(OpenChoice::Current).unwrap_err(),
+        StoreError::NoCommittedProject
+    );
+    let options = store.recovery_options().unwrap();
+    assert_eq!(options.current, Ok(None));
+    assert_eq!(options.recoverable, vec![first]);
+    assert_eq!(tree(&fixture.root), before);
+    let source = fixture.a.assets[0].reference.id;
+    fs::remove_file(fixture.root.join(source.relative_path())).unwrap();
+    let before = tree(&fixture.root);
+    assert_eq!(
+        store.open(OpenChoice::Committed(first)).unwrap_err(),
+        StoreError::Media(media::MediaError::Missing(source))
+    );
+    assert!(store.recovery_options().unwrap().recoverable.is_empty());
+    assert_eq!(tree(&fixture.root), before);
+}
+
+#[test]
+fn invalid_settings_references_and_unknown_fields_fail_before_caller_apply() {
+    let fixture = Fixture::new();
+    fixture.seed();
+    let value = serde_json::to_value(&fixture.a).unwrap();
+    for mutate in [
+        |v: &mut serde_json::Value| v["pads"][0]["gain"] = 2.0.into(),
+        |v: &mut serde_json::Value| v["pads"][0]["sample"]["retained"] = serde_json::Value::Null,
+        |v: &mut serde_json::Value| {
+            v["assets"].as_array_mut().unwrap().pop();
+        },
+        |v: &mut serde_json::Value| v["future_state"] = true.into(),
+    ] {
+        let mut invalid = value.clone();
+        mutate(&mut invalid);
+        fs::write(
+            fixture.root.join("project.json"),
+            serde_json::to_vec(&invalid).unwrap(),
+        )
+        .unwrap();
+        let before = tree(&fixture.root);
+        let mut active = fixture.b.clone();
+        let result = Store::new(fixture.root.clone()).open(OpenChoice::Current);
+        if let Ok(prepared) = &result {
+            active = prepared.document().clone();
+        }
+        assert!(matches!(result, Err(StoreError::Document(_))));
+        assert_eq!(active, fixture.b);
+        assert_eq!(tree(&fixture.root), before);
+    }
+}
+
+#[test]
+fn historical_v1_opens_exact_bytes_and_unsupported_versions_never_migrate_or_overwrite() {
+    let fixture = Fixture::new();
+    fs::create_dir(&fixture.root).unwrap();
+    fs::create_dir(fixture.root.join("media")).unwrap();
+    let v1 = include_bytes!("fixtures/project-v1/project.json");
+    let current = fixture.root.join("project.json");
+    fs::write(&current, v1).unwrap();
+    let mut store = Store::new(fixture.root.clone());
+    let prepared = store.open(OpenChoice::Current).unwrap();
+    assert_eq!(prepared.document(), &Document::default());
+    assert_eq!(prepared.inspection().bytes, v1);
+    assert!(prepared.media().is_empty());
+    assert!(!fixture.root.join(".brownnote-store").exists());
+    // v0 is deliberately not a historical fixture: no native v0 ever shipped.
+    for (bytes, expected) in [
+        (
+            b"{\"version\":0}".as_slice(),
+            DocumentError::OlderVersion(0),
+        ),
+        (
+            b"{\"version\":2,\"unknown\":true}".as_slice(),
+            DocumentError::NewerVersion(2),
+        ),
+        (
+            b"{\"version\":4294967295}".as_slice(),
+            DocumentError::NewerVersion(u32::MAX),
+        ),
+        (
+            b"{\"version\":4294967296}".as_slice(),
+            DocumentError::InvalidDocument,
+        ),
+        (b"{}".as_slice(), DocumentError::InvalidDocument),
+        (b"{".as_slice(), DocumentError::MalformedJson),
+    ] {
+        fs::write(&current, bytes).unwrap();
+        let before = tree(&fixture.root);
+        let mut active = fixture.a.clone();
+        let result = store.open(OpenChoice::Current);
+        if let Ok(prepared) = &result {
+            active = prepared.document().clone();
+        }
+        assert_eq!(result.unwrap_err(), StoreError::Document(expected.clone()));
+        assert_eq!(active, fixture.a);
+        assert_eq!(
+            store.recovery_options().unwrap().current,
+            Err(StoreError::Document(expected))
+        );
+        assert_eq!(tree(&fixture.root), before);
+    }
 }
 
 #[test]

@@ -134,6 +134,16 @@ impl GenerationId {
             .join("versions")
             .join(format!("{}.json", self.0))
     }
+
+    pub(super) fn from_name(name: &str) -> Option<Self> {
+        name.parse::<AssetId>().ok().map(Self)
+    }
+
+    pub(super) fn evidence_path(self) -> PathBuf {
+        PathBuf::from(PRIVATE)
+            .join("committed")
+            .join(self.to_string())
+    }
 }
 
 impl fmt::Display for GenerationId {
@@ -164,6 +174,9 @@ pub enum StoreError {
     Media(MediaError),
     InvalidSources,
     SnapshotMismatch(GenerationId),
+    InvalidCommitEvidence(GenerationId),
+    UncommittedGeneration(GenerationId),
+    NoCommittedProject,
     InvalidRoot,
 }
 
@@ -190,7 +203,7 @@ pub enum CommitState {
     Unchanged,
     /// Publish returned an error; it may have taken effect. Inspect to decide.
     Unknown(GenerationId),
-    /// Publish returned success, but the final directory sync failed.
+    /// Publish succeeded, but postcommit sync or evidence recording failed.
     PublishedNotDurable(GenerationId),
 }
 
@@ -215,8 +228,8 @@ pub struct SaveReceipt {
 /// One store per project is usual; an OS file lock also excludes other writers.
 /// The root's parent must already exist. No UI state is mutated by this API.
 pub struct Store<F = SystemFs> {
-    root: PathBuf,
-    fs: F,
+    pub(super) root: PathBuf,
+    pub(super) fs: F,
 }
 
 impl Store<SystemFs> {
@@ -247,7 +260,7 @@ impl<F: FileSystem> Store<F> {
     }
 
     /// A complete immutable snapshot, not evidence that it was ever committed.
-    /// Recovery selection and migration policy intentionally belong to later work.
+    /// Use `open(OpenChoice::Committed(id))` for explicit evidenced recovery.
     pub fn inspect_snapshot(&mut self, id: GenerationId) -> Result<Inspection, StoreError> {
         self.fs.check_dir(&self.root)?;
         self.fs.check_dir(&self.private())?;
@@ -263,16 +276,28 @@ impl<F: FileSystem> Store<F> {
         let document = Document::decode(&bytes)?;
         self.fs.check_dir(&self.root.join("media"))?;
         for asset in &document.assets {
-            let media = self
-                .fs
-                .read(&self.root.join(asset.reference.id.relative_path()))?;
-            verify(&asset.reference, &media)?;
+            self.read_media(&asset.reference)?;
         }
         Ok(Inspection {
             generation: GenerationId(AssetId::of(&bytes)),
             document,
             bytes,
         })
+    }
+
+    pub(super) fn read_media(&mut self, reference: &AssetRef) -> Result<Vec<u8>, StoreError> {
+        let id = reference.id;
+        let bytes = self
+            .fs
+            .read(&self.root.join(id.relative_path()))
+            .map_err(|e| {
+                StoreError::Media(match e.kind() {
+                    io::ErrorKind::NotFound => MediaError::Missing(id),
+                    kind => MediaError::Io { id, kind },
+                })
+            })?;
+        verify(reference, &bytes)?;
+        Ok(bytes)
     }
 
     pub fn save(
@@ -285,7 +310,7 @@ impl<F: FileSystem> Store<F> {
             .map_err(|error| SaveFailure { commit, error })
     }
 
-    fn private(&self) -> PathBuf {
+    pub(super) fn private(&self) -> PathBuf {
         self.root.join(PRIVATE)
     }
 
@@ -316,6 +341,7 @@ impl<F: FileSystem> Store<F> {
         for dir in [
             self.root.join("media"),
             self.private().join("versions"),
+            self.private().join("committed"),
             self.private().join("staging"),
         ] {
             self.fs.ensure_dir(&dir)?;
@@ -335,6 +361,8 @@ impl<F: FileSystem> Store<F> {
             }
             self.fs.sync_dir(&self.root.join("media"))?;
             self.snapshot(&old.bytes, old.generation)?;
+            // Only an observed current document, never a candidate snapshot.
+            self.record_committed(old.generation)?;
         }
 
         // Read and validate *all* sources into owned staging before publishing
@@ -392,10 +420,29 @@ impl<F: FileSystem> Store<F> {
         *commit = CommitState::PublishedNotDurable(generation);
         self.fs.sync_dir(&self.private().join("staging"))?;
         self.fs.sync_dir(&self.root)?;
+        self.record_committed(generation)?;
         Ok(SaveReceipt {
             generation,
             previous: previous.map(|old| old.generation),
         })
+    }
+
+    fn record_committed(&mut self, id: GenerationId) -> Result<(), StoreError> {
+        let destination = self.root.join(id.evidence_path());
+        match self.fs.read(&destination) {
+            Ok(bytes) if bytes.is_empty() => self.fs.sync_existing(&destination)?,
+            Ok(_) => return Err(StoreError::InvalidCommitEvidence(id)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let staged = self.stage("commit.tmp");
+                self.write_synced(&staged, &[])?;
+                self.fs.link(&staged, &destination)?;
+                self.fs.remove(&staged)?;
+            }
+            Err(e) => return Err(e.into()),
+        }
+        self.fs.sync_dir(&self.private().join("committed"))?;
+        self.fs.sync_dir(&self.private().join("staging"))?;
+        Ok(())
     }
 
     fn write_synced(&mut self, path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
@@ -434,6 +481,7 @@ impl<F: FileSystem> Store<F> {
             };
             let owned = name == "document.tmp"
                 || name == "version.tmp"
+                || name == "commit.tmp"
                 || name
                     .strip_prefix("media-")
                     .and_then(|name| name.strip_suffix(".tmp"))
