@@ -1,0 +1,52 @@
+{
+  "backend_candidate": "midir =0.11.1 (CoreMIDI, default features)",
+  "existing_iac_name_count": 0,
+  "existing_input_count": 0,
+  "existing_ports_opened": 0,
+  "explicit_close_stopped_callbacks": true,
+  "final_input_count": 0,
+  "owned_endpoints_removed": true,
+  "platform": "aarch64-apple-darwin",
+  "same_name_recreation_changed_port_id": true,
+  "samples": [
+    {
+      "backend_timestamp_us": 347051711638,
+      "bytes": [
+        145,
+        40,
+        1
+      ],
+      "host_elapsed_ns": 635736583
+    },
+    {
+      "backend_timestamp_us": 347051886210,
+      "bytes": [
+        145,
+        40,
+        127
+      ],
+      "host_elapsed_ns": 810311500
+    },
+    {
+      "backend_timestamp_us": 347052084736,
+      "bytes": [
+        145,
+        40,
+        0
+      ],
+      "host_elapsed_ns": 1008835333
+    },
+    {
+      "backend_timestamp_us": 347052259277,
+      "bytes": [
+        145,
+        40,
+        64
+      ],
+      "host_elapsed_ns": 1183382083
+    }
+  ],
+  "scope": "owned CoreMIDI virtual source only; not IAC, controller, audio, or production input",
+  "source_removal_enumerated": true,
+  "stale_port_name_error": true
+}
