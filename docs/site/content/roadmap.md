@@ -210,16 +210,16 @@ the sequencer grid.
 
 ### M3. My loop becomes an editable SoundCraft session {#m3-soundcraft}
 
+Add one existing sampled instrument so the take has real notes to edit.
 Export an actual native take, not only a fixture. Verify clip positions,
 note data, and media references in the tested SoundCraft version. Complete
 the edit, save, and reopen demonstration from G6.
 
 ### M4. My kit includes other instruments and plugins {#m4-instruments}
 
-Expand G4 and G5 using the feasibility results. Deliver one sampled
-instrument backend, LADSPA pad rendering, CLAP effects, and live CLAP
-instruments in separately testable steps. Every step keeps project recall
-and export working.
+Expand G4 and G5 using the feasibility results. Deliver LADSPA pad
+rendering, CLAP effects, and live CLAP instruments in separately testable
+steps. Every step keeps project recall and export working.
 
 ### M5. My external instruments join the session {#m5-external}
 
