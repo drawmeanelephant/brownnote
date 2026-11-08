@@ -1,6 +1,11 @@
 use crate::engine::{Command, Meters, Mixer, QUEUE_CAPACITY, Returned, SLOTS, Sample, Slots};
+use crate::performance::{
+    MusicalPosition, OriginalTime, PerformanceError, SampleRate, StreamEpoch, Tempo,
+    rounded_stream_frame,
+    scheduler::{ScheduleResult, ScheduleSender, ScheduledEvent},
+};
 use cpal::{
-    BufferSize, DeviceId, OutputStreamTimestamp, SampleFormat, Stream, StreamConfig,
+    BufferSize, DeviceId, OutputStreamTimestamp, SampleFormat, Stream, StreamConfig, StreamInstant,
     SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
@@ -171,6 +176,12 @@ pub fn output_devices() -> Result<Vec<DeviceInfo>, AudioError> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StreamId(u64);
 
+impl StreamId {
+    pub fn epoch(self) -> StreamEpoch {
+        StreamEpoch(self.0)
+    }
+}
+
 /// One callback's first output frame and CPAL's predicted presentation time.
 /// Instants may only be compared within the same stream_id. This is not a
 /// wall-clock mapping, a scheduler, or a round-trip latency measurement.
@@ -183,8 +194,87 @@ pub struct PlaybackTimestamp {
     pub timestamp: OutputStreamTimestamp,
 }
 
+/// Off-thread conversion in one stream's CPAL host-clock domain. The caller
+/// supplies take time at predicted playback, not at callback invocation.
+/// This does not equate UI Instant or MIDI driver clocks with CPAL instants.
+#[derive(Clone, Copy, Debug)]
+pub struct PlaybackScheduleClock {
+    pub observation: PlaybackTimestamp,
+    pub take_time_at_playback: OriginalTime,
+}
+
+impl PlaybackScheduleClock {
+    fn check(&self, epoch: StreamEpoch) -> Result<(), PerformanceError> {
+        if epoch != self.observation.stream_id.epoch() {
+            return Err(PerformanceError::StaleEpoch);
+        }
+        Ok(())
+    }
+
+    fn delta_nanos(&self, instant: StreamInstant) -> i128 {
+        let playback = self.observation.timestamp.playback;
+        if instant >= playback {
+            instant.duration_since(playback).as_nanos() as i128
+        } else {
+            -(playback.duration_since(instant).as_nanos() as i128)
+        }
+    }
+
+    pub fn original_time(
+        &self,
+        epoch: StreamEpoch,
+        instant: StreamInstant,
+    ) -> Result<OriginalTime, PerformanceError> {
+        self.check(epoch)?;
+        let n = i128::from(self.take_time_at_playback.nanos()) + self.delta_nanos(instant);
+        if n < 0 {
+            return Err(PerformanceError::BeforeTake);
+        }
+        u64::try_from(n)
+            .map(OriginalTime::from_nanos)
+            .map_err(|_| PerformanceError::Overflow)
+    }
+
+    pub fn frame_for_host(
+        &self,
+        epoch: StreamEpoch,
+        instant: StreamInstant,
+    ) -> Result<u64, PerformanceError> {
+        self.check(epoch)?;
+        let n = i128::from(self.observation.first_frame) * 1_000_000_000
+            + self.delta_nanos(instant) * i128::from(self.observation.sample_rate.get());
+        rounded_stream_frame(n, 1_000_000_000)
+    }
+
+    pub fn frame_for_original(
+        &self,
+        epoch: StreamEpoch,
+        time: OriginalTime,
+    ) -> Result<u64, PerformanceError> {
+        self.check(epoch)?;
+        let delta = i128::from(time.nanos()) - i128::from(self.take_time_at_playback.nanos());
+        let n = i128::from(self.observation.first_frame) * 1_000_000_000
+            + delta * i128::from(self.observation.sample_rate.get());
+        rounded_stream_frame(n, 1_000_000_000)
+    }
+
+    pub fn frame_for_position(
+        &self,
+        epoch: StreamEpoch,
+        position: MusicalPosition,
+        tempo: Tempo,
+    ) -> Result<u64, PerformanceError> {
+        self.check(epoch)?;
+        position.at_tempo_stream_frame(
+            tempo,
+            SampleRate::try_from(self.observation.sample_rate.get())?,
+            self.take_time_at_playback,
+            self.observation.first_frame,
+        )
+    }
+}
+
 const TIMESTAMP_CAPACITY: usize = 64;
-static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Construct off-thread, then move into the callback. Publishing is bounded,
 /// allocation/lock/I/O-free, and advances frame identity even when full.
@@ -204,7 +294,7 @@ pub struct PlaybackTimestamps {
 
 impl PlaybackClock {
     pub fn new(sample_rate: NonZeroU32) -> (Self, PlaybackTimestamps) {
-        let stream_id = StreamId(NEXT_STREAM_ID.fetch_add(1, Relaxed));
+        let stream_id = StreamId(StreamEpoch::fresh().0);
         let (sender, receiver) = rtrb::RingBuffer::new(TIMESTAMP_CAPACITY);
         let dropped = Arc::new(AtomicU64::new(0));
         (
@@ -284,6 +374,7 @@ pub struct Output {
     timestamps: Option<PlaybackTimestamps>,
     wake: Arc<OnceLock<rune::Waker>>,
     pub commands: rtrb::Producer<Command>,
+    schedule: ScheduleSender,
     /// Samples the mixer has finished with, for the UI thread to drop.
     retired: rtrb::Consumer<Returned>,
     pub meters: Arc<Meters>,
@@ -297,17 +388,17 @@ impl Output {
         let (commands, consumer) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
         let (retired_commands, retired) = rtrb::RingBuffer::new(SLOTS);
         let meters = Arc::new(Meters::default());
+        let mut mixer = Mixer::new(slots.into(), 44_100, meters.clone(), retired_commands);
+        let Some(schedule) = mixer.take_scheduler() else {
+            unreachable!("new mixer has its unique producer");
+        };
         Self {
+            schedule,
             selection: OutputSelection::default(),
             opened: None,
             timestamps: None,
             driver: Driver::Virtual {
-                mixer: Box::new(Mixer::new(
-                    slots.into(),
-                    44_100,
-                    meters.clone(),
-                    retired_commands,
-                )),
+                mixer: Box::new(mixer),
                 commands: consumer,
                 remainder: 0.0,
             },
@@ -360,12 +451,16 @@ impl Output {
         let (commands, consumer) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
         let (retired_commands, retired) = rtrb::RingBuffer::new(SLOTS);
         let meters = Arc::new(Meters::default());
-        let mixer = Mixer::new(
+        let mut mixer = Mixer::new_with_epoch(
             slots.into(),
             config.sample_rate,
             meters.clone(),
             retired_commands,
+            timestamps.stream_id.epoch(),
         );
+        let Some(schedule) = mixer.take_scheduler() else {
+            unreachable!("new mixer has its unique producer");
+        };
         let (send_error, errors) = mpsc::channel();
         let wake = Arc::new(OnceLock::new());
         let send_error = ErrorSink {
@@ -381,6 +476,7 @@ impl Output {
         }?;
         stream.play().map_err(device_error)?;
         Ok(Self {
+            schedule,
             selection: selection.clone(),
             opened: Some(opened),
             timestamps: Some(timestamps),
@@ -409,6 +505,15 @@ impl Output {
 
     pub fn timestamps(&mut self) -> Option<&mut PlaybackTimestamps> {
         self.timestamps.as_mut()
+    }
+
+    /// The virtual mixer also has an epoch/cursor, but never device timestamps.
+    pub fn scheduler(&mut self) -> &mut ScheduleSender {
+        &mut self.schedule
+    }
+
+    pub fn schedule(&mut self, event: ScheduledEvent) -> ScheduleResult {
+        self.schedule.try_schedule(event)
     }
 
     pub fn silent_selected(

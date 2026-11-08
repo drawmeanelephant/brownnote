@@ -2,6 +2,10 @@
 use brownnote_native::engine::{
     Command, Meters, Mixer, QUEUE_CAPACITY, Returned, SLOTS, STEAL_TAILS, Sample, Slots, VOICES,
 };
+use brownnote_native::performance::{
+    EventId, OriginalTime, TakeId,
+    scheduler::{ScheduleOutcome, ScheduledAction, ScheduledEvent, Trigger},
+};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -52,6 +56,95 @@ fn trigger(pad: usize, slot: usize, group: usize) -> Command {
         gain: 1.0,
         pan: 0.0,
         semitones: 0.0,
+    }
+}
+
+#[test]
+fn scheduled_callback_saturation_releases_and_retirement_allocate_and_free_nothing() {
+    for rate in [44_100, 48_000] {
+        for block in [31, 64, 256] {
+            let meters = Arc::new(Meters::default());
+            let (retired, mut returns) = rtrb::RingBuffer::new(1);
+            let mut mixer = Mixer::new(
+                Slots::from_samples([Sample {
+                    data: Arc::from(vec![0.001; rate as usize * 3]),
+                    rate,
+                }]),
+                rate,
+                meters.clone(),
+                retired,
+            );
+            let mut sender = mixer.take_scheduler().unwrap_or_else(|| unreachable!());
+            let epoch = sender.epoch();
+            let id = |sequence| EventId {
+                take: TakeId(1),
+                sequence,
+            };
+            let on = |frame, sequence| ScheduledEvent {
+                epoch,
+                frame,
+                original_time: OriginalTime::from_nanos(123_456_789),
+                action: ScheduledAction::NoteOn {
+                    id: id(sequence),
+                    trigger: Trigger {
+                        pad: 0,
+                        slot: 0,
+                        group: 0,
+                        velocity: 1.0,
+                        gain: 1.0,
+                        pan: -1.0,
+                        semitones: 0.0,
+                    },
+                },
+            };
+            let mut output = [0.0; 512];
+            ALLOCS.set(0);
+            FREES.set(0);
+            TRACK.set(true);
+            mixer.command(Command::SetChoke(false));
+            for i in (0..256).rev() {
+                let result = sender.try_schedule(on(i, i));
+                assert_eq!(result.outcome, ScheduleOutcome::Accepted);
+            }
+            let mut frames = 0;
+            while frames < 512 {
+                mixer.render(&mut output[..block * 2], 2);
+                frames += block;
+            }
+            let off = ScheduledEvent {
+                action: ScheduledAction::NoteOff { id: id(255) },
+                ..on(frames as u64, 255)
+            };
+            assert_eq!(sender.try_schedule(off).outcome, ScheduleOutcome::Accepted);
+            mixer.render(&mut output[..block * 2], 2);
+            for i in 0..256 {
+                let result = sender.try_schedule(on(sender.frame() + u64::from(rate) / 2, 256 + i));
+                assert_eq!(result.outcome, ScheduleOutcome::Accepted);
+            }
+            let result = sender.try_schedule(off);
+            assert_eq!(result.outcome, ScheduleOutcome::Full);
+            assert!(result.release_recovery_requested);
+            mixer.render(&mut output[..block * 2], 2);
+            mixer.command(Command::Unload { slot: 0 });
+            for _ in 0..(rate as usize * 2).div_ceil(block) {
+                mixer.render(&mut output[..block * 2], 2);
+            }
+            TRACK.set(false);
+            assert_eq!(
+                ALLOCS.get(),
+                0,
+                "scheduled callback allocated at {rate}/{block}"
+            );
+            assert_eq!(FREES.get(), 0, "scheduled callback freed at {rate}/{block}");
+            assert_eq!(meters.counts(), [0; 16]);
+            let c = sender.counters();
+            assert_eq!((c.accepted, c.dispatched, c.cancelled), (513, 257, 256));
+            assert_eq!((c.full, c.recoveries, c.outstanding), (1, 1, 0));
+            assert!(matches!(
+                returns.pop(),
+                Ok(Returned::Retired { slot: 0, .. })
+            ));
+        }
     }
 }
 

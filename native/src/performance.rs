@@ -1,6 +1,7 @@
-//! Pure event/time contract. No device, mixer, queue or serialization ownership.
+//! Event/time contract and additive bounded engine scheduling.
 //! Capture/lifecycle work runs off the callback; originals are never quantized.
 use crate::project::{AssetId, PadId};
+pub mod scheduler;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
@@ -53,6 +54,7 @@ pub enum PerformanceError {
     UnknownTake,
     StaleEpoch,
     BeforeTake,
+    BeforeStream,
 }
 impl fmt::Display for PerformanceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -235,6 +237,24 @@ impl MusicalPosition {
             .checked_mul(u128::from(rate.hz()))
             .ok_or(PerformanceError::Overflow)?;
         rounded_u64(numerator, u128::from(tempo.milli_bpm()) * NANOS_PER_SECOND)
+    }
+    /// Convert against an observed stream/take anchor with only one rounding.
+    pub fn at_tempo_stream_frame(
+        self,
+        tempo: Tempo,
+        rate: SampleRate,
+        take_time: OriginalTime,
+        stream_frame: u64,
+    ) -> Result<u64, PerformanceError> {
+        let units = i128::try_from(self.0).map_err(|_| PerformanceError::Overflow)?;
+        let tempo = i128::from(tempo.milli_bpm());
+        let denominator = tempo * NANOS_PER_SECOND as i128;
+        let delta = units - i128::from(take_time.0) * tempo;
+        let numerator = delta
+            .checked_mul(i128::from(rate.hz()))
+            .and_then(|n| n.checked_add(i128::from(stream_frame) * denominator))
+            .ok_or(PerformanceError::Overflow)?;
+        rounded_stream_frame(numerator, denominator)
     }
     pub fn split_loop(self, bars: LoopBars) -> Result<LoopPosition, PerformanceError> {
         let length = bars.units();
@@ -462,4 +482,11 @@ fn round_ratio(n: u128, d: u128) -> u128 {
 }
 fn rounded_u64(n: u128, d: u128) -> Result<u64, PerformanceError> {
     u64::try_from(round_ratio(n, d)).map_err(|_| PerformanceError::Overflow)
+}
+
+pub(crate) fn rounded_stream_frame(n: i128, d: i128) -> Result<u64, PerformanceError> {
+    if n < 0 {
+        return Err(PerformanceError::BeforeStream);
+    }
+    rounded_u64(n as u128, d as u128)
 }

@@ -4,6 +4,10 @@
 //! voices from it, and unloads it; a voice keeps reading its slot until it
 //! ends, and the sample returns to the UI on a queue once no voice reads it.
 //! The callback never allocates, frees, locks, or changes an `Arc` count.
+use crate::performance::{
+    EventId, StreamEpoch,
+    scheduler::{self, ScheduleReceiver, ScheduleSender, ScheduledAction, Trigger},
+};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed},
@@ -135,6 +139,7 @@ impl Meters {
 
 #[derive(Clone, Copy)]
 struct Voice {
+    event: Option<EventId>,
     pad: usize,
     slot: usize,
     group: usize,
@@ -147,6 +152,9 @@ struct Voice {
 }
 
 pub struct Mixer {
+    schedule: ScheduleReceiver,
+    schedule_sender: Option<ScheduleSender>,
+    frame: u64,
     slots: Box<[Option<Sample>]>,
     /// Set by `Unload`; the sample leaves the slot once no voice reads it.
     retiring: Box<[bool]>,
@@ -174,8 +182,23 @@ impl Mixer {
         meters: Arc<Meters>,
         retired: rtrb::Producer<Returned>,
     ) -> Self {
+        Self::new_with_epoch(slots, rate, meters, retired, StreamEpoch::fresh())
+    }
+
+    /// Construct off callback. A physical output supplies its timestamp epoch.
+    pub fn new_with_epoch(
+        slots: Slots,
+        rate: u32,
+        meters: Arc<Meters>,
+        retired: rtrb::Producer<Returned>,
+        epoch: StreamEpoch,
+    ) -> Self {
         debug_assert_eq!(slots.0.len(), SLOTS);
+        let (sender, schedule) = scheduler::channel(epoch, rate);
         Self {
+            schedule,
+            schedule_sender: Some(sender),
+            frame: 0,
             slots: slots.0,
             retiring: vec![false; SLOTS].into_boxed_slice(),
             voices: [None; VOICES],
@@ -192,11 +215,17 @@ impl Mixer {
         }
     }
 
+    /// Move the unique producer to the input/transport thread before playback.
+    pub fn take_scheduler(&mut self) -> Option<ScheduleSender> {
+        self.schedule_sender.take()
+    }
+
     pub fn command(&mut self, command: Command) {
         match command {
             Command::SetMaster(v) => self.target_master = v,
             Command::SetChoke(on) => self.choke = on,
             Command::Panic => {
+                self.schedule.cancel_queued();
                 for v in self.voices.iter_mut().chain(&mut self.tails).flatten() {
                     v.fade = Some(v.fade.unwrap_or(self.fade_frames).min(self.fade_frames));
                 }
@@ -209,6 +238,7 @@ impl Mixer {
             Command::Unload { slot } => {
                 if self.slots.get(slot).is_some_and(Option::is_some) {
                     self.retiring[slot] = true;
+                    self.schedule.cancel_slot(slot);
                 }
             }
             Command::Trigger {
@@ -220,66 +250,92 @@ impl Mixer {
                 pan,
                 semitones,
             } => {
-                let Some(src) = self.slots.get(slot).and_then(Option::as_ref) else {
-                    return;
-                };
-                if self.retiring[slot] || pad >= 16 || src.data.is_empty() {
-                    return;
-                }
-                if self.choke {
-                    for v in self
-                        .voices
-                        .iter_mut()
-                        .chain(&mut self.tails)
-                        .flatten()
-                        .filter(|v| v.group == group)
-                    {
-                        v.fade = Some(v.fade.unwrap_or(self.fade_frames).min(self.fade_frames));
-                    }
-                }
-                let voice = self
-                    .voices
-                    .iter()
-                    .position(Option::is_none)
-                    .unwrap_or_else(|| {
-                        self.voices
-                            .iter()
-                            .enumerate()
-                            .min_by_key(|(_, v)| v.map_or(u64::MAX, |v| v.age))
-                            .map_or(0, |(i, _)| i)
-                    });
-                if let Some(mut old) = self.voices[voice].take() {
-                    // Preserve a fade already in progress, including its phase.
-                    old.fade = Some(old.fade.unwrap_or(self.fade_frames).min(self.fade_frames));
-                    let tail = self
-                        .tails
-                        .iter()
-                        .position(Option::is_none)
-                        .unwrap_or_else(|| {
-                            self.tails
-                                .iter()
-                                .enumerate()
-                                .min_by_key(|(_, v)| v.map_or(u64::MAX, |v| v.age))
-                                .map_or(0, |(i, _)| i)
-                        });
-                    self.tails[tail] = Some(old);
-                }
-                let theta = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
-                self.age += 1;
-                self.voices[voice] = Some(Voice {
-                    pad,
-                    slot,
-                    group,
-                    position: 0.0,
-                    step: f64::from(src.rate) / f64::from(self.rate)
-                        * 2.0_f64.powf(f64::from(semitones) / 12.0),
-                    left: theta.cos() * velocity * gain,
-                    right: theta.sin() * velocity * gain,
-                    age: self.age,
-                    fade: None,
-                });
+                self.trigger(
+                    Trigger {
+                        pad,
+                        slot,
+                        group,
+                        velocity,
+                        gain,
+                        pan,
+                        semitones,
+                    },
+                    None,
+                );
             }
         }
+    }
+
+    fn trigger(&mut self, trigger: Trigger, event: Option<EventId>) -> bool {
+        let Trigger {
+            pad,
+            slot,
+            group,
+            velocity,
+            gain,
+            pan,
+            semitones,
+        } = trigger;
+        let Some(src) = self.slots.get(slot).and_then(Option::as_ref) else {
+            return false;
+        };
+        if self.retiring[slot] || pad >= 16 || src.data.is_empty() {
+            return false;
+        }
+        if self.choke {
+            for v in self
+                .voices
+                .iter_mut()
+                .chain(&mut self.tails)
+                .flatten()
+                .filter(|v| v.group == group)
+            {
+                v.fade = Some(v.fade.unwrap_or(self.fade_frames).min(self.fade_frames));
+            }
+        }
+        let voice = self
+            .voices
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or_else(|| {
+                self.voices
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, v)| v.map_or(u64::MAX, |v| v.age))
+                    .map_or(0, |(i, _)| i)
+            });
+        if let Some(mut old) = self.voices[voice].take() {
+            // Preserve a fade already in progress, including its phase.
+            old.fade = Some(old.fade.unwrap_or(self.fade_frames).min(self.fade_frames));
+            let tail = self
+                .tails
+                .iter()
+                .position(Option::is_none)
+                .unwrap_or_else(|| {
+                    self.tails
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, v)| v.map_or(u64::MAX, |v| v.age))
+                        .map_or(0, |(i, _)| i)
+                });
+            self.tails[tail] = Some(old);
+        }
+        let theta = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
+        self.age += 1;
+        self.voices[voice] = Some(Voice {
+            event,
+            pad,
+            slot,
+            group,
+            position: 0.0,
+            step: f64::from(src.rate) / f64::from(self.rate)
+                * 2.0_f64.powf(f64::from(semitones) / 12.0),
+            left: theta.cos() * velocity * gain,
+            right: theta.sin() * velocity * gain,
+            age: self.age,
+            fade: None,
+        });
+        true
     }
 
     /// A sample the mixer can't use goes straight back to the UI.
@@ -366,10 +422,42 @@ impl Mixer {
         if channels == 0 {
             return;
         }
+        let slots = &self.slots;
+        let retiring = &self.retiring;
+        if self.schedule.drain(|event| match event.action {
+            ScheduledAction::NoteOn { trigger, .. } => {
+                trigger.pad < 16
+                    && slots
+                        .get(trigger.slot)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|s| !s.data.is_empty())
+                    && !retiring[trigger.slot]
+            }
+            ScheduledAction::NoteOff { .. } => true,
+        }) {
+            self.command(Command::Panic);
+        }
         let frames = output.len() / channels;
         let start_master = self.master;
         let mut peak = 0.0_f64;
         for (i, frame) in output.chunks_exact_mut(channels).enumerate() {
+            while let Some(event) = self.schedule.pop_due(self.frame) {
+                match event.action {
+                    ScheduledAction::NoteOn { id, trigger } => {
+                        if !self.trigger(trigger, Some(id)) {
+                            self.schedule.unavailable();
+                        }
+                    }
+                    ScheduledAction::NoteOff { id } => {
+                        for v in self.voices.iter_mut().chain(&mut self.tails).flatten() {
+                            if v.event == Some(id) {
+                                v.fade =
+                                    Some(v.fade.unwrap_or(self.fade_frames).min(self.fade_frames));
+                            }
+                        }
+                    }
+                }
+            }
             let mut left = 0.0_f64;
             let mut right = 0.0_f64;
             for slot in self.voices.iter_mut().chain(&mut self.tails) {
@@ -412,7 +500,9 @@ impl Mixer {
                 frame[0] = convert(left);
                 frame[1] = convert(right);
             }
+            self.frame = self.frame.saturating_add(1);
         }
+        self.schedule.cursor(self.frame);
         if frames > 0 {
             self.master = self.target_master;
         }
