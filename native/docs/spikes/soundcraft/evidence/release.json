@@ -1,0 +1,30 @@
+{
+  "pin": {
+    "checked_date": "2026-11-08",
+    "repository": "storytold/soundcraft",
+    "tag": "v0.18.0",
+    "commit": "5ff012ab88490cdfc635ee304c1019885e1b880d",
+    "binary_sha256": {
+      "SoundCraft": "9fdcbf9d627eb046f1db5149909e1f241c00784e8c6da79bd9cc51ff484cd497",
+      "soundcraft-cli": "a909c1f303b9779b8287d4464c5ac694e165f6326f143c8cc8a9e55e16a8faf2"
+    },
+    "artifacts": {
+      "soundcraft-0.18.0-macos-universal.dmg": "c93ce20730c2e35bd2b1c3dce8d288eb502cf4640feb025734bd7cbe61915487",
+      "soundcraft-cli-0.18.0-macos-universal.zip": "e511ff45a5b5b755b7ef8b54e5edf8d5fffdc3e8a1a545972f2bcab18c11efdc",
+      "SHA256SUMS.txt": "49c7801ce4405f14666a3c48246ae6e8b5a19ed02d890308ed661ce0c0c0eacd"
+    }
+  },
+  "latest_published_at": "2026-11-06T20:22:08Z",
+  "os": "27.3",
+  "architecture": "arm64",
+  "app_version": "soundcraft 0.18.0 (macos aarch64)",
+  "cli_version": "soundcraft-cli 0.18.0 (macos aarch64)",
+  "binary_sha256": {
+    "SoundCraft": "9fdcbf9d627eb046f1db5149909e1f241c00784e8c6da79bd9cc51ff484cd497",
+    "soundcraft-cli": "a909c1f303b9779b8287d4464c5ac694e165f6326f143c8cc8a9e55e16a8faf2"
+  },
+  "binary_architectures": {
+    "SoundCraft": "x86_64 arm64",
+    "soundcraft-cli": "x86_64 arm64"
+  }
+}
