@@ -2,6 +2,8 @@
 
 Adapted from the fart-app `flatlophone` theme, which was adapted from Boris's
 `themes/boris` at `08969742f85238443ce5cd1cd53ceab1b1f3f85a`.
+That revision records the theme's ancestry. The current compiler revision
+is pinned separately in `docs/boris-pin.txt`, with Zig in `.zigversion`.
 The documentation shell, CSS primitives, and first-party inline search retain
 their MIT notice in `assets/boris-LICENSE.txt` (also copied into the published
 site). The brand layer is local: warm paper, ink, pedal-brown accents, and a

@@ -2,6 +2,7 @@
 
 **[Read the field manual](https://drawmeanelephant.github.io/brownnote/)** ·
 [Start here](docs/site/content/getting-started.md) ·
+[Roadmap](docs/site/content/roadmap.md) ·
 [Flags](docs/site/content/reference/cli.md) ·
 [Docs workflow](docs/README.md)
 
