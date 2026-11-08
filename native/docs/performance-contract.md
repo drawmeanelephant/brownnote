@@ -89,24 +89,23 @@ queues, counters, CPAL consumption, variable-buffer audio rendering and
 scheduled-traffic allocator proof wait for #101 and #102 and remain #104
 close gates. Pure block-offset equality is not an audio render measurement.
 
-## Integrator wiring
+## Library integration and validation
 
-After #98's serde/hash/project wiring, add `pub mod performance;` to
-`native/src/lib.rs`. No new dependencies, State fields, poll calls, view slots
-or engine/output changes.
+`native/src/lib.rs` exports `performance` alongside #98's `project` module.
+It uses #98's regular serde/hash dependencies. No additional dependencies,
+State fields, poll calls, view slots or engine/output wiring are needed.
 
-`native/tests/performance.rs` includes new modules by path during bootstrap.
-Switch it to `use brownnote_native::{performance, project};` plus
-`use performance::*;` after export, removing the temporary `pedals` re-export.
+`native/tests/performance.rs` imports the actual exported modules with
+`use brownnote_native::{performance, project};` and `use performance::*;`.
 Run the focused real-manifest test and `make native-test` against the exported
-artifact. The bootstrap command is:
+artifact. The focused command is:
 
 ```sh
 python3 native/tests/check_contracts.py performance
 ```
 
-Its ignored manifest compiles exact source with the shared dependencies but
-does not prove app wiring. Checked-in clock fixtures have independently
+It runs the actual native manifest and honors `CARGO_TARGET_DIR`, without a
+bootstrap manifest or path-included modules. Checked-in clock fixtures have independently
 specified 44.1/48-kHz frame positions. Pure tests cover FIFO overlaps, flams,
 quantize reversibility, multi-take tempo locks, loop boundaries, clock epochs,
 integer overflow and offsets with callback sizes 31, 64 and 256.

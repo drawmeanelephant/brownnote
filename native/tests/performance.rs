@@ -1,11 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-// Bootstrap only. The integrator must switch these to real library exports.
-use brownnote_native::pedals;
-#[path = "../src/performance.rs"]
-mod performance;
-#[allow(dead_code)]
-#[path = "../src/project/mod.rs"]
-mod project;
+use brownnote_native::{performance, project};
 
 use performance::*;
 use project::{AssetId, AssetRef, PadId};
