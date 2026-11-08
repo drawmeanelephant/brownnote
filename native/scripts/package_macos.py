@@ -255,7 +255,7 @@ def smoke(artifact):
                 app(layout, *args, "--tree", path)
                 value = json.loads(path.read_text())
                 require(not value["warnings"], f"Rune warnings: {value['warnings']}")
-                return {e["key"]: e.get("text", "") for e in value["elements"]}
+                return {e["key"]: e.get("text", "") for e in value["elements"] if "key" in e}
 
             previous = original
             for index in range(3):
@@ -272,7 +272,9 @@ def smoke(artifact):
                 require(view["meter"].endswith(" dB") and view["meter"] != "−∞ dB",
                         "No virtual mixer signal")
                 result = app(layout, "--list-pedals", code=3)
-                require("tools/brownnote" in result.stderr and "not found" in result.stderr,
+                require("tools/brownnote" in result.stderr
+                        and "Pedals need brownnote" in result.stderr
+                        and "Base pads still play." in result.stderr,
                         f"Missing pedal error was not explicit: {result.stderr}")
                 record["checks"].append(f"Location {index + 1}: five sources, virtual signal, no overrides, missing-pedal exit 3")
                 previous = layout
