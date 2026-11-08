@@ -256,6 +256,136 @@ fn voice_cap_steals_oldest_keeps_newest_and_clamps_output() {
 }
 
 #[test]
+fn overload_peak_is_mastered_before_clamping_at_both_rates_and_channel_layouts() {
+    for rate in [44_100, 48_000] {
+        for channels in [1, 2, 4] {
+            for sign in [-1.0, 1.0] {
+                let (mut m, meters) = rig(vec![sample(vec![sign * 0.75; 8], rate)], rate);
+                m.command(Command::SetMaster(0.75));
+                render(&mut m, 1, channels);
+                m.command(Command::SetChoke(false));
+                hit(&mut m, 1.5, -1.0, 0.0);
+                hit(&mut m, 1.5, -1.0, 0.0);
+                let out = render(&mut m, 8, channels);
+                assert!(out.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
+                assert_eq!(out[0], sign * if channels == 1 { 0.5 } else { 1.0 });
+                close(f32::from_bits(meters.peak.load(Relaxed)), 1.6875);
+                assert!(meters.clipped.load(Relaxed));
+                if channels == 4 {
+                    assert!(
+                        out.as_chunks::<4>()
+                            .0
+                            .iter()
+                            .all(|frame| frame[2..] == [0.0; 2])
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn overload_in_either_channel_sets_the_flag() {
+    for rate in [44_100, 48_000] {
+        for pan in [-1.0, 1.0] {
+            let (mut m, meters) = rig(vec![sample(vec![-1.25], rate)], rate);
+            hit(&mut m, 1.0, pan, 0.0);
+            let out = render(&mut m, 1, 2);
+            assert_eq!(out[usize::from(pan > 0.0)], -1.0);
+            assert_eq!(f32::from_bits(meters.peak.load(Relaxed)), 1.25);
+            assert!(meters.clipped.load(Relaxed));
+        }
+    }
+}
+
+#[test]
+fn clean_near_unity_full_scale_and_mastered_headroom_do_not_report_overload() {
+    for rate in [44_100, 48_000] {
+        for value in [-1.0, -0.9995, 0.999, 0.9995, 1.0] {
+            let (mut m, meters) = rig(vec![sample(vec![value; 8], rate)], rate);
+            hit(&mut m, 1.0, -1.0, 0.0);
+            assert_eq!(render(&mut m, 1, 2)[0], value);
+            assert_eq!(f32::from_bits(meters.peak.load(Relaxed)), value.abs());
+            assert!(!meters.clipped.load(Relaxed), "clean peak {value}");
+        }
+        let (mut m, meters) = rig(vec![sample(vec![2.0; 8], rate)], rate);
+        m.command(Command::SetMaster(0.25));
+        render(&mut m, 1, 2);
+        hit(&mut m, 1.0, -1.0, 0.0);
+        assert_eq!(render(&mut m, 1, 2)[0], 0.5);
+        assert_eq!(f32::from_bits(meters.peak.load(Relaxed)), 0.5);
+        assert!(!meters.clipped.load(Relaxed), "measure after master gain");
+    }
+}
+
+#[test]
+fn overload_flag_survives_quiet_blocks_until_consumed_and_rearms() {
+    for rate in [44_100, 48_000] {
+        let (mut m, meters) = rig(vec![sample(vec![1.25], rate)], rate);
+        hit(&mut m, 1.0, -1.0, 0.0);
+        render(&mut m, 1, 2);
+        render(&mut m, 16, 2);
+        assert_eq!(f32::from_bits(meters.peak.swap(0, Relaxed)), 1.25);
+        // Reading peak must not consume the independent overload event.
+        render(&mut m, 16, 2);
+        assert_eq!(f32::from_bits(meters.peak.load(Relaxed)), 0.0);
+        assert!(meters.clipped.swap(false, Relaxed));
+        assert!(!meters.clipped.swap(false, Relaxed));
+        render(&mut m, 16, 2);
+        assert!(!meters.clipped.load(Relaxed), "silence must not rearm");
+        hit(&mut m, 1.0, -1.0, 0.0);
+        render(&mut m, 1, 2);
+        assert!(meters.clipped.swap(false, Relaxed));
+    }
+}
+
+#[test]
+fn overload_flag_detects_overrange_that_rounds_to_unity_in_the_peak() {
+    for rate in [44_100, 48_000] {
+        let (mut m, meters) = rig(
+            vec![
+                sample(vec![1.0], rate),
+                sample(vec![f32::EPSILON / 4.0], rate),
+            ],
+            rate,
+        );
+        hit(&mut m, 1.0, -1.0, 0.0);
+        m.command(Command::Trigger {
+            pad: 1,
+            slot: 1,
+            group: 1,
+            velocity: 1.0,
+            gain: 1.0,
+            pan: -1.0,
+            semitones: 0.0,
+        });
+        assert_eq!(render(&mut m, 1, 2)[0], 1.0);
+        assert_eq!(f32::from_bits(meters.peak.load(Relaxed)), 1.0);
+        assert!(meters.clipped.load(Relaxed));
+    }
+}
+
+#[test]
+fn overload_meter_follows_the_per_frame_master_ramp() {
+    for rate in [44_100, 48_000] {
+        let (mut m, meters) = rig(vec![sample(vec![1.25; 8], rate)], rate);
+        hit(&mut m, 1.0, -1.0, 0.0);
+        m.command(Command::SetMaster(0.0));
+        // The first mastered sample is 1.25 * 0.75, not an overload.
+        let out = render(&mut m, 4, 2);
+        close(f32::from_bits(meters.peak.swap(0, Relaxed)), 0.9375);
+        assert!(!meters.clipped.load(Relaxed));
+        assert_eq!(out[6], 0.0);
+        m.command(Command::SetMaster(1.0));
+        let out = render(&mut m, 4, 2);
+        close(f32::from_bits(meters.peak.load(Relaxed)), 1.25);
+        assert!(meters.clipped.load(Relaxed));
+        close(out[0], 0.3125);
+        assert_eq!(out[6], 1.0);
+    }
+}
+
+#[test]
 fn master_ramps_one_block_and_zero_remains_silent() {
     for rate in [44_100, 48_000] {
         let (mut m, _) = rig(vec![sample(vec![0.5; 10_000], rate)], rate);
@@ -301,7 +431,7 @@ fn trigger_settings_are_snapshots_not_live_pad_settings() {
 #[test]
 fn finite_float_extremes_cannot_overflow_interpolation_or_mix_to_nan() {
     for rate in [44_100, 48_000] {
-        let (mut mixer, _) = rig(
+        let (mut mixer, meters) = rig(
             vec![sample(vec![f32::MAX, -f32::MAX, f32::MAX, -f32::MAX], rate)],
             rate,
         );
@@ -313,6 +443,8 @@ fn finite_float_extremes_cannot_overflow_interpolation_or_mix_to_nan() {
         assert!(out.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
         assert_eq!(out[0], 1.0);
         assert_eq!(out[2], 0.0);
+        assert_eq!(f32::from_bits(meters.peak.load(Relaxed)), f32::MAX);
+        assert!(meters.clipped.load(Relaxed));
     }
 }
 

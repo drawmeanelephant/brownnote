@@ -278,8 +278,9 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     s.output.advance(elapsed);
     let counts = s.output.meters.counts();
     let fresh = f32::from_bits(s.output.meters.peak.swap(0, Relaxed));
+    let clipped = s.output.meters.clipped.swap(false, Relaxed);
     let motion = s.theme().motion;
-    s.meter.feed(clock, fresh, &motion);
+    s.meter.feed(clock, fresh, clipped, &motion);
     for (pad, light) in s.lights.iter_mut().enumerate() {
         light.voices(clock, counts[pad] > 0, &motion);
     }
