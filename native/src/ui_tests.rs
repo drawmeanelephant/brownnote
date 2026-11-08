@@ -271,6 +271,7 @@ fn all_pads_and_controls_fit_minimum_window_even_with_long_asset_errors() {
         }
         assert!(widths.iter().all(|w| (w - widths[0]).abs() < 0.1));
         for key in [
+            "import-toggle",
             "gain",
             "pan",
             "pitch",

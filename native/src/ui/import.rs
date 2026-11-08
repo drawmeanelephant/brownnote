@@ -18,6 +18,8 @@ pub struct Controls {
 
 pub fn header(s: &State) -> El {
     button("import-toggle", "IMPORT WAV")
+        .h(16.0)
+        .px(7.0)
         .label("Import WAV sample for the selected pad")
         .checked(s.media.controls.visible)
         .help("Import a typed local WAV path · Command-I")
