@@ -1,13 +1,11 @@
 use super::{
     State, Tab, accent, button, caption,
     control::{Control, slider},
+    devices,
     graphics::{led, logo, meter, waveform},
     ink, pedals,
 };
-use brownnote_native::{
-    engine::Command,
-    kit::{FILES, PADS},
-};
+use brownnote_native::{engine::Command, kit::PADS};
 use rune::{Cx, Drag, El, Phase, TextStyle, col, el, row, text};
 use std::time::Duration;
 
@@ -43,9 +41,14 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                     tx.wake_after(Duration::from_millis(1));
                 }),
         );
+    controls = controls.child(devices::header(s));
     if s.output.failed {
-        controls = controls
-            .child(button("retry-audio", "RETRY AUDIO").on_press(|s: &mut State| s.retry()));
+        controls = controls.child(
+            button("retry-audio", "RETRY AUDIO")
+                .disabled(s.devices.busy())
+                .focusable(!s.devices.busy())
+                .on_press(|s: &mut State| s.retry()),
+        );
     }
     let mut grid = col().key("pads").grow(1.0).min_h(0.0).gap(8.0);
     for r in 0..4 {
@@ -94,8 +97,11 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .child(caption("01—16    /    PRESSURE PADS").color(ink("#c0cbbf")))
                 .child(caption("HIT HIGHER. GO LOUDER.")),
         )
-        .child(grid)
-        .child(editor(s))
+        .children(if s.devices.visible {
+            vec![devices::panel(s)]
+        } else {
+            vec![grid, editor(s)]
+        })
         .child(
             row()
                 .h(14.0)
@@ -110,12 +116,21 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                         .truncate(),
                 ),
         );
-    if !s.kit.banner.is_empty() {
+    let mut errors = Vec::new();
+    for pad in 0..16 {
+        if let Some(error) = s.pad_error(pad)
+            && !errors.contains(&error)
+        {
+            errors.push(error);
+        }
+    }
+    let errors = errors.join(" · ");
+    if !errors.is_empty() {
         root = root.child(
-            caption(&s.kit.banner)
+            caption(&errors)
                 .key("asset-errors")
                 .color(ink("#ffad92"))
-                .label(&s.kit.banner)
+                .label(&errors)
                 .truncate(),
         );
     }
@@ -149,7 +164,7 @@ fn display(s: &State, tall: bool) -> El {
                 .center_y()
                 .child(caption(format!("SAMPLE {:02} / SELECTED", s.selected + 1)).color(color))
                 .child(
-                    text(spec.label)
+                    text(s.pad_name(s.selected))
                         .key("selected-name")
                         .truncate()
                         .font(TextStyle::new(22.0, 750.0))
@@ -172,7 +187,7 @@ fn display(s: &State, tall: bool) -> El {
                 .role("img")
                 .label(format!(
                     "Normalized sample waveform: {}",
-                    FILES[spec.sample]
+                    s.pad_name(s.selected)
                 ))
                 .child(waveform(s.pad_wave(s.selected), color, true))
                 .child(
@@ -273,16 +288,13 @@ fn editor(s: &State) -> El {
 fn pad(s: &State, index: usize) -> El {
     let spec = &PADS[index];
     let color = accent(spec.sample);
-    let missing = s.kit.errors[spec.sample].as_deref();
+    let missing = s.assets.playback(super::pad_id(index)).is_none();
+    let error = s.pad_error(index);
     let flash = ((s.flashes[index] - s.now) / 0.120).clamp(0.0, 1.0) as f32;
     let playing = s.counts[index] > 0;
     let selected = s.selected == index;
     let base = ink("#25312b");
-    let tint = if missing.is_some() {
-        ink("#7b877f")
-    } else {
-        color
-    };
+    let tint = if missing { ink("#7b877f") } else { color };
     let glow = if playing { 0.16 } else { 0.0 } + flash * 0.30;
     let mut pad = col()
         .key(format!("pad-{index}"))
@@ -291,8 +303,8 @@ fn pad(s: &State, index: usize) -> El {
         .label(format!(
             "{} · {}{}",
             spec.label,
-            FILES[spec.sample],
-            missing.map_or(String::new(), |e| format!(" · MISSING: {e}"))
+            s.pad_name(index),
+            error.map_or(String::new(), |e| format!(" · ERROR: {e}"))
         ))
         .grow(1.0)
         .min_w(0.0)
@@ -350,7 +362,7 @@ fn pad(s: &State, index: usize) -> El {
                 ),
         )
         .child(waveform(
-            s.pad_wave(index),
+            s.source_wave(index),
             tint.mix(base, if playing { 0.05 } else { 0.45 }),
             false,
         ))
@@ -358,9 +370,13 @@ fn pad(s: &State, index: usize) -> El {
             row()
                 .justify_between()
                 .child(
-                    caption(if let Some(reason) = missing {
+                    caption(if let Some(reason) = error {
                         let short = reason.split_once(": ").map_or(reason, |(_, reason)| reason);
-                        format!("MISSING · {:+.0} st · {short}", s.settings[index].pitch)
+                        format!(
+                            "{} · {:+.0} st · {short}",
+                            if missing { "MISSING" } else { "ERROR" },
+                            s.settings[index].pitch
+                        )
                     } else {
                         format!("{:+.0} ST", s.settings[index].pitch)
                     })
@@ -376,8 +392,8 @@ fn pad(s: &State, index: usize) -> El {
                     .color(tint),
                 ),
         );
-    if let Some(reason) = missing {
-        pad = pad.help(reason).disabled(true);
+    if missing {
+        pad = pad.help(error.unwrap_or("Missing sample")).disabled(true);
     } else {
         pad = pad.on_drag(move |s: &mut State, d: &mut Drag, tx| {
             if d.phase == Phase::Down {

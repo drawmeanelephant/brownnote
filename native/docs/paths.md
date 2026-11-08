@@ -60,6 +60,7 @@ Each resource resolves independently:
 | Bench | `BROWNNOTE_BENCH` | `tools/bench` beside executable |
 | Pedal cache | `BROWNNOTE_CACHE` | `$HOME/Library/Caches/Brownnote/pedals` |
 | Recovery | `BROWNNOTE_RECOVERY` | `$HOME/Library/Application Support/Brownnote/recovery` |
+| Machine preferences | `BROWNNOTE_PREFERENCES` | `$HOME/Library/Application Support/Brownnote/preferences` |
 
 Explicit relative paths are anchored to the launch directory. Empty overrides,
 missing paths, wrong path types, non-executable tools, unavailable directories
@@ -73,6 +74,10 @@ Cache/recovery resolution creates the directory and writes/removes a unique
 probe to verify access. Call it off the audio thread. Recovery here is only
 a writable location: this slice does not save, autosave or recover projects,
 and it does not select a project directory. Project media is not cache (D4).
+
+Preference resolution selects a directory without creating it or probing
+write access. The output preference service reads existing settings before
+opening audio. It reports read or save failures separately from stream errors.
 
 The C CLI always receives an absolute `--bench` argument for catalog and
 render calls, preventing its cwd/vendor fallback from choosing other tooling.
@@ -89,40 +94,18 @@ They preserve the existing PathBuf caller inputs until shared option wiring
 can distinguish absence explicitly. Do not supply these strings as user paths.
 Empty user paths remain errors.
 
-## Integrator wiring required
+## Application integration
 
-This lane intentionally does not edit integrator-owned files. Before merging:
+The library exports `paths`. CLI and pedal UI cache defaults use
+`paths::DEFAULT_CACHE`. The existing sample and CLI inputs use the resolver's
+default tokens, while explicit options keep their precedence.
+Machine output preferences use `Resource::Preferences`.
 
-1. Add `pub mod paths;` to `native/src/lib.rs`. There are no production
-   dependency or lockfile changes.
-2. In `native/src/main.rs`, replace the `Options.pedal_cache` initializer
-   containing `concat!(env!("CARGO_MANIFEST_DIR"), "/target/pedal-cache")`
-   with `brownnote_native::paths::DEFAULT_CACHE.into()`. Keep the existing
-   explicit `--pedal-cache` assignment; render resolves it ahead of the
-   environment. Samples/brownnote initializers already consume the re-exported
-   default tokens and need no new flags.
-3. In `native/src/ui/pedals/mod.rs`, change `default_cache()` to return
-   `brownnote_native::paths::DEFAULT_CACHE.into()` and update its comment.
-   Its existing `default_bin()` already uses the re-exported token.
-4. No UI `State`, poll, view, main error-path, or recovery/store wiring is
-   needed. The future store lane can call
-   `Resolver::current()?.resolve(Resource::Recovery, override_path)`.
-5. Run the actual native artifact and full native tests after that wiring.
-   The first two callers already route Kit::load, catalog and render requests
-   through the resolver, but an unregistered `paths` module blocks the main
-   Cargo package until step 1. Existing main/UI cache defaults remain checkout
-   paths until steps 2–3. Do not call either integration gate green beforehand.
+The temporary `tests/paths-harness` package has been removed. The normal
+`paths` integration target checks the exported library and launches the
+actual application as well as the consumer probe.
 
-## Reproduce the lane evidence
-
-The temporary `tests/paths-harness` Cargo package path-includes the production
-`engine`, `kit`, `paths` and `pedals` modules, without copying implementations
-or modifying shared registration. Its two dependencies match the main
-package's pinned `hound` and `rtrb`. It also runs the existing real-pedal
-integration tests, now loading their source through the real kit default.
-It does not build Rune, the main options parser, UI, GPU or device output.
-After integration, `tests/paths.rs` also runs as a normal integration test;
-the bootstrap can then be deleted.
+## Reproduce the checks
 
 From the repository root, with a real read-only bench available:
 
@@ -135,10 +118,8 @@ export BROWNNOTE_BENCH="$BENCH"
 export BROWNNOTE_BIN="$PWD/build/brownnote"
 export BROWNNOTE_REQUIRE_BENCH=1
 make
-cargo test --manifest-path native/tests/paths-harness/Cargo.toml --test paths
-cargo test --manifest-path native/tests/paths-harness/Cargo.toml --test pedals_live
-cargo test --manifest-path native/tests/paths-harness/Cargo.toml --lib
-cargo clippy --manifest-path native/tests/paths-harness/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path native/Cargo.toml --test paths -- --include-ignored
+cargo test --manifest-path native/Cargo.toml --test pedals_live
 make native-test
 ```
 
@@ -150,11 +131,14 @@ repeat the copy/delete/launch cycle at a third location from an unrelated cwd.
 They exercise the current default-token consumer inputs, catalog, render,
 cache hits, recovery writes and actual base-pad mixer signal with missing
 optional tools. The fake pedal tool checks the pinned bench argument; it
-is not evidence of a packaged GuitarPedal render.
+is not evidence of a packaged GuitarPedal render. A separate GPU test copies
+the actual app with synthetic samples, removes the original location, and
+checks voices and meter signal from an unrelated working directory.
 
 The existing `pedals_live` tests separately require the real CLI/bench and
 cover the catalog, every routable effect, system-block refusal, audible-data
 differences, echo tail and render-cache hits. These are not a relocated
-packaged-tool test. Main binary CLI parsing, the actual packaged artifact,
-real audio/listening, clean install, portable projects, failed saves,
-device recovery and distribution/license gates remain unproven here.
+packaged-tool test. CLI option tests cover runtime defaults and explicit
+overrides. The installable artifact, real audio and listening, clean install,
+project workflows, physical device recovery, and distribution review remain
+outside this path slice.

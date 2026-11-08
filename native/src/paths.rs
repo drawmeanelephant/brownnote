@@ -21,6 +21,7 @@ pub enum Resource {
     Bench,
     Cache,
     Recovery,
+    Preferences,
 }
 
 impl Resource {
@@ -33,6 +34,7 @@ impl Resource {
             }
             Self::Cache => "--pedal-cache DIR or BROWNNOTE_CACHE",
             Self::Recovery => "BROWNNOTE_RECOVERY",
+            Self::Preferences => "BROWNNOTE_PREFERENCES",
         }
     }
 
@@ -102,6 +104,7 @@ pub struct Environment {
     pub bench: Option<PathBuf>,
     pub cache: Option<PathBuf>,
     pub recovery: Option<PathBuf>,
+    pub preferences: Option<PathBuf>,
 }
 
 pub struct Resolver {
@@ -139,6 +142,7 @@ impl Resolver {
                 bench: get("BROWNNOTE_BENCH"),
                 cache: get("BROWNNOTE_CACHE"),
                 recovery: get("BROWNNOTE_RECOVERY"),
+                preferences: get("BROWNNOTE_PREFERENCES"),
             },
         ))
     }
@@ -211,11 +215,15 @@ impl Resolver {
             Resource::Bench => &self.environment.bench,
             Resource::Cache => &self.environment.cache,
             Resource::Recovery => &self.environment.recovery,
+            Resource::Preferences => &self.environment.preferences,
         };
         if let Some(path) = explicit.or(environment.as_deref()) {
             return self.absolute(resource, path);
         }
-        if matches!(resource, Resource::Cache | Resource::Recovery) {
+        if matches!(
+            resource,
+            Resource::Cache | Resource::Recovery | Resource::Preferences
+        ) {
             let home = self.environment.home.as_deref().ok_or(PathError {
                 resource,
                 path: None,
@@ -233,7 +241,9 @@ impl Resolver {
             }
             return Ok(home.join(match resource {
                 Resource::Cache => "Library/Caches/Brownnote/pedals",
-                _ => "Library/Application Support/Brownnote/recovery",
+                Resource::Recovery => "Library/Application Support/Brownnote/recovery",
+                Resource::Preferences => "Library/Application Support/Brownnote/preferences",
+                _ => unreachable!(),
             }));
         }
         let root = self.root(resource)?;
@@ -275,6 +285,9 @@ impl Resolver {
         explicit: Option<&Path>,
     ) -> Result<PathBuf, PathError> {
         let path = self.selected(resource, explicit)?;
+        if resource == Resource::Preferences {
+            return Ok(path);
+        }
         if matches!(resource, Resource::Cache | Resource::Recovery) {
             writable(resource, &path)?;
         } else {

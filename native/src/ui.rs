@@ -1,16 +1,22 @@
 mod audio;
 mod control;
+pub(crate) mod devices;
 mod graphics;
+#[cfg(test)]
+#[path = "ui_import_tests.rs"]
+mod import_tests;
+mod media;
 pub(crate) mod pedals;
 mod view;
 use brownnote_native::{
-    engine::{Command, Slots},
+    assets::AssetRegistry,
+    engine::Command,
     kit::{DEFAULT_SAMPLES, Kit, PADS},
     output::Output,
 };
-use graphics::{Envelope, envelope};
+use media::pad_id;
 #[allow(unused_imports)]
-pub use pedals::{CatalogState, FIRST_RENDER_SLOT, Status, Tab};
+pub use pedals::{CatalogState, Status, Tab};
 use rune::{Color, El, Key, KeyEvent, TextStyle, Tx, el, text};
 use std::{path::Path, sync::atomic::Ordering::Relaxed, time::Duration};
 pub use view::view;
@@ -23,11 +29,9 @@ pub struct Settings {
 }
 
 pub struct State {
-    pub kit: Kit,
     pub output: Output,
-    /// What each sample slot holds, kept so a fresh `Output` can be rebuilt
-    /// after a device failure.
-    pub slots: Slots,
+    pub assets: AssetRegistry,
+    pub media: media::Media,
     pub settings: [Settings; 16],
     pub selected: usize,
     pub master: f32,
@@ -35,12 +39,10 @@ pub struct State {
     pub counts: [u32; 16],
     pub peak: f32,
     pub pedals: pedals::Pedals,
-    /// The waveform of each pad's rendered sample, if it has one.
-    pub render_waves: [Option<graphics::Envelope>; 16],
+    pub devices: devices::Devices,
     now: f64,
     flashes: [f64; 16],
     wake: Option<rune::Waker>,
-    waveforms: [Envelope; 5],
 }
 
 impl State {
@@ -61,27 +63,30 @@ impl State {
         pedal_cache: std::path::PathBuf,
         brownnote: std::path::PathBuf,
     ) -> Self {
-        let waveforms = std::array::from_fn(|i| envelope(&kit.samples[i]));
+        let (assets, media) = media::bootstrap(&kit);
         let pedals = pedals::Pedals::with_bin(pedal_cache, brownnote);
-        let slots = Slots::from(kit.samples.clone());
-        let output = if headless || no_audio {
-            Output::virtual_driver(
-                slots.clone(),
-                if headless {
-                    "Headless: no audio device".into()
-                } else {
-                    "Audio off (--no-audio)".into()
-                },
-                false,
-            )
+        let devices = if headless || no_audio {
+            devices::Devices::disabled()
         } else {
-            Output::open(slots.clone())
-                .unwrap_or_else(|e| Output::virtual_driver(slots.clone(), e.to_string(), true))
+            let root = brownnote_native::paths::Resolver::current()
+                .and_then(|paths| {
+                    paths.resolve(brownnote_native::paths::Resource::Preferences, None)
+                })
+                .map_err(|error| error.to_string());
+            devices::Devices::load(root)
         };
+        let output = devices.initial_output(
+            assets.slots().clone(),
+            if headless {
+                "Headless: no audio device".into()
+            } else {
+                "Audio off (--no-audio)".into()
+            },
+        );
         Self {
-            kit,
             output,
-            slots,
+            assets,
+            media,
             settings: std::array::from_fn(|i| Settings {
                 gain: 1.0,
                 pan: 0.0,
@@ -93,24 +98,22 @@ impl State {
             counts: [0; 16],
             peak: 0.0,
             pedals,
-            render_waves: std::array::from_fn(|_| None),
+            devices,
             now: 0.0,
             flashes: [0.0; 16],
             wake: None,
-            waveforms,
         }
     }
 
     pub fn trigger(&mut self, pad: usize, velocity: f32) {
-        let spec = &PADS[pad];
-        if self.kit.errors[spec.sample].is_some() {
+        let Some((slot, group)) = self.assets.playback(pad_id(pad)) else {
             return;
-        }
+        };
         let settings = self.settings[pad];
         self.output.send(Command::Trigger {
             pad,
-            slot: self.pedals.pads[pad].slot,
-            group: spec.sample,
+            slot,
+            group,
             velocity,
             gain: settings.gain,
             pan: settings.pan,
@@ -123,10 +126,10 @@ impl State {
     /// The length and rate of what this pad triggers now: its rendered sample
     /// when it has one, otherwise the kit file.
     pub fn pad_audio(&self, pad: usize) -> (f32, u32) {
-        let sample = self
-            .slots
-            .get(self.pedals.pads[pad].slot)
-            .unwrap_or(&self.kit.samples[PADS[pad].sample]);
+        let Some(asset) = self.assets.audible(pad_id(pad)) else {
+            return (0.0, 0);
+        };
+        let sample = &asset.imported.sample;
         (sample.data.len() as f32 / sample.rate as f32, sample.rate)
     }
 }
@@ -172,22 +175,36 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let was_lit = s.flashes.map(|until| until > s.now);
     s.now = clock;
     let failed = s.recover_stream_error();
+    let devices_changed = devices::poll(s);
+    if s.devices.busy() {
+        tx.wake_after(Duration::from_millis(1));
+    }
     s.output.advance(elapsed);
+    let media_changed = media::poll(s);
+    if s.media.busy() {
+        tx.wake_after(Duration::from_millis(33));
+    }
     let pedals_changed = pedals::poll(s);
     let counts = s.output.meters.counts();
     let fresh_peak = f32::from_bits(s.output.meters.peak.swap(0, Relaxed));
     let peak = fresh_peak.max(s.peak * (-elapsed as f32 * 7.0).exp());
     let peak = if peak < 0.001 { 0.0 } else { peak };
     let lit = s.flashes.map(|until| until > clock);
-    let changed = failed
+    let changed = devices_changed
+        || failed
         || pedals_changed
+        || media_changed
         || counts != s.counts
         || peak != s.peak
         || was_lit != lit
         || (elapsed > 0.0 && was_lit.contains(&true));
     s.counts = counts;
     s.peak = peak;
-    if lit.contains(&true) || counts.iter().any(|n| *n > 0) || peak > 0.0 {
+    if lit.contains(&true)
+        || counts.iter().any(|n| *n > 0)
+        || peak > 0.0
+        || s.assets.has_retirements()
+    {
         tx.wake_after(Duration::from_millis(33));
     }
     changed
@@ -195,6 +212,15 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
 
 type Scene = (&'static str, fn(&mut State));
 pub const SCENES: &[Scene] = &[
+    ("output-selection", |s| {
+        devices::scene(s, devices::SceneKind::Selection)
+    }),
+    ("output-missing", |s| {
+        devices::scene(s, devices::SceneKind::Missing)
+    }),
+    ("output-invalid", |s| {
+        devices::scene(s, devices::SceneKind::Invalid)
+    }),
     ("playing", |s| {
         for pad in [0, 4, 10] {
             s.trigger(pad, 1.0);
@@ -215,11 +241,11 @@ pub const SCENES: &[Scene] = &[
         pedals::scene(s, pedals::SceneKind::Unavailable)
     }),
     ("no-audio", |s| {
-        s.output = Output::virtual_driver(
-            s.kit.samples.clone(),
+        s.install_output(Output::virtual_driver(
+            s.assets.slots().clone(),
             "Audio off (--no-audio)".into(),
             false,
-        );
+        ));
     }),
 ];
 

@@ -1,9 +1,9 @@
 //! Runtime tests for the pedal strip. No processes: the catalog comes from
 //! the fixture and the renderer is a fake that answers at once.
-use crate::ui::{self, CatalogState, FIRST_RENDER_SLOT, State, Status, Tab};
+use crate::ui::{self, CatalogState, State, Status, Tab};
+use crate::ui_test_support::{fill_slots, retained, retire_one, slot, source_slot};
 use brownnote_native::{
-    engine::{Command, SLOTS, Sample},
-    kit::{DEFAULT_SAMPLES, Kit, PADS},
+    engine::{Command, Sample},
     pedals::{
         brownnote::CatalogError,
         catalog::Catalog,
@@ -12,7 +12,7 @@ use brownnote_native::{
 };
 use rune::{Env, Key, KeyEvent, Mods, Runtime};
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering::SeqCst},
@@ -55,13 +55,7 @@ fn rendered(source: &Sample) -> Rendered {
 }
 
 fn fake_state(recorder: &Arc<Recorder>) -> State {
-    let mut kit = Kit::load(Path::new(DEFAULT_SAMPLES));
-    kit.samples = (0..5)
-        .map(|_| Sample {
-            data: Arc::from(vec![0.5_f32; 44_100]),
-            rate: 44_100,
-        })
-        .collect();
+    let kit = crate::ui_test_support::kit(0.5_f32, 44_100, 44_100);
     let mut state = State::new(kit, true, true);
     state.pedals.auto_load = false;
     state.pedals.catalog = CatalogState::Ready(Arc::new(Catalog::parse(FIXTURE).unwrap()));
@@ -74,7 +68,17 @@ fn fake_state(recorder: &Arc<Recorder>) -> State {
         }
         match answer.answer.lock().unwrap().clone() {
             Some(message) => Err(RenderError::Invalid(message)),
-            None => Ok(rendered(&job.source)),
+            None => {
+                let mut answer = rendered(&job.source);
+                let identity = argv(&job.chain)
+                    .iter()
+                    .flat_map(|arg| arg.bytes())
+                    .map(u64::from)
+                    .sum::<u64>();
+                answer.sample.data =
+                    vec![0.25 + (identity % 1000) as f32 * 0.0001; answer.sample.data.len()].into();
+                Ok(answer)
+            }
         }
     });
     state
@@ -191,7 +195,8 @@ fn adding_a_pedal_renders_once_after_the_debounce_with_only_the_moved_pot() {
     assert_eq!(rt.state.pedals.pads[4].chain.stages.len(), 1);
     assert_eq!(rt.state.pedals.pads[4].status, Status::Rendering);
     assert_eq!(
-        rt.state.pedals.pads[4].slot, 1,
+        slot(&rt.state, 4),
+        source_slot(&rt.state, 4),
         "the base slot before landing"
     );
 
@@ -203,7 +208,7 @@ fn adding_a_pedal_renders_once_after_the_debounce_with_only_the_moved_pot() {
         rt.state.pedals.pads[4].status,
         Status::Ready { .. }
     ));
-    assert_eq!(rt.state.pedals.pads[4].slot, FIRST_RENDER_SLOT);
+    assert_eq!(Some(slot(&rt.state, 4)), retained(&rt.state, 4));
 
     // Moving one pot asks once, with just that pot, even across several steps.
     tap(&mut rt, "pot-distortion");
@@ -228,11 +233,11 @@ fn a_hit_before_the_answer_uses_the_base_slot_and_after_uses_the_new_one() {
     add(&mut rt, "Rat Sketch");
     tap(&mut rt, "pad-4");
     assert_eq!(rt.state.counts[4], 1, "the hit before landing plays");
-    assert_eq!(rt.state.pedals.pads[4].slot, 1);
+    assert_eq!(slot(&rt.state, 4), source_slot(&rt.state, 4));
 
     drop(held);
     settle(&mut rt);
-    assert_eq!(rt.state.pedals.pads[4].slot, FIRST_RENDER_SLOT);
+    assert_eq!(Some(slot(&rt.state, 4)), retained(&rt.state, 4));
     tap(&mut rt, "pad-4");
     assert_eq!(
         rt.state.counts[4], 2,
@@ -247,8 +252,9 @@ fn a_voice_keeps_its_sample_across_a_swap_and_its_slot_retires_after_it_ends() {
     pedals_tab(&mut rt, 4);
     add(&mut rt, "Rat Sketch");
     settle(&mut rt);
-    assert_eq!(rt.state.pedals.pads[4].slot, FIRST_RENDER_SLOT);
+    assert_eq!(Some(slot(&rt.state, 4)), retained(&rt.state, 4));
 
+    let first = slot(&rt.state, 4);
     // Start a voice on the first render, then swap in a second one.
     tap(&mut rt, "pad-4");
     assert_eq!(rt.state.counts[4], 1);
@@ -256,11 +262,11 @@ fn a_voice_keeps_its_sample_across_a_swap_and_its_slot_retires_after_it_ends() {
     press(&mut rt, Key::Home);
     press(&mut rt, Key::Right);
     settle(&mut rt);
-    let second = FIRST_RENDER_SLOT + 1;
-    assert_eq!(rt.state.pedals.pads[4].slot, second);
+    let second = slot(&rt.state, 4);
+    assert_ne!(first, second);
     assert_eq!(rt.state.counts[4], 1, "the old voice still plays");
     assert!(
-        !rt.state.slots.is_empty(FIRST_RENDER_SLOT),
+        !rt.state.assets.slots().is_empty(first),
         "the old slot is still held by the playing voice"
     );
 
@@ -268,7 +274,7 @@ fn a_voice_keeps_its_sample_across_a_swap_and_its_slot_retires_after_it_ends() {
     settle(&mut rt);
     assert_eq!(rt.state.counts[4], 0);
     assert!(
-        rt.state.slots.is_empty(FIRST_RENDER_SLOT),
+        rt.state.assets.slots().is_empty(first),
         "the retired slot came back once the voice ended"
     );
 }
@@ -304,14 +310,15 @@ fn removing_the_last_stage_points_the_pad_back_at_its_base_slot() {
     pedals_tab(&mut rt, 3);
     add(&mut rt, "Reverb");
     settle(&mut rt);
-    assert_eq!(rt.state.pedals.pads[3].slot, FIRST_RENDER_SLOT);
+    assert_eq!(Some(slot(&rt.state, 3)), retained(&rt.state, 3));
     tap(&mut rt, "pedal-0-remove");
     flush(&mut rt);
     assert_eq!(
-        rt.state.pedals.pads[3].slot, 0,
+        slot(&rt.state, 3),
+        source_slot(&rt.state, 3),
         "back to the base file slot"
     );
-    assert_eq!(rt.state.pedals.pads[3].rendered_slot, None);
+    assert_eq!(retained(&rt.state, 3), None);
     assert_eq!(rt.state.pedals.pads[3].status, Status::Base);
 }
 
@@ -339,13 +346,13 @@ fn a_render_error_shows_its_first_line_and_keeps_the_previous_sound() {
     pedals_tab(&mut rt, 2);
     add(&mut rt, "Reverb");
     settle(&mut rt);
-    let good = rt.state.pedals.pads[2].slot;
-    assert_eq!(good, FIRST_RENDER_SLOT);
+    let good = slot(&rt.state, 2);
+    assert_eq!(Some(good), retained(&rt.state, 2));
     *recorder.answer.lock().unwrap() =
         Some("Rat Sketch / Distortion takes 0..120, not 200\nsecond line".into());
     add(&mut rt, "Tape Echo");
     settle(&mut rt);
-    assert_eq!(rt.state.pedals.pads[2].slot, good, "the old sound stayed");
+    assert_eq!(slot(&rt.state, 2), good, "the old sound stayed");
     assert_eq!(
         ui::pedals::status_text(&rt.state.pedals.pads[2].status),
         "ERROR · Rat Sketch / Distortion takes 0..120, not 200"
@@ -563,11 +570,12 @@ fn a_load_the_queue_refused_is_landed_once_it_drains() {
 
     ui::pedals::poll(&mut rt.state);
     assert_eq!(
-        rt.state.pedals.pads[4].slot, 1,
+        slot(&rt.state, 4),
+        source_slot(&rt.state, 4),
         "the pad was pointed at a slot the mixer never got"
     );
     assert!(
-        rt.state.pedals.pads[4].rendered_slot.is_none(),
+        retained(&rt.state, 4).is_none(),
         "the slot was reserved without a load"
     );
     assert!(
@@ -575,13 +583,22 @@ fn a_load_the_queue_refused_is_landed_once_it_drains() {
         "the answer was dropped instead of kept"
     );
 
-    // A frame drains the queue, and the next poll lands what it kept.
+    // A drained queue lets the next poll land its answer and request a redraw.
+    rt.poll = Some(|state, clock, tx| {
+        let pending = state.pedals.pads[4].pending.is_some();
+        let changed = ui::poll(state, clock, tx);
+        if pending && state.pedals.pads[4].pending.is_none() {
+            assert!(changed, "admission must redraw READY");
+        }
+        changed
+    });
     rt.frame(0.0);
-    assert_eq!(rt.state.pedals.pads[4].slot, FIRST_RENDER_SLOT);
+    assert_eq!(Some(slot(&rt.state, 4)), retained(&rt.state, 4));
     assert!(matches!(
         rt.state.pedals.pads[4].status,
         Status::Ready { .. }
     ));
+    assert!(text_of(&rt, "pedal-status").starts_with("READY"));
     tap(&mut rt, "pad-4");
     assert_eq!(rt.state.counts[4], 1, "the landed slot plays");
 }
@@ -620,17 +637,14 @@ fn an_edit_that_changes_nothing_keeps_ready_and_asks_for_nothing() {
 #[test]
 fn audio_pending_for_an_abandoned_chain_is_dropped() {
     let recorder = Arc::new(Recorder::default());
-    let mut rt = runtime(recorder);
+    let mut rt = runtime(recorder.clone());
     pedals_tab(&mut rt, 4);
     add(&mut rt, "Rat Sketch");
     settle(&mut rt);
-    assert_eq!(rt.state.pedals.pads[4].slot, FIRST_RENDER_SLOT);
+    assert_eq!(Some(slot(&rt.state, 4)), retained(&rt.state, 4));
 
-    // Every slot is taken, so the next answer has nowhere to go.
-    let sample = rt.state.kit.samples[PADS[4].sample].clone();
-    for slot in FIRST_RENDER_SLOT..SLOTS {
-        rt.state.slots.set(slot, Some(sample.clone()));
-    }
+    let original = slot(&rt.state, 4);
+    fill_slots(&mut rt.state, 4);
     tap(&mut rt, "pot-distortion");
     press(&mut rt, Key::Home);
     press(&mut rt, Key::Right);
@@ -640,29 +654,25 @@ fn audio_pending_for_an_abandoned_chain_is_dropped() {
         "the answer did not wait for a slot"
     );
 
-    // The user edits again, and a slot frees up. The older answer must not
-    // play, because it belongs to the chain that was abandoned.
+    // Edit again before releasing the old voices. The abandoned answer must
+    // never become audible, even as its pending slot becomes available.
+    let held = recorder.hold();
     press(&mut rt, Key::Right);
-    rt.state.slots.set(FIRST_RENDER_SLOT + 1, None);
+    rt.state.output.send(Command::Panic);
+    rt.frame(0.01);
     rt.frame(0.0);
-    assert!(
-        rt.state.pedals.pads[4].pending.is_none(),
-        "the abandoned answer is still waiting"
-    );
+    assert!(rt.state.pedals.pads[4].pending.is_none());
     assert_eq!(
-        rt.state.pedals.pads[4].slot, FIRST_RENDER_SLOT,
+        slot(&rt.state, 4),
+        original,
         "the abandoned answer was loaded"
     );
-    assert!(
-        matches!(rt.state.pedals.pads[4].status, Status::Rendering),
-        "the strip reported the abandoned answer as ready"
-    );
-
-    rt.state.slots.set(FIRST_RENDER_SLOT + 1, None);
+    assert!(matches!(rt.state.pedals.pads[4].status, Status::Rendering));
+    drop(held);
     settle(&mut rt);
-    assert_eq!(
-        rt.state.pedals.pads[4].slot,
-        FIRST_RENDER_SLOT + 1,
+    assert_ne!(
+        slot(&rt.state, 4),
+        original,
         "the newest answer never landed"
     );
 }
@@ -674,45 +684,28 @@ fn retry_audio_drops_slots_no_pad_owns() {
     pedals_tab(&mut rt, 4);
     add(&mut rt, "Rat Sketch");
     settle(&mut rt);
-    let owned = rt.state.pedals.pads[4].rendered_slot.unwrap();
+    let owned = retained(&rt.state, 4).unwrap();
 
-    // A superseded slot still in the table with no pad pointing at it, and an
-    // unload the old mixer never handled.
-    let sample = rt.state.kit.samples[PADS[4].sample].clone();
-    rt.state.slots.set(9, Some(sample.clone()));
-    rt.state.slots.set(20, Some(sample));
-    rt.state.pedals.unloads.push(20);
+    let retired = retire_one(&mut rt.state, 15);
     rt.state.output.failed = true;
-    // A rebuild has to happen before the button exists, and `poll` only asks for
-    // one when visible state changed.
     tap(&mut rt, "choke");
-
     tap(&mut rt, "retry-audio");
+    rt.frame(0.01);
+    rt.frame(0.0);
     assert!(
-        rt.state.slots.get(owned).is_some(),
-        "the slot the pad plays was dropped"
+        rt.state.assets.slots().get(owned).is_some(),
+        "the audible slot was dropped"
     );
     assert!(
-        rt.state.slots.get(9).is_none(),
-        "a slot no pad owns survived the new mixer"
-    );
-    assert!(rt.state.slots.get(20).is_none());
-    assert!(
-        rt.state.pedals.unloads.is_empty(),
-        "an unload for a slot the new mixer never held is still queued"
+        rt.state.assets.slots().is_empty(retired),
+        "an unowned slot survived recovery"
     );
 }
 
 #[test]
 fn the_catalog_loader_runs_the_brownnote_the_state_was_given() {
     let missing = PathBuf::from("/nowhere/brownnote-for-this-test");
-    let mut kit = Kit::load(Path::new(DEFAULT_SAMPLES));
-    kit.samples = (0..5)
-        .map(|_| Sample {
-            data: Arc::from(vec![0.5_f32; 44_100]),
-            rate: 44_100,
-        })
-        .collect();
+    let kit = crate::ui_test_support::kit(0.5_f32, 44_100, 44_100);
     let mut state = State::with_cache(
         kit,
         true,

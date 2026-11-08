@@ -460,6 +460,49 @@ fn typed_errors_cover_missing_wrong_kind_nonexecutable_malformed_and_unwritable(
 }
 
 #[test]
+fn machine_preference_directory_resolves_without_creating_or_probing_it() {
+    let fixture = Fixture::new();
+    let home = fixture.0.join("user");
+    let resolver = fixture.resolver(Environment {
+        home: Some(home.clone()),
+        ..Environment::default()
+    });
+    let path = resolver.resolve(Resource::Preferences, None).unwrap();
+    assert_eq!(
+        path,
+        home.join("Library/Application Support/Brownnote/preferences")
+    );
+    assert!(!path.exists());
+
+    let environment = fixture.0.join("environment-preferences");
+    let explicit = fixture.0.join("explicit-preferences");
+    let overrides = fixture.resolver(Environment {
+        preferences: Some(environment.clone()),
+        ..Environment::default()
+    });
+    assert_eq!(
+        overrides.resolve(Resource::Preferences, None).unwrap(),
+        environment
+    );
+    assert_eq!(
+        overrides
+            .resolve(Resource::Preferences, Some(&explicit))
+            .unwrap(),
+        explicit
+    );
+    assert!(!environment.exists());
+    assert!(!explicit.exists());
+    assert_eq!(
+        fixture
+            .resolver(Environment::default())
+            .resolve(Resource::Preferences, None)
+            .unwrap_err()
+            .kind,
+        PathErrorKind::NoHome
+    );
+}
+
+#[test]
 fn incomplete_bundle_does_not_fall_back_to_checkout_or_other_sounds() {
     let fixture = Fixture::new();
     let native = fixture.0.join("native");

@@ -115,6 +115,26 @@ mod tests {
 
     #[test]
     #[ignore = "needs a GPU adapter"]
+    fn actual_binary_mounts_output_settings_and_recovery_scenes() {
+        for scene in ["output-selection", "output-missing", "output-invalid"] {
+            let tree = run(scene, &["--scene", scene, "--size", "820x600"]);
+            assert!(
+                tree["elements"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|element| element["key"] == "output-panel")
+            );
+            assert!(text(&tree, "output-status").starts_with("SILENT"));
+            if scene == "output-invalid" {
+                assert!(!text(&tree, "output-error").is_empty());
+            }
+            assert_eq!(tree["warnings"].as_array().unwrap().len(), 0);
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU adapter"]
     fn compact_binary_layout_keeps_every_pad_above_the_editor() {
         for missing in [false, true] {
             let mut args = vec!["--size", "820x600"];
