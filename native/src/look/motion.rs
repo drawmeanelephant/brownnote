@@ -120,8 +120,9 @@ const FLOOR: f32 = 0.001;
 const HOLD_FADE: f32 = 0.25;
 
 impl Meter {
-    /// Advance to `now` with the engine's peak since the last call (linear, 0..).
-    pub fn feed(&mut self, now: f64, fresh: f32, m: &Motion) {
+    /// Advance with the engine's pre-clamp peak (linear, 0..) and overload
+    /// flag since the last call. Only fresh overloads restart the clip latch.
+    pub fn feed(&mut self, now: f64, fresh: f32, clipped: bool, m: &Motion) {
         let dt = (now - self.now).max(0.0) as f32;
         self.now = now;
         let fall = (-dt / m.meter_release.max(1e-3)).exp();
@@ -139,7 +140,7 @@ impl Meter {
             self.hold = 0.0;
             self.hold_light = 0.0;
         }
-        if fresh >= 0.999 {
+        if clipped {
             self.clip_at = Some(now);
         }
     }
@@ -276,22 +277,32 @@ mod tests {
     }
 
     #[test]
+    fn clean_near_unity_and_full_scale_peaks_do_not_light_clip() {
+        for peak in [0.999, 0.9995, 1.0] {
+            let mut meter = Meter::default();
+            meter.feed(0.0, peak, false, M);
+            assert_eq!(meter.level, peak);
+            assert!(!meter.clipping(), "clean peak {peak} lit CLIP");
+        }
+    }
+
+    #[test]
     fn meter_attacks_instantly_holds_peak_latches_clip_then_settles() {
         let mut meter = Meter::default();
-        meter.feed(0.0, 0.5, M);
+        meter.feed(0.0, 0.5, false, M);
         assert_eq!(meter.level, 0.5);
-        meter.feed(0.1, 0.0, M);
+        meter.feed(0.1, 0.0, false, M);
         assert!(meter.level < 0.5 && meter.level > 0.1);
         assert_eq!((meter.hold, meter.hold_light), (0.5, 1.0));
-        meter.feed(0.2, 1.0, M);
+        meter.feed(0.2, 1.25, true, M);
         assert!(meter.clipping());
         let mut t = 0.2;
         let mut light = meter.hold_light;
         while !meter.settled() {
             t += 1.0 / 60.0;
-            meter.feed(t, 0.0, M);
+            meter.feed(t, 0.0, false, M);
             if meter.hold > 0.0 {
-                assert_eq!(meter.hold, 1.0, "the held peak fades where it landed");
+                assert_eq!(meter.hold, 1.25, "the held peak fades where it landed");
             }
             assert!(meter.hold_light <= light, "and only fades");
             light = meter.hold_light;
@@ -300,6 +311,31 @@ mod tests {
         assert!(t >= 0.2 + CLIP_LATCH);
         assert_eq!(db(0.0), f32::NEG_INFINITY);
         assert!((db(0.5) + 6.0206).abs() < 1e-3);
+    }
+
+    #[test]
+    fn clip_latch_uses_the_overload_flag_and_expires_from_the_latest_event() {
+        let mut meter = Meter::default();
+        // A tiny overload may round to exactly 1.0 in the f32 peak meter.
+        meter.feed(0.5, 1.0, true, M);
+        assert!(meter.clipping());
+        meter.feed(1.5, 0.9995, false, M);
+        assert!(
+            meter.clipping(),
+            "clean audio must not clear the latch early"
+        );
+        meter.feed(2.0, 0.0, false, M);
+        assert!(!meter.clipping(), "clean audio must not restart the latch");
+        meter.feed(2.5, 1.25, true, M);
+        meter.feed(3.0, 1.25, true, M);
+        meter.feed(4.0, 0.0, false, M);
+        assert!(meter.clipping(), "a new overload restarts the latch");
+        meter.feed(4.5, 0.0, false, M);
+        assert!(
+            !meter.clipping(),
+            "expires exactly 1.5 seconds after overload"
+        );
+        assert_eq!(CLIP_LATCH, 1.5);
     }
 
     #[test]
