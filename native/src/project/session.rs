@@ -6,12 +6,14 @@ use super::{
 };
 use crate::{
     assets::{AssetRegistry, ChokeIdentity},
+    edit::{EditModel, EditsDocument},
     engine::{Command, SLOTS, Slots},
     import::{Imported, MediaPublisher, ProjectMedia, SessionMedia},
     kit::{KIT_SECONDS, decode_wav_max, waveform},
     midi::{input::MappingsDocument, mapping::Mappings},
     output::Output,
     pedals::render::Chain,
+    takes::{Takes, TakesDocument},
 };
 use std::{
     collections::BTreeMap,
@@ -36,6 +38,7 @@ pub enum Error {
     Registry,
     Admission(String),
     RecoveryDestination,
+    PassActive,
 }
 
 impl fmt::Display for Error {
@@ -60,6 +63,7 @@ impl fmt::Display for Error {
                 f,
                 "Save recovered content to a new, nonexistent project directory."
             ),
+            Self::PassActive => write!(f, "Stop or cancel recording before saving or opening."),
         }
     }
 }
@@ -112,6 +116,21 @@ impl Snapshot {
         self.document.midi_mappings = Some(MappingsDocument::from_mappings(mappings));
         self
     }
+
+    /// Freeze committed takes and the current edit layer (D9, D15). Refuses a
+    /// registry with an armed or recording pass: tentative capture never saves.
+    pub fn with_takes(mut self, takes: &Takes, edits: &EditModel) -> Result<Self, Error> {
+        if takes.has_pass() {
+            return Err(Error::PassActive);
+        }
+        let edits = EditsDocument::from_model(edits);
+        self.document.takes = Some(TakesDocument::from_takes(takes));
+        self.document.edits = (!edits.is_empty()).then_some(edits);
+        self.document
+            .validate()
+            .map_err(|error| Error::Store(StoreError::Document(error)))?;
+        Ok(self)
+    }
 }
 
 pub fn pad_id(index: usize) -> PadId {
@@ -124,6 +143,8 @@ pub fn pad_id(index: usize) -> PadId {
 pub struct Prepared {
     pub document: Document,
     pub mappings: Mappings,
+    /// Restored committed takes and edit layer; `None` when none were saved.
+    pub takes: Option<(Takes, EditModel)>,
     pub generation: GenerationId,
     pub registry: AssetRegistry,
     pub media: Arc<SessionMedia>,
@@ -136,6 +157,9 @@ impl Prepared {
         let document = inspection.document;
         let mappings = document
             .mappings()
+            .map_err(|error| Error::Store(StoreError::Document(error)))?;
+        let takes = document
+            .takes()
             .map_err(|error| Error::Store(StoreError::Document(error)))?;
         if document.assets.len() > SLOTS {
             return Err(Error::Registry);
@@ -189,6 +213,7 @@ impl Prepared {
         Ok(Self {
             document,
             mappings,
+            takes,
             generation: inspection.generation,
             registry,
             media,

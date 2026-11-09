@@ -5,6 +5,12 @@ use crate::performance::{
 };
 use std::{collections::BTreeMap, fmt};
 
+mod document;
+pub use document::{
+    NoteDocument, RemovalDocument, TAKES_FORMAT_VERSION, TakeDocument, TakesDocument,
+    TakesDocumentError, TargetDocument,
+};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PassMode {
     #[default]
@@ -133,8 +139,8 @@ pub struct Takes {
     selected: Option<TakeId>,
 }
 impl Takes {
-    /// Reopen/serialization is not implemented here. The project owner must
-    /// choose an unused ID range rather than recreate a registry over saved IDs.
+    /// The project owner must choose an unused ID range. Reopen goes through
+    /// [`TakesDocument::to_takes`], which continues above every saved ID.
     pub fn new(loop_bars: LoopBars, first_take: TakeId) -> Self {
         Self {
             tempo: TempoControl::default(),
@@ -174,6 +180,10 @@ impl Takes {
     }
     pub fn selected(&self) -> Option<TakeId> {
         self.selected
+    }
+    /// True while any pass is armed or recording (tempo and loop are locked).
+    pub fn has_pass(&self) -> bool {
+        !self.passes.is_empty()
     }
 
     pub fn arm(&mut self, options: PassOptions) -> Result<TakeId, TakesError> {

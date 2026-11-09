@@ -254,4 +254,76 @@ mod tests {
             assert_eq!(tree["warnings"].as_array().unwrap().len(), 0);
         }
     }
+
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn actual_binary_records_a_keyboard_take_replays_it_and_panics() {
+        let at = |name: &str, time: &str| {
+            let tree = run(name, &["--script", "scripts/transport.json", "--at", time]);
+            assert_eq!(tree["warnings"].as_array().unwrap().len(), 0, "{name}");
+            text(&tree, "transport-status").to_string()
+        };
+        let recording = at("transport-recording", "1.0");
+        assert!(recording.starts_with("REC T1 · 3 NOTES"), "{recording}");
+        let replaying = at("transport-replaying", "3.1");
+        assert!(replaying.starts_with("PLAYING"), "{replaying}");
+        assert!(replaying.contains("1 TAKES · 3 NOTES"), "{replaying}");
+        assert!(
+            replaying.contains("REPLAY 3 SENT · 3 PLAYED"),
+            "{replaying}"
+        );
+        assert!(
+            replaying.contains("take 1 recorded: 3 note(s)"),
+            "{replaying}"
+        );
+        let stopped = at("transport-panic", "3.6");
+        assert!(stopped.starts_with("STOPPED"), "{stopped}");
+        assert!(
+            stopped.contains("3 PLAYED · SEL T1: 3 NOTES · Panic"),
+            "{stopped}"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn actual_binary_records_virtual_midi_held_durations_at_minimum_size() {
+        let tree = run(
+            "transport-midi",
+            &[
+                "--scene",
+                "transport-midi",
+                "--size",
+                "820x600",
+                "--at",
+                "2.5",
+            ],
+        );
+        let status = text(&tree, "transport-status");
+        for part in [
+            "1 TAKES · 4 NOTES",
+            "REPLAY 2 SENT · 2 PLAYED",
+            "2 HELD NOT SOUNDED (NO INSTRUMENT BACKEND)",
+            "SEL T1: 4 NOTES · HELD 500ms/800ms",
+        ] {
+            assert!(status.contains(part), "{part}: {status}");
+        }
+        let elements = tree["elements"].as_array().unwrap();
+        for key in [
+            "transport-record",
+            "transport-play",
+            "transport-loop",
+            "transport-mode",
+            "transport-count-in",
+            "transport-status",
+        ] {
+            let element = elements.iter().find(|e| e["key"] == key).unwrap();
+            let [x, y, w, h]: [f64; 4] =
+                std::array::from_fn(|index| element["rect"][index].as_f64().unwrap());
+            assert!(
+                x >= 0.0 && y >= 0.0 && w > 0.0 && h > 0.0 && x + w <= 820.1 && y + h <= 600.1,
+                "{key} overflows"
+            );
+        }
+        assert_eq!(tree["warnings"].as_array().unwrap().len(), 0);
+    }
 }

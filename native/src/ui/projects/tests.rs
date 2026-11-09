@@ -870,3 +870,103 @@ fn project_controls_decodes_pcm16_stereo_and_rejects_capacity_before_swap() {
     assert!(s.projects.error.as_deref().unwrap().contains("capacity"));
     assert_eq!(snapshot(&s).unwrap().document, before);
 }
+
+#[test]
+fn project_controls_open_clears_old_held_notes_only_after_success() {
+    let root = Root::new();
+    let project = root.0.join("next project");
+    let mut s = state();
+    saved(&mut s, &project);
+    let midi = s.midi.clone();
+    midi::fixture(
+        &midi,
+        brownnote_native::performance::SourceId(19),
+        r#"{"version":1,"mappings":[
+            {"type":"note","channel":0,"pitch":60,"target":{"type":"held","instrument":"1"}}
+        ]}"#,
+        &[(0, &[0x90, 60, 100]), (100_000, &[0x90, 60, 90])],
+    );
+    s.now = 1.0;
+    midi::poll(&mut s, &midi);
+    assert!(midi::status(&s, &midi).contains("held 2 active"));
+    s.now = 2.0;
+
+    set_path(&mut s, &root.0.join("missing"));
+    open(&mut s);
+    finish(&mut s);
+    assert!(s.projects.error.is_some());
+    assert!(
+        midi::status(&s, &midi).contains("held 2 active"),
+        "failed project open must not release the active kit's notes"
+    );
+
+    set_path(&mut s, &project);
+    open(&mut s);
+    finish(&mut s);
+    assert!(s.projects.error.is_none(), "{:?}", s.projects.error);
+    let status = midi::status(&s, &midi);
+    assert!(status.contains("held 0 active"), "{status}");
+    assert!(
+        status.starts_with("CONNECTED") && status.contains("source 19"),
+        "{status}"
+    );
+    assert!(midi::mappings(&midi).unwrap().entries().is_empty());
+}
+
+#[test]
+fn project_controls_save_and_reopen_recorded_takes_edits_and_mappings_then_replay() {
+    let root = Root::new();
+    let project = root.0.join("takes");
+    let mut s = state();
+    transport::cycle_loop(&mut s);
+    transport::record(&mut s);
+    s.now = 0.25;
+    s.trigger(4, 1.0);
+    s.now = 0.27;
+    s.trigger(4, 0.3);
+    assert!(snapshot(&s).is_err(), "a recording pass never saves");
+    transport::stop(&mut s, "Stopped");
+    let take = s.takes.selected().unwrap();
+    s.edit.model.toggle_quantization(&s.takes, take).unwrap();
+    let mappings: brownnote_native::midi::input::MappingsDocument = serde_json::from_str(
+        r#"{"version":1,"mappings":[{"type":"note","channel":1,"pitch":40,"target":{"type":"one_shot","pad":4}}]}"#,
+    )
+    .unwrap();
+    midi::set_mappings(&mut s, mappings.to_mappings().unwrap());
+    let expected = snapshot(&s).unwrap().document;
+    assert!(expected.takes.is_some() && expected.edits.is_some());
+    assert!(expected.midi_mappings.is_some());
+    saved(&mut s, &project);
+
+    // Diverge after saving: another take, no edits, no mappings.
+    transport::record(&mut s);
+    s.trigger(1, 1.0);
+    transport::stop(&mut s, "Stopped");
+    s.edit = edit::Editor::default();
+    midi::set_mappings(&mut s, Document::default().mappings().unwrap());
+    assert_ne!(snapshot(&s).unwrap().document, expected);
+
+    set_path(&mut s, &project);
+    open(&mut s);
+    finish(&mut s);
+    assert!(s.projects.error.is_none(), "{:?}", s.projects.error);
+    assert_eq!(snapshot(&s).unwrap().document, expected);
+    assert!(!s.transport.active());
+    let notes = s.takes.take(take).unwrap().notes();
+    assert_eq!(notes.len(), 2);
+    assert_eq!(
+        notes[1].on().original_time.nanos() - notes[0].on().original_time.nanos(),
+        20_000_000
+    );
+    assert_eq!(notes[1].on().velocity.value(), 38);
+
+    // The reopened take replays through the scheduler.
+    transport::play(&mut s);
+    for _ in 0..300 {
+        s.now += 0.01;
+        s.output.advance(0.01);
+        transport::poll(&mut s);
+    }
+    assert!(s.output.schedule_counters().dispatched >= 2);
+    assert_eq!(s.transport.counters.schedule_lost, 0);
+}

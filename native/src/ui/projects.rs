@@ -1,5 +1,5 @@
 //! Explicit project paths and worker completions. See project-session.md for mounting.
-use super::{Settings, State, button, caption, ink, media, pedals};
+use super::{Settings, State, button, caption, edit, ink, media, midi, pedals, transport};
 use brownnote_native::{
     engine::Slots,
     import::ImportService,
@@ -97,8 +97,19 @@ fn snapshot(s: &State) -> Result<Snapshot, String> {
             s.pedals.pads[index].chain.clone(),
         )
     }));
-    Snapshot::capture(&s.assets, pads, s.master, s.choke, s.media.owned.clone())
-        .map_err(|error| error.to_string())
+    let mut snapshot = Snapshot::capture(&s.assets, pads, s.master, s.choke, s.media.owned.clone())
+        .map_err(|error| error.to_string())?;
+    if let Some(mappings) = midi::mappings(&s.midi)
+        && !mappings.entries().is_empty()
+    {
+        snapshot = snapshot.with_midi_mappings(&mappings);
+    }
+    if s.takes.has_pass() || s.takes.takes().next().is_some() {
+        snapshot = snapshot
+            .with_takes(&s.takes, &s.edit.model)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(snapshot)
 }
 
 fn begin(s: &mut State, root: PathBuf, kind: Kind, request: Request) {
@@ -256,6 +267,7 @@ pub fn poll(s: &mut State) -> bool {
                 }
                 // All fallible validation/preparation/admission is above this
                 // point. Cancel old workers only when committing the replacement.
+                midi::set_mappings(s, prepared.mappings);
                 for index in 0..16 {
                     s.cancel_import(index);
                     pedals::cancel_work(s, index);
@@ -273,6 +285,12 @@ pub fn poll(s: &mut State) -> bool {
                 s.media = media::Media::with_service(prepared.media, Ok(importer));
                 s.assets = prepared.registry;
                 s.install_output(output);
+                let (takes, model) = prepared.takes.unwrap_or_else(|| (super::fresh_takes(), Default::default()));
+                let mut editor = edit::Editor::default();
+                editor.model = model;
+                s.takes = takes;
+                s.edit = editor;
+                transport::reset(s);
                 s.flashes = [0.0; 16];
                 s.projects.path = TextEdit::new(pending.root.to_string_lossy());
                 s.projects.recovered_from = match choice {
