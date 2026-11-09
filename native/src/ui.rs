@@ -6,6 +6,7 @@ mod graphics;
 #[path = "ui_import_tests.rs"]
 mod import_tests;
 mod media;
+mod midi;
 pub(crate) mod pedals;
 pub(crate) mod projects;
 mod view;
