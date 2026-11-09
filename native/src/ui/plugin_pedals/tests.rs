@@ -779,3 +779,191 @@ fn pinned_airwindows_effect_renders_edits_and_reopens_through_the_app() {
     assert!(problems.is_empty(), "{problems:?}");
     assert!(exists(&rt, &format!("plugin-param-{}", dry_wet.id)));
 }
+
+// CAPS 0.9.26 Plate, pinned by #97 and provisioned by caps/provision.py.
+const PLATE_ID: &str = "1779:Plate";
+
+#[test]
+fn pinned_ladspa_plate_renders_auditions_and_exports_through_the_app() {
+    let Some(_) = env_path("BROWNNOTE_LADSPA_HELPER", "BROWNNOTE_REQUIRE_LADSPA_PLATE") else {
+        return;
+    };
+    let Some(built) = env_path("BROWNNOTE_LADSPA_PLATE", "BROWNNOTE_REQUIRE_LADSPA_PLATE") else {
+        return;
+    };
+    let root = Root::new();
+    let cache = root.0.join("cache");
+    fs::create_dir_all(&cache).unwrap();
+    let plugins = root.0.join("plugins");
+    fs::create_dir_all(&plugins).unwrap();
+    let installed = plugins.join("caps.so");
+    fs::copy(&built, &installed).unwrap();
+
+    let mut rt = runtime(&cache);
+    open_plugins(&mut rt, PAD);
+    load(&mut rt, &installed, PLATE_ID);
+    let text = status(&rt);
+    assert!(text.starts_with("READY"), "{text}");
+    assert!(text.contains("TAIL"), "{text}");
+    let stage = rt.state.pedals.plugins.pads[PAD].stages[0].clone();
+    assert_eq!(stage.record.plugin.backend, Backend::Ladspa);
+    assert_eq!(stage.record.plugin.id, PLATE_ID);
+    let artifact = stage.record.plugin.artifact.to_string();
+    let blend = stage
+        .controls
+        .clone()
+        .unwrap()
+        .into_iter()
+        .find(|param| param.name == "blend")
+        .unwrap();
+
+    let dry = source(&rt, PAD);
+    let wet = audible(&rt, PAD);
+    assert!(wet.iter().all(|sample| sample.is_finite()));
+    assert!(wet.len() > dry.len(), "the plate tail is retained");
+    let difference: f32 = wet.iter().zip(dry.iter()).map(|(a, b)| (a - b).abs()).sum();
+    assert!(difference > 1.0, "the plate changed nothing ({difference})");
+
+    // A hit while an edit renders keeps the voice already playing on its slot.
+    hit(&mut rt, PAD);
+    let playing_slot = playback_slot(&rt, PAD);
+    tap(&mut rt, &format!("plugin-param-{}", blend.id));
+    hit(&mut rt, PAD);
+    settle(&mut rt);
+    assert!(status(&rt).starts_with("READY"), "{}", status(&rt));
+    assert_ne!(playback_slot(&rt, PAD), playing_slot);
+    assert!(
+        !rt.state.assets.slots().is_empty(playing_slot),
+        "the playing voice lost its sample"
+    );
+    let edited = audible(&rt, PAD);
+    assert_ne!(&edited[..dry.len()], &wet[..dry.len()]);
+
+    // Save, then reopen with the library and cache gone: the retained audio
+    // still plays and the pad names the missing LADSPA plugin.
+    let saved_at = root.0.join("A");
+    save(&mut rt, &saved_at);
+    let document = saved_document(&saved_at);
+    let chain = document.pads[PAD].plugins.clone().unwrap();
+    assert_eq!(chain.stages[0].plugin.backend, Backend::Ladspa);
+    assert_eq!(chain.stages[0].plugin.id, PLATE_ID);
+    assert_eq!(chain.stages[0].location_hint.as_deref(), installed.to_str());
+    let sample = document.pads[PAD].sample.clone().unwrap();
+    let retained = sample.retained.unwrap();
+
+    fs::remove_dir_all(&plugins).unwrap();
+    fs::remove_dir_all(&cache).unwrap();
+    let moved = root.0.join("moved B");
+    fs::rename(&saved_at, &moved).unwrap();
+
+    let mut rt = runtime(&root.0.join("cache2"));
+    open(&mut rt, &moved);
+    open_plugins(&mut rt, PAD);
+    assert_eq!(
+        &*audible(&rt, PAD),
+        &*edited,
+        "the reopened pad plays the saved render"
+    );
+    let text = status(&rt);
+    assert!(
+        text.starts_with("READY") && text.contains("PLUGIN MISSING"),
+        "{text}"
+    );
+    let problem = rt.state.pedals.plugins.pads[PAD].stages[0]
+        .problem
+        .clone()
+        .unwrap();
+    assert!(problem.contains("LADSPA 1779:Plate"), "{problem}");
+    assert!(
+        rt.elements().iter().any(|element| {
+            element.key.as_deref() == Some("plugin-problem")
+                && element
+                    .text
+                    .as_deref()
+                    .is_some_and(|text| text.contains("LADSPA 1779:Plate"))
+        }),
+        "the status does not name the missing LADSPA plugin"
+    );
+    hit(&mut rt, PAD);
+    assert!(
+        is_current(&rt.state, PAD),
+        "a missing plugin does not block saving"
+    );
+
+    // Relinking to an identical build needs no render.
+    let relinked = root.0.join("plugins2");
+    fs::create_dir_all(&relinked).unwrap();
+    let library = relinked.join("caps.so");
+    fs::copy(&built, &library).unwrap();
+    let before = audible(&rt, PAD);
+    tap(&mut rt, "plugin-0");
+    rt.state.pedals.plugins.path = TextEdit::default();
+    flush(&mut rt);
+    typed(&mut rt, "plugin-path", library.to_str().unwrap());
+    tap(&mut rt, "plugin-relink");
+    settle(&mut rt);
+    assert!(
+        rt.state
+            .pedals
+            .plugins
+            .message
+            .as_deref()
+            .unwrap()
+            .starts_with("Relinked"),
+        "{:?}",
+        rt.state.pedals.plugins.message
+    );
+    assert!(!status(&rt).contains("PLUGIN MISSING"), "{}", status(&rt));
+    assert!(Arc::ptr_eq(&audible(&rt, PAD), &before));
+    assert!(exists(&rt, "plugin-controls"));
+
+    // #109 export: the dry source is byte-identical and the baked stage is
+    // named by backend, ID and artifact.
+    let resaved = root.0.join("C");
+    save(&mut rt, &resaved);
+    let (takes, edits) = one_hit_takes();
+    let bundle = root.0.join("bundle");
+    let receipt = adapter::write_saved_project_bundle(
+        &mut SystemWriter,
+        &BundleRequest {
+            source_root: resaved.clone(),
+            destination: bundle.clone(),
+            origin: TimeOrigin { nanos: 0 },
+            timing: Timing {
+                tempo_milli_bpm: 120_000,
+                sample_rate_hz: 48_000,
+            },
+        },
+        &takes,
+        &edits,
+        &Default::default(),
+    )
+    .unwrap();
+    let baked: Vec<&String> = receipt
+        .manifest
+        .losses
+        .iter()
+        .filter_map(|loss| match loss {
+            LossRecord::BakedProcessing { asset, detail, .. }
+                if asset.to_string() == retained.to_string() =>
+            {
+                Some(detail)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(baked.len(), 1, "{:?}", receipt.manifest.losses);
+    assert!(baked[0].contains("LADSPA plugin"), "{}", baked[0]);
+    assert!(baked[0].contains(PLATE_ID), "{}", baked[0]);
+    assert!(baked[0].contains(&artifact[..12]), "{}", baked[0]);
+    assert!(
+        baked[0].contains("downmixed to the mono pad voice"),
+        "{}",
+        baked[0]
+    );
+    for id in [sample.source, retained] {
+        let exported = fs::read(bundle.join(id.relative_path())).unwrap();
+        let project = fs::read(resaved.join(id.relative_path())).unwrap();
+        assert_eq!(exported, project, "{id} is exported byte for byte");
+    }
+}

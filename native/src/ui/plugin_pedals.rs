@@ -1,4 +1,4 @@
-//! Offline plugin pedals: a pad's plugin effect chain (CLAP now, LADSPA
+//! Offline plugin pedals: a pad's plugin effect chain (CLAP and LADSPA
 //! through the same contract), rendered off the UI thread into retained
 //! project audio.
 //!
@@ -52,27 +52,39 @@ pub type ProbeFn = Arc<
         + Sync,
 >;
 
-/// The configured helper executables. `BROWNNOTE_CLAP_HELPER` wins; otherwise
-/// a `brownnote-plugin-host` next to the running executable is used.
+/// The configured helper executables. For each backend its environment
+/// variable wins (`BROWNNOTE_CLAP_HELPER`, `BROWNNOTE_LADSPA_HELPER`);
+/// otherwise a `brownnote-plugin-host` next to the running executable is
+/// used.
 pub fn default_helpers() -> Helpers {
-    let program = std::env::var_os("BROWNNOTE_CLAP_HELPER")
-        .map(PathBuf::from)
-        .or_else(|| {
+    let program = |variable: &str| {
+        std::env::var_os(variable).map(PathBuf::from).or_else(|| {
             let sibling = std::env::current_exe()
                 .ok()?
                 .with_file_name("brownnote-plugin-host");
             sibling.is_file().then_some(sibling)
-        });
-    match program {
-        Some(program) => Helpers::new().with(
+        })
+    };
+    let mut helpers = Helpers::new();
+    if let Some(program) = program("BROWNNOTE_CLAP_HELPER") {
+        helpers = helpers.with(
             Backend::Clap,
             HelperCommand {
                 program,
                 args: vec!["clap".into()],
             },
-        ),
-        None => Helpers::new(),
+        );
     }
+    if let Some(program) = program("BROWNNOTE_LADSPA_HELPER") {
+        helpers = helpers.with(
+            Backend::Ladspa,
+            HelperCommand {
+                program,
+                args: vec!["ladspa".into()],
+            },
+        );
+    }
+    helpers
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -163,6 +175,8 @@ enum Probe {
     Add {
         pad: usize,
         path: PathBuf,
+        id: String,
+        backend: Backend,
     },
     Relink {
         pad: usize,
@@ -380,13 +394,29 @@ pub fn active(s: &State, pad: usize) -> bool {
     !s.pedals.plugins.pads[pad].stages.is_empty() || s.pedals.plugins.pads[pad].landed.is_some()
 }
 
-/// A shared library is a LADSPA plugin only when a LADSPA helper exists; a
-/// CLAP plugin can be a bare shared library too.
+/// A shared library may be either backend. Prefer LADSPA when its helper is
+/// configured; a CLAP bundle is always CLAP. [`land_probe`] retries a shared
+/// library as CLAP when the LADSPA probe cannot find or load it, so a CLAP
+/// `.so` is not misrouted.
 fn backend_for(path: &Path, helpers: &Helpers) -> Backend {
     match path.extension().and_then(|e| e.to_str()) {
         Some("so" | "dylib" | "dll") if helpers.get(Backend::Ladspa).is_some() => Backend::Ladspa,
         _ => Backend::Clap,
     }
+}
+
+/// A shared library is ambiguous: when a LADSPA probe cannot find or load
+/// the plugin, it may be a CLAP plugin. A refused LADSPA feature, such as the
+/// allow-list, is final and keeps its message.
+fn ladspa_may_be_clap(error: &RenderError) -> bool {
+    matches!(
+        &error.kind,
+        ErrorKind::Unavailable { code, .. }
+            if matches!(
+                code.as_str(),
+                "unknown-plugin-id" | "bundle-missing" | "dlopen-failed" | "no-entry"
+            )
+    )
 }
 
 fn start_probe(s: &mut State, probe: Probe, plugin_id: String, backend: Backend) {
@@ -425,7 +455,9 @@ pub fn add(s: &mut State, pad: usize) {
     } else if !path.is_absolute() {
         Some("Enter the plugin's absolute path.")
     } else if id.is_empty() {
-        Some("Enter the plugin ID, for example com.airwindows.consolidated.")
+        Some(
+            "Enter the plugin ID: a CLAP ID such as com.airwindows.consolidated, or a LADSPA ID such as 1779:Plate.",
+        )
     } else if s.pedals.plugins.probing() {
         Some("A plugin is still loading.")
     } else {
@@ -437,7 +469,17 @@ pub fn add(s: &mut State, pad: usize) {
     }
     s.pedals.plugins.message = Some(format!("Loading {id}…"));
     let backend = backend_for(&path, &(s.pedals.plugins.helpers_fn)());
-    start_probe(s, Probe::Add { pad, path }, id, backend);
+    start_probe(
+        s,
+        Probe::Add {
+            pad,
+            path,
+            id: id.clone(),
+            backend,
+        },
+        id,
+        backend,
+    );
 }
 
 /// Point a stage at a plugin path on this machine. An identical build is
@@ -825,10 +867,15 @@ fn retry_pending(s: &mut State, pad: usize) -> bool {
 
 fn land_probe(s: &mut State, probe: Probe, result: Result<PluginInfo, RenderError>) {
     let relinking = matches!(probe, Probe::Relink { .. });
-    let plugins = &mut s.pedals.plugins;
     match probe {
-        Probe::Add { pad, path } => match result {
+        Probe::Add {
+            pad,
+            path,
+            id,
+            backend,
+        } => match result {
             Ok(info) => {
+                let plugins = &mut s.pedals.plugins;
                 if !s.pedals.pads[pad].chain.stages.is_empty()
                     || plugins.pads[pad].stages.len() >= MAX_STAGES
                 {
@@ -858,9 +905,32 @@ fn land_probe(s: &mut State, probe: Probe, result: Result<PluginInfo, RenderErro
                 pad_plugins.focus = Some(pad_plugins.stages.len() - 1);
                 request(s, pad);
             }
-            Err(error) => plugins.message = Some(error.to_string()),
+            Err(error) => {
+                // A bare shared library is ambiguous. Try the other backend
+                // once before reporting; a refused LADSPA feature keeps its
+                // message.
+                if backend == Backend::Ladspa
+                    && ladspa_may_be_clap(&error)
+                    && (s.pedals.plugins.helpers_fn)().get(Backend::Clap).is_some()
+                {
+                    start_probe(
+                        s,
+                        Probe::Add {
+                            pad,
+                            path,
+                            id: id.clone(),
+                            backend: Backend::Clap,
+                        },
+                        id,
+                        Backend::Clap,
+                    );
+                    return;
+                }
+                s.pedals.plugins.message = Some(error.to_string());
+            }
         },
         Probe::Relink { pad, index, path } | Probe::Describe { pad, index, path } => {
+            let plugins = &mut s.pedals.plugins;
             let Some(stage) = plugins.pads[pad].stages.get_mut(index) else {
                 return;
             };
