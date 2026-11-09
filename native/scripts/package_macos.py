@@ -201,6 +201,135 @@ def extract(archive, destination):
     return destination / LAYOUT
 
 
+def custom_hit(path):
+    """A distinctive quarter-second user sample, unlike any bundled tone."""
+    with wave.open(str(path), "wb") as wav:
+        wav.setparams((1, 2, 44100, 0, "NONE", "not compressed"))
+        wav.writeframes(b"".join(struct.pack("<h", round(
+            6000 * math.sin(2 * math.pi * 660 * i / 44100))) for i in range(11025)))
+
+
+def set_writable(root, writable):
+    for directory, names, files in os.walk(root):
+        for path in [Path(directory)] + [Path(directory) / n for n in names + files]:
+            mode = path.stat().st_mode
+            path.chmod(mode | 0o200 if writable else mode & ~0o222)
+
+
+def snapshot(root):
+    return {str(p.relative_to(root)): digest(p) for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def project_workflow(tree, layout, temp, record):
+    """Drive the packaged app's real import and project controls, then move both
+    the project and the installation before reopening. Returns the new layout."""
+    def scripted(name, events, at):
+        script = temp / f"{name} script.json"
+        script.write_text(json.dumps(events))
+        return tree(layout, name, "--script", script, "--at", at, "--size", "820x600")
+
+    # Headless frames advance a virtual clock; the store worker runs in real
+    # time. Typing takes one frame per character, so waits are generous.
+    def open_events(root):
+        return [{"t": 0.1, "type": "click", "key": "projects-toggle"},
+                {"t": 0.4, "type": "click", "key": "projects-path"},
+                {"t": 0.5, "type": "type", "text": str(root)},
+                {"t": 5.0, "type": "click", "key": "projects-open"}]
+
+    def opened(name, root, generation):
+        view = scripted(name, open_events(root), 40)
+        require(not view.get("projects-error")
+                and view.get("projects-status", "").startswith(f"Opened generation {generation}."),
+                f"{name}: {view.get('projects-error') or view.get('projects-status')}")
+
+    def rejected(name, events, at, expected):
+        view = scripted(name, events, at)
+        error = view.get("projects-error") or ""
+        require(expected in error, f"{name}: expected {expected!r}, got {error or view.get('projects-status')!r}")
+        return view
+
+    sample = temp / "user samples" / "my custom hit.wav"
+    sample.parent.mkdir()
+    custom_hit(sample)
+    asset = digest(sample)
+    project = temp / "projects with spaces" / "kit one"
+    project.parent.mkdir()
+    view = scripted("import-save", [
+        {"t": 0.1, "type": "click", "key": "import-toggle"},
+        {"t": 0.4, "type": "click", "key": "import-path"},
+        {"t": 0.5, "type": "type", "text": str(sample)},
+        {"t": 5.0, "type": "click", "key": "import-submit"},
+        {"t": 8.0, "type": "click", "key": "import-cancel"},
+        {"t": 8.3, "type": "click", "key": "projects-toggle"},
+        {"t": 8.6, "type": "click", "key": "projects-path"},
+        {"t": 8.7, "type": "type", "text": str(project)},
+        {"t": 13.0, "type": "click", "key": "projects-save"}], 60)
+    status = view.get("projects-status", "")
+    require(not view.get("projects-error") and status.startswith("Saved generation "),
+            f"Packaged save failed: {view.get('projects-error') or status}")
+    generation = status.split()[2].rstrip(".")
+    document = json.loads((project / "project.json").read_text())
+    require(document["pads"][0]["sample"]["source"] == asset
+            and (project / "media" / f"{asset}.wav").read_bytes() == sample.read_bytes(),
+            "Saved project does not own the imported sample")
+    sample.unlink()  # The project, not the user's original file, must supply it.
+    moved = temp / "moved projects" / "kit one"
+    moved.parent.mkdir()
+    project.rename(moved)
+    relocated = temp / "relocated after save" / LAYOUT
+    shutil.copytree(layout, relocated)
+    shutil.rmtree(layout)  # Owned temporary installation only.
+    layout = relocated
+    opened("reopen-moved", moved, generation)
+    view = scripted("reopen-play", open_events(moved) + [
+        {"t": 40.0, "type": "click", "key": "projects-toggle"},
+        {"t": 40.5, "type": "key", "name": "1"}], 40.6)
+    require(view.get("selected-name") == f"{asset}.wav" and view.get("pad-0-voices") == "▶ 1",
+            f"Reopened custom pad did not play: {view.get('selected-name')!r} {view.get('pad-0-voices')!r}")
+    record["checks"].append("Packaged UI: import custom WAV, save, delete source, move project and installation, "
+                            "quit/reopen, custom pad plays from project media (silent mixer)")
+
+    read_only = temp / "read-only copy" / "kit one"
+    shutil.copytree(moved, read_only)
+    before = snapshot(read_only)
+    set_writable(read_only, False)
+    try:
+        rejected("failed-save", open_events(read_only) + [
+            {"t": 30.0, "type": "click", "key": "projects-save"}], 60, "saved document unchanged")
+    finally:
+        set_writable(read_only, True)
+    require(snapshot(read_only) == before, "Failed save changed project files")
+    opened("after-failed-save", read_only, generation)
+    record["checks"].append("Packaged UI: failed save into a read-only project reports unchanged; "
+                            "files byte-identical and the last generation reopens")
+
+    missing = temp / "missing media copy" / "kit one"
+    shutil.copytree(moved, missing)
+    (missing / "media" / f"{asset}.wav").unlink()
+    rejected("missing-media", open_events(missing), 40, "Missing")
+    view = scripted("missing-media-play", open_events(missing) + [
+        {"t": 40.0, "type": "click", "key": "projects-toggle"},
+        {"t": 40.5, "type": "key", "name": "1"}], 40.6)
+    require(view.get("selected-name") != f"{asset}.wav" and view.get("pad-0-voices") == "▶ 1",
+            "Rejected missing-media project replaced or silenced the current kit")
+    record["checks"].append("Packaged UI: project with missing media is rejected whole; current kit keeps playing")
+
+    corrupt = temp / "corrupt document copy" / "kit one"
+    shutil.copytree(moved, corrupt)
+    (corrupt / "project.json").write_text("{not json")
+    rejected("corrupt-open", open_events(corrupt), 40, "MalformedJson")
+    listing = open_events(corrupt)[:3] + [{"t": 5.0, "type": "click", "key": "projects-recover"}]
+    view = scripted("recovery-list", listing, 40)
+    choice = f"projects-generation-{generation}"
+    require(choice in view, f"Recovery did not offer generation {generation}: {view.get('projects-error')}")
+    view = scripted("recovery-open", listing + [{"t": 40.0, "type": "click", "key": choice}], 80)
+    require(view.get("projects-status", "").startswith(f"Opened generation {generation}."),
+            f"Explicit recovery failed: {view.get('projects-error') or view.get('projects-status')}")
+    require((corrupt / "project.json").read_text() == "{not json", "Recovery overwrote the corrupt original")
+    record["checks"].append("Packaged UI: corrupt document rejected; recovery lists and opens the committed "
+                            "generation explicitly without overwriting the original")
+    return layout
+
 def smoke(artifact):
     mac_arm()
     artifact = Path(artifact).resolve(strict=True)
@@ -208,7 +337,7 @@ def smoke(artifact):
               "mode": "Actual release executable, Rune GPU headless, silent virtual mixer",
               "os": platform.mac_ver()[0], "architecture": platform.machine(), "checks": [],
               "not_proven": ["Clean-machine/Gatekeeper install", "Audible audio/listening",
-                             "Real device loss/recovery", "Portable custom-project save/open/recovery",
+                             "Real device loss/recovery", "Audible playback of a reopened project",
                              "Live or packaged pedal renders"]}
     try:
         expected = artifact.with_name(artifact.name + ".sha256").read_text().split()
@@ -278,6 +407,7 @@ def smoke(artifact):
                         f"Missing pedal error was not explicit: {result.stderr}")
                 record["checks"].append(f"Location {index + 1}: five sources, virtual signal, no overrides, missing-pedal exit 3")
                 previous = layout
+            previous = project_workflow(tree, previous, temp, record)
             # Prove no hidden checkout/cwd fallback, not just success with some kit.
             shutil.rmtree(previous / "resources/recordings")
             missing = tree(previous, "missing", "--scene", "playing", "--at", "0.08")

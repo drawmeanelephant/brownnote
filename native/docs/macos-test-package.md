@@ -103,6 +103,26 @@ disabled voices, proving no hidden checkout/cwd fallback. It never renames,
 deletes or hides real checkout recordings, targets, builds or vendor trees.
 This is logical relocation evidence, not a clean-machine sandbox.
 
+Before that deletion, smoke drives the packaged app's own import and
+**PROJECT** controls through Rune scripts (typed paths and clicks, no CLI
+shortcut), with project and installation paths that contain spaces:
+
+- Import a generated quarter-second WAV onto pad 01, save a project, and
+  require the document and `media/` to own those exact bytes. Delete the
+  original WAV, move the project, move the installation, relaunch, open the
+  moved project, and require pad 01 to play the project-owned sample.
+- Save into a read-only copy. The app must report the saved document
+  unchanged, every project file must stay byte-identical, and the same
+  generation must reopen once the copy is writable again.
+- Open a copy with the custom media file deleted. The whole open is rejected
+  and the current kit keeps playing.
+- Open a copy whose `project.json` is malformed. The open is rejected, LIST
+  RECOVERY offers the committed generation, choosing it opens that generation,
+  and the corrupt original is left as it was.
+
+These runs use the silent virtual mixer. They prove the packaged project
+workflow, not audible playback, power-loss durability or autosave.
+
 Three existing deterministic output scenes exercise settings/error UI after
 relocation. They are virtual fixtures, not audio-device selection or recovery
 evidence. The isolated HOME's documented cache/recovery/preference locations
@@ -123,14 +143,14 @@ library `paths` tests exercise production writable-path resolution separately.
 | C pipeline / real upstream bench | Separate `make test` and required `pedals_live`; tools are not packaged |
 | Audible built-in output / listening | **Open**, maintainer must run `--check-audio`, play pads and listen after relocation |
 | Physical output loss/retry/fallback | **Open**, deterministic scenes do not close it |
-| Custom import → save → quit → reopen → move | **Open**, consume #99/#100 application wiring and real portable-project fixtures |
-| Failed save / recovery / missing project media | **Open**, missing default-kit smoke is not missing project-media recovery |
+| Custom import → save → quit → move → reopen | Required packaged UI smoke after relocation; silent mixer only, listening **Open** |
+| Failed save / recovery / missing project media | Required packaged UI smoke (read-only save, missing media, malformed document); power loss and autosave not covered |
 | Clean-machine downloaded installation / Gatekeeper | **Open**, no clean-machine or signing evidence |
 | Recording asset rights / final distribution review | **Open**, only generated test tones ship |
 | Intel macOS, Linux, Windows, external audio hardware | Not supported by this artifact |
 
 Issue #103 stays open. No signing/notarization route or roadmap decision
 changes here. Before closing it, record the exact artifact hash and head
-for the clean-machine, complete project workflow, device and listening
-checks. Manual listening must confirm that pads start/stop, panic and device
+for the clean-machine, device and listening checks, and play the reopened
+project audibly. Manual listening must confirm that pads start/stop, panic and device
 changes behave correctly; an agent cannot infer this from meter values.
