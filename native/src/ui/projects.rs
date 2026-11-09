@@ -81,12 +81,15 @@ fn snapshot(s: &State) -> Result<Snapshot, String> {
     // A changed chain must not be saved with a retained sound from an older
     // edit. Keep playing that sound, but require render completion before save.
     if s.media.busy()
+        || s.instrument.busy()
         || s.pedals
             .pads
             .iter()
             .any(|pad| !pad.project_chain_is_current())
     {
-        return Err("Finish or cancel sample/pedal work before saving or opening.".into());
+        return Err(
+            "Finish or cancel sample/pedal/instrument work before saving or opening.".into(),
+        );
     }
     let pads = session::pads(std::array::from_fn(|index| {
         let settings = s.settings[index];
@@ -107,6 +110,11 @@ fn snapshot(s: &State) -> Result<Snapshot, String> {
     if s.takes.has_pass() || s.takes.takes().next().is_some() {
         snapshot = snapshot
             .with_takes(&s.takes, &s.edit.model)
+            .map_err(|error| error.to_string())?;
+    }
+    if let Some((instrument, font, renders)) = s.instrument.snapshot() {
+        snapshot = snapshot
+            .with_instrument(&instrument, font, renders, &s.takes, &s.edit.model)
             .map_err(|error| error.to_string())?;
     }
     Ok(snapshot)
@@ -285,6 +293,7 @@ pub fn poll(s: &mut State) -> bool {
                 s.media = media::Media::with_service(prepared.media, Ok(importer));
                 s.assets = prepared.registry;
                 s.install_output(output);
+                s.instrument.restore(prepared.instrument);
                 let (takes, model) = prepared.takes.unwrap_or_else(|| (super::fresh_takes(), Default::default()));
                 let mut editor = edit::Editor::default();
                 editor.model = model;

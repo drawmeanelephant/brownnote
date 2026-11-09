@@ -347,7 +347,7 @@ fn midi_fixture_records_velocities_flams_and_fifo_held_durations() {
     run(&mut rt, 0.1);
     let status = label(&rt, "transport-status");
     assert!(
-        status.contains("2 HELD NOT SOUNDED (NO INSTRUMENT BACKEND)"),
+        status.contains("2 HELD NOT SOUNDED (NO INSTRUMENT LOADED)"),
         "{status}"
     );
     // Pad one-shots replay through the scheduler at their recorded offsets.

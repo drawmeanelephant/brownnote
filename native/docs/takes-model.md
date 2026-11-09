@@ -82,10 +82,11 @@ second registry.
   stream changes. The status shows sends, the mixer's own dispatched count and
   any refused events (`LOSS`). STOP/panic sends the engine panic, which also
   cancels pending scheduled hits.
-- **Sound gap:** no held-instrument audio backend is mounted (#108). Held notes
-  are captured, saved and shown with their durations, and the status reports
-  `N HELD NOT SOUNDED (NO INSTRUMENT BACKEND)`; only pad one-shots replay. No
-  metronome or count-in click is generated.
+- Held notes sound and replay through the sampled instrument when one is
+  loaded (see `sampled-instrument.md`). Without one, they are captured, saved
+  and shown with their durations, and the status reports
+  `N HELD NOT SOUNDED (NO INSTRUMENT LOADED)`. No metronome or count-in click
+  is generated.
 
 `--scene transport-midi` runs a virtual MIDI input (fixture packets through the
 real controller and dispatch path): overlapping held notes on one key, and a

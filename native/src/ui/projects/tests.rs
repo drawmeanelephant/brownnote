@@ -250,6 +250,7 @@ fn project_controls_hash_valid_bad_retained_decode_never_falls_back_to_source() 
             snapshot: Box::new(Snapshot {
                 document: doc,
                 media: owned,
+                freeze: None,
             }),
         })
         .unwrap();

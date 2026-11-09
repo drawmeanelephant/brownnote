@@ -4,6 +4,7 @@ pub mod edit;
 pub mod engine;
 pub mod export;
 pub mod import;
+pub mod instrument;
 pub mod kit;
 pub mod look;
 pub mod midi;

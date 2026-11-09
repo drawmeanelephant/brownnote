@@ -31,6 +31,12 @@ pub enum ScheduledAction {
         id: EventId,
         trigger: Trigger,
     },
+    /// A held note for the mounted sampled instrument; its `NoteOff` ends it.
+    HeldOn {
+        id: EventId,
+        pitch: u8,
+        velocity: u8,
+    },
     /// Exact ID returned by the producer-side FIFO NoteLifecycle matcher.
     NoteOff {
         id: EventId,
