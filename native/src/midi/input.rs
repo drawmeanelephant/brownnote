@@ -13,6 +13,10 @@
 //!   mappings are project DTOs ([`MappingsDocument`]). This module owns neither
 //!   storage format: the project document (#100) and the machine preferences
 //!   file are wired by the integrator.
+//! - Enumeration and connection opening sit behind a private `Backend` trait,
+//!   with the pinned `midir` client as the production implementation, so
+//!   resolution and reconnect are exercised from scripted snapshots instead of
+//!   hardware.
 use super::{
     mapping::{
         ControlAction, ControlIntent, DuplicateMapping, Intent, Mapping, MappingKey, Mappings,
@@ -625,12 +629,118 @@ pub struct Refresh {
     pub reconnected: Option<PortInfo>,
 }
 
-/// The midir-backed selected input: enumeration, one owned connection, and
-/// the poll-side [`Controller`].
+/// Port enumeration and connection opening. The production implementation is
+/// the pinned `midir` client; scripted snapshots drive the same resolution and
+/// reconcile logic without hardware.
+trait Backend {
+    /// Explicit port snapshot. Never called from a callback.
+    fn ports(&self) -> Result<Vec<PortInfo>, String>;
+    /// Open `port`, feeding its packets into the callback half of `raw`. The
+    /// returned handle closes the port when it is dropped.
+    fn open(
+        &self,
+        port: &PortInfo,
+        raw: rtrb::Producer<RawMessage>,
+        counters: Arc<CallbackCounters>,
+    ) -> Result<Box<dyn PortConnection>, String>;
+}
+
+/// One open backend connection; dropping it closes the port.
+trait PortConnection {}
+
+fn unavailable(port: &PortInfo) -> String {
+    format!(
+        "Selected input \"{}\" is not available; refresh the list",
+        port.name
+    )
+}
+
+/// Which enumerated port a selection means: the backend id wins, the saved
+/// name is only a reconnect hint (D8), and a name several ports share is
+/// ambiguous rather than aliased to one of them.
+fn resolve_port(ports: &[PortInfo], selected: &PortInfo) -> Result<PortInfo, String> {
+    if let Some(port) = ports.iter().find(|port| port.id == selected.id) {
+        return Ok(port.clone());
+    }
+    let namesakes: Vec<&PortInfo> = ports
+        .iter()
+        .filter(|port| port.name == selected.name)
+        .collect();
+    match namesakes.as_slice() {
+        [port] => Ok((**port).clone()),
+        [] => Err(unavailable(selected)),
+        _ => Err(format!(
+            "Selected input \"{}\" matches {} ports; choose one from the list",
+            selected.name,
+            namesakes.len()
+        )),
+    }
+}
+
+/// The `midir` backend: one client for enumeration, a fresh client per
+/// connection.
+struct MidirBackend {
+    enumerator: midir::MidiInput,
+}
+
+impl MidirBackend {
+    fn new() -> Result<Self, String> {
+        midir::MidiInput::new(CLIENT_NAME)
+            .map(|enumerator| Self { enumerator })
+            .map_err(|error| format!("Cannot start the MIDI backend: {error}"))
+    }
+}
+
+impl Backend for MidirBackend {
+    fn ports(&self) -> Result<Vec<PortInfo>, String> {
+        Ok(self
+            .enumerator
+            .ports()
+            .iter()
+            .map(|port| PortInfo {
+                id: port.id(),
+                name: self
+                    .enumerator
+                    .port_name(port)
+                    .unwrap_or_else(|_| port.id()),
+            })
+            .collect())
+    }
+
+    fn open(
+        &self,
+        port: &PortInfo,
+        raw: rtrb::Producer<RawMessage>,
+        counters: Arc<CallbackCounters>,
+    ) -> Result<Box<dyn PortConnection>, String> {
+        // The enumeration client cannot open a connection; each connection
+        // creates its own.
+        let input = midir::MidiInput::new(CLIENT_NAME)
+            .map_err(|error| format!("Cannot start the MIDI backend: {error}"))?;
+        let resolved = input
+            .ports()
+            .into_iter()
+            .find(|candidate| candidate.id() == port.id)
+            .ok_or_else(|| unavailable(port))?;
+        let state = CallbackState {
+            producer: raw,
+            counters,
+        };
+        input
+            .connect(&resolved, CONNECTION_NAME, callback, state)
+            .map(|connection| Box::new(connection) as Box<dyn PortConnection>)
+            .map_err(|error| format!("Cannot connect to \"{}\": {:?}", port.name, error.kind()))
+    }
+}
+
+impl PortConnection for midir::MidiInputConnection<CallbackState> {}
+
+/// The selected input: one backend connection and the poll-side
+/// [`Controller`].
 pub struct Input {
-    /// Client used only for enumeration; connections create their own.
-    enumerator: Option<midir::MidiInput>,
-    connection: Option<midir::MidiInputConnection<CallbackState>>,
+    /// Enumeration and connection opening; `None` means no backend.
+    backend: Option<Box<dyn Backend>>,
+    connection: Option<Box<dyn PortConnection>>,
     port: Option<PortInfo>,
     selected: Option<PortInfo>,
     controller: Controller,
@@ -640,9 +750,8 @@ pub struct Input {
 
 impl Input {
     pub fn new(take: TakeId) -> Result<Self, String> {
-        let enumerator = midir::MidiInput::new(CLIENT_NAME)
-            .map_err(|error| format!("Cannot start the MIDI backend: {error}"))?;
-        Ok(Self::assemble(Some(enumerator), take))
+        let backend = MidirBackend::new()?;
+        Ok(Self::assemble(Some(Box::new(backend)), take))
     }
 
     /// An input with no backend: headless sessions and deterministic scenes
@@ -652,10 +761,10 @@ impl Input {
         Self::assemble(None, take)
     }
 
-    fn assemble(enumerator: Option<midir::MidiInput>, take: TakeId) -> Self {
+    fn assemble(backend: Option<Box<dyn Backend>>, take: TakeId) -> Self {
         let callback_counters = Arc::new(CallbackCounters::default());
         Self {
-            enumerator,
+            backend,
             connection: None,
             port: None,
             selected: None,
@@ -667,17 +776,10 @@ impl Input {
 
     /// Explicit enumeration of input ports. Never called from a callback.
     pub fn ports(&self) -> Result<Vec<PortInfo>, String> {
-        let Some(enumerator) = &self.enumerator else {
+        let Some(backend) = &self.backend else {
             return Err("MIDI backend is unavailable in this session".into());
         };
-        Ok(enumerator
-            .ports()
-            .iter()
-            .map(|port| PortInfo {
-                id: port.id(),
-                name: enumerator.port_name(port).unwrap_or_else(|_| port.id()),
-            })
-            .collect())
+        backend.ports()
     }
 
     pub fn select(&mut self, port: PortInfo) {
@@ -723,59 +825,26 @@ impl Input {
         if self.connection.is_some() {
             return Err("An input is already connected".into());
         }
-        let Some(enumerator) = &self.enumerator else {
+        let Some(backend) = &self.backend else {
             return Err("MIDI backend is unavailable in this session".into());
         };
         let Some(selected) = self.selected.clone() else {
             return Err("Select an input port first".into());
         };
-        let ports = enumerator.ports();
-        let port = ports
-            .iter()
-            .find(|port| port.id() == selected.id)
-            .or_else(|| {
-                ports.iter().find(|port| {
-                    enumerator
-                        .port_name(port)
-                        .is_ok_and(|name| name == selected.name)
-                })
-            })
-            .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "Selected input \"{}\" is not available; refresh the list",
-                    selected.name
-                )
-            })?;
-        let name = enumerator.port_name(&port).unwrap_or_else(|_| port.id());
-        let input = midir::MidiInput::new(CLIENT_NAME)
-            .map_err(|error| format!("Cannot start the MIDI backend: {error}"))?;
+        let port = resolve_port(&backend.ports()?, &selected)?;
         // A fresh bounded handoff for this connection attempt.
         let (producer, consumer) = rtrb::RingBuffer::new(RAW_QUEUE_CAPACITY);
         self.controller.attach(consumer);
-        let state = CallbackState {
-            producer,
-            counters: self.callback_counters.clone(),
-        };
-        match input.connect(&port, CONNECTION_NAME, callback, state) {
-            Ok(connection) => {
-                self.connection = Some(connection);
-                self.port = Some(PortInfo {
-                    id: port.id(),
-                    name: name.clone(),
-                });
-                self.controller.begin_connection(fresh_source_id(), now);
-                self.error = None;
-                Ok(PortInfo {
-                    id: port.id(),
-                    name,
-                })
-            }
-            Err(error) => {
-                let kind = format!("{:?}", error.kind());
-                Err(format!("Cannot connect to \"{name}\": {kind}"))
-            }
-        }
+        let connection = backend.open(&port, producer, self.callback_counters.clone())?;
+        self.connection = Some(connection);
+        // The selection adopts the identity that was actually opened, so the
+        // machine preference keeps naming the same port after a name-hint
+        // reconnect.
+        self.port = Some(port.clone());
+        self.selected = Some(port.clone());
+        self.controller.begin_connection(fresh_source_id(), now);
+        self.error = None;
+        Ok(port)
     }
 
     /// Close the connection (if any) and reconcile: drain in-flight events
@@ -784,7 +853,9 @@ impl Input {
     pub fn disconnect(&mut self, sink: &mut impl Sink, now: OriginalTime) -> u64 {
         let _ = self.controller.poll(sink);
         let released = if let Some(connection) = self.connection.take() {
-            let (_input, _state) = connection.close();
+            // Dropping the handle closes the port and releases the callback
+            // state with it.
+            drop(connection);
             // A callback racing with close can still push once; drain again
             // before the epoch ends so it is dispatched, not lost silently.
             let _ = self.controller.poll(sink);
@@ -802,7 +873,8 @@ impl Input {
     }
 
     /// Explicit enumeration: reconcile a vanished port and reconnect a
-    /// selected one (by id, else by the saved name hint).
+    /// selected one (by id, else by the saved name hint). A reconnect that
+    /// fails is reported through [`Input::error`]; mappings are untouched.
     pub fn refresh(&mut self, sink: &mut impl Sink, now: OriginalTime) -> Result<Refresh, String> {
         let ports = self.ports()?;
         let mut vanished = false;
@@ -813,11 +885,11 @@ impl Input {
             vanished = true;
         }
         let mut reconnected = None;
-        if self.connection.is_none()
-            && self.selected.is_some()
-            && let Ok(port) = self.connect(now)
-        {
-            reconnected = Some(port);
+        if self.connection.is_none() && self.selected.is_some() {
+            match self.connect(now) {
+                Ok(port) => reconnected = Some(port),
+                Err(error) => self.error = Some(error),
+            }
         }
         Ok(Refresh {
             ports,
@@ -1023,7 +1095,7 @@ mod tests {
         engine::{Command, QUEUE_CAPACITY, Sample, Slots},
         output::Output,
     };
-    use std::time::Duration;
+    use std::{cell::RefCell, rc::Rc, time::Duration};
 
     fn ch(value: u8) -> Channel {
         Channel::try_from(value).unwrap()
@@ -1630,6 +1702,386 @@ mod tests {
         assert_eq!(triggers(&sink), vec![(pad(0), 127)]);
     }
 
+    fn port(id: &str, name: &str) -> PortInfo {
+        PortInfo {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    /// A backend whose snapshots and connections the test scripts, so port
+    /// resolution and reconnect are exercised without CoreMIDI or hardware.
+    #[derive(Clone)]
+    struct FakeBackend {
+        state: Rc<RefCell<FakeState>>,
+    }
+
+    #[derive(Default)]
+    struct FakeState {
+        snapshot: Vec<PortInfo>,
+        /// Callback halves of the opened connections, oldest first.
+        producers: Vec<rtrb::Producer<RawMessage>>,
+        opened: usize,
+        live: usize,
+    }
+
+    struct FakeConnection {
+        state: Rc<RefCell<FakeState>>,
+    }
+
+    impl Drop for FakeConnection {
+        fn drop(&mut self) {
+            self.state.borrow_mut().live -= 1;
+        }
+    }
+
+    impl PortConnection for FakeConnection {}
+
+    impl Backend for FakeBackend {
+        fn ports(&self) -> Result<Vec<PortInfo>, String> {
+            Ok(self.state.borrow().snapshot.clone())
+        }
+
+        fn open(
+            &self,
+            _port: &PortInfo,
+            raw: rtrb::Producer<RawMessage>,
+            _counters: Arc<CallbackCounters>,
+        ) -> Result<Box<dyn PortConnection>, String> {
+            let mut state = self.state.borrow_mut();
+            state.opened += 1;
+            state.live += 1;
+            state.producers.push(raw);
+            drop(state);
+            Ok(Box::new(FakeConnection {
+                state: self.state.clone(),
+            }))
+        }
+    }
+
+    impl FakeBackend {
+        fn new(snapshot: Vec<PortInfo>) -> Self {
+            Self {
+                state: Rc::new(RefCell::new(FakeState {
+                    snapshot,
+                    ..FakeState::default()
+                })),
+            }
+        }
+
+        fn set_ports(&self, snapshot: Vec<PortInfo>) {
+            self.state.borrow_mut().snapshot = snapshot;
+        }
+
+        /// The callback half of the newest connection, for driving input.
+        fn producer(&self) -> rtrb::Producer<RawMessage> {
+            self.state
+                .borrow_mut()
+                .producers
+                .pop()
+                .unwrap_or_else(|| panic!("no connection was opened"))
+        }
+
+        fn opened(&self) -> usize {
+            self.state.borrow().opened
+        }
+
+        fn live(&self) -> usize {
+            self.state.borrow().live
+        }
+    }
+
+    /// An input over a scripted backend, with nothing selected or connected.
+    fn scripted(snapshot: Vec<PortInfo>) -> (Input, FakeBackend) {
+        let backend = FakeBackend::new(snapshot);
+        let input = Input::assemble(Some(Box::new(backend.clone())), TakeId(20));
+        (input, backend)
+    }
+
+    fn held_ends(sink: &VecSink) -> usize {
+        sink.actions
+            .iter()
+            .filter(|action| matches!(action, Action::HeldEnd(_)))
+            .count()
+    }
+
+    #[test]
+    fn port_id_wins_over_the_saved_name() {
+        let (mut input, backend) = scripted(vec![port("id-a", "Bus 1"), port("id-b", "Bus 2")]);
+        // A stale display name must not move the selection to another port.
+        input.select(port("id-b", "Bus 1"));
+        let connected = input.connect(OriginalTime::from_nanos(0)).unwrap();
+        assert_eq!(
+            connected,
+            port("id-b", "Bus 2"),
+            "the id selects and the snapshot names it"
+        );
+        assert_eq!(input.port(), Some(&port("id-b", "Bus 2")));
+        assert_eq!(
+            input.selected(),
+            Some(&port("id-b", "Bus 2")),
+            "the selection adopts the opened identity"
+        );
+        assert!(input.status().starts_with("CONNECTED"));
+        assert_eq!(backend.opened(), 1);
+    }
+
+    #[test]
+    fn name_hint_reconnects_when_the_id_changes_and_keeps_the_preference() {
+        let (mut input, backend) = scripted(vec![port("id-old", "Deck A")]);
+        let original = mappings(NoteTarget::OneShot(pad(3)));
+        input.controller_mut().set_mappings(original.clone());
+        input.select_hint(Some("id-old".into()), Some("Deck A".into()));
+        let mut sink = VecSink::default();
+        assert_eq!(
+            input.connect(OriginalTime::from_nanos(0)).unwrap().id,
+            "id-old"
+        );
+        let mut producer = backend.producer();
+        push(&mut producer, 10, &[0x91, 40, 100]);
+        input.poll(&mut sink);
+        assert_eq!(triggers(&sink), vec![(pad(3), 100)]);
+        let source = input.controller().source();
+        // The backend re-enumerates the same unique name under a new id.
+        backend.set_ports(vec![port("id-new", "Deck A")]);
+        let refresh = input
+            .refresh(&mut sink, OriginalTime::from_nanos(1_000_000))
+            .unwrap();
+        assert!(refresh.vanished);
+        assert_eq!(refresh.reconnected, Some(port("id-new", "Deck A")));
+        assert_eq!(
+            input.port(),
+            Some(&port("id-new", "Deck A")),
+            "the chosen port identity is updated"
+        );
+        assert_eq!(
+            input.selected().map(|port| port.id.as_str()),
+            Some("id-new"),
+            "the machine preference follows the resolved id"
+        );
+        assert_eq!(
+            input.controller().mappings(),
+            &original,
+            "mappings survive a name-hint reconnect"
+        );
+        assert_ne!(
+            input.controller().source(),
+            source,
+            "a reconnect opens a fresh source"
+        );
+        let mut producer = backend.producer();
+        push(&mut producer, 10, &[0x91, 40, 90]);
+        input.poll(&mut sink);
+        assert_eq!(
+            triggers(&sink),
+            vec![(pad(3), 100), (pad(3), 90)],
+            "input flows on the new connection"
+        );
+        assert_eq!(backend.live(), 1);
+        assert_eq!(input.error(), None);
+    }
+
+    #[test]
+    fn duplicate_names_are_never_aliased() {
+        let (mut input, backend) = scripted(vec![port("id-a", "Bus 1"), port("id-b", "Bus 1")]);
+        input.select_hint(Some("id-gone".into()), Some("Bus 1".into()));
+        let error = input.connect(OriginalTime::from_nanos(0)).unwrap_err();
+        assert!(error.contains("matches 2 ports"), "{error}");
+        assert_eq!(input.port(), None);
+        assert_eq!(backend.opened(), 0, "an ambiguous name opens no port");
+        let original = mappings(NoteTarget::Held(InstrumentId(17)));
+        input.controller_mut().set_mappings(original.clone());
+        let mut sink = VecSink::default();
+        let refresh = input
+            .refresh(&mut sink, OriginalTime::from_nanos(0))
+            .unwrap();
+        assert!(!refresh.vanished);
+        assert_eq!(refresh.reconnected, None);
+        assert_eq!(
+            input.error(),
+            Some(error.as_str()),
+            "refresh reports the ambiguity instead of picking a namesake"
+        );
+        assert!(input.status().starts_with("DISCONNECTED"));
+        assert_eq!(input.controller().mappings(), &original);
+        // An id is never ambiguous, so an explicit selection still connects.
+        input.select(port("id-b", "Bus 1"));
+        assert_eq!(
+            input.connect(OriginalTime::from_nanos(0)).unwrap().id,
+            "id-b"
+        );
+    }
+
+    #[test]
+    fn refresh_reports_an_unavailable_port_and_keeps_mappings() {
+        let (mut input, backend) = scripted(Vec::new());
+        input.select_hint(Some("id-gone".into()), Some("Deck A".into()));
+        let original = mappings(NoteTarget::Held(InstrumentId(17)));
+        input.controller_mut().set_mappings(original.clone());
+        let error = input.connect(OriginalTime::from_nanos(0)).unwrap_err();
+        assert!(error.contains("is not available"), "{error}");
+        assert_eq!(backend.opened(), 0);
+        let mut sink = VecSink::default();
+        let refresh = input
+            .refresh(&mut sink, OriginalTime::from_nanos(0))
+            .unwrap();
+        assert!(refresh.ports.is_empty());
+        assert!(!refresh.vanished);
+        assert_eq!(refresh.reconnected, None);
+        assert_eq!(input.error(), Some(error.as_str()));
+        assert_eq!(input.controller().mappings(), &original);
+        assert_eq!(
+            input.selected().map(|port| port.name.as_str()),
+            Some("Deck A"),
+            "the selection is kept for a later refresh"
+        );
+    }
+
+    #[test]
+    fn refresh_releases_held_notes_when_the_port_vanishes() {
+        let (mut input, backend) = scripted(vec![port("id-1", "Deck A")]);
+        let original = mappings(NoteTarget::Held(InstrumentId(17)));
+        input.controller_mut().set_mappings(original.clone());
+        input.select(port("id-1", "Deck A"));
+        let mut sink = VecSink::default();
+        input.connect(OriginalTime::from_nanos(0)).unwrap();
+        let mut producer = backend.producer();
+        push(&mut producer, 10, &[0x91, 40, 100]);
+        push(&mut producer, 20, &[0xb1, 64, 127]); // sustain down
+        push(&mut producer, 30, &[0x81, 40, 64]); // deferred release
+        input.poll(&mut sink);
+        assert_eq!(input.controller().active_held(), 1);
+        backend.set_ports(Vec::new());
+        let refresh = input
+            .refresh(&mut sink, OriginalTime::from_nanos(1_000_000))
+            .unwrap();
+        assert!(refresh.vanished);
+        assert_eq!(refresh.reconnected, None);
+        assert_eq!(input.port(), None);
+        assert_eq!(
+            input.controller().active_held(),
+            0,
+            "no stuck note survives the vanish"
+        );
+        assert_eq!(held_ends(&sink), 1);
+        assert_eq!(input.controller().counters().released_on_disconnect, 1);
+        assert_eq!(backend.live(), 0, "the vanished connection was closed");
+        assert_eq!(
+            input.controller().mappings(),
+            &original,
+            "mappings are never silently changed"
+        );
+        assert!(input.status().starts_with("DISCONNECTED"));
+    }
+
+    #[test]
+    fn refresh_reconnects_the_same_id_and_input_flows_again() {
+        let (mut input, backend) = scripted(vec![port("id-1", "Deck A")]);
+        input
+            .controller_mut()
+            .set_mapping(Mapping::Note {
+                channel: ch(1),
+                pitch: pitch(40),
+                target: NoteTarget::OneShot(pad(3)),
+            })
+            .unwrap();
+        input.select(port("id-1", "Deck A"));
+        let mut sink = VecSink::default();
+        input.connect(OriginalTime::from_nanos(0)).unwrap();
+        let source = input.controller().source();
+        let mut producer = backend.producer();
+        push(&mut producer, 10, &[0x91, 40, 100]);
+        input.poll(&mut sink);
+        assert_eq!(triggers(&sink), vec![(pad(3), 100)]);
+        backend.set_ports(Vec::new());
+        assert!(
+            input
+                .refresh(&mut sink, OriginalTime::from_nanos(1_000_000))
+                .unwrap()
+                .vanished
+        );
+        backend.set_ports(vec![port("id-1", "Deck A")]);
+        let refresh = input
+            .refresh(&mut sink, OriginalTime::from_nanos(2_000_000))
+            .unwrap();
+        assert!(!refresh.vanished, "nothing stayed connected to vanish");
+        assert_eq!(refresh.reconnected, Some(port("id-1", "Deck A")));
+        assert_ne!(input.controller().source(), source);
+        assert_eq!(
+            input.error(),
+            None,
+            "a successful reconnect clears the error"
+        );
+        assert!(input.status().starts_with("CONNECTED"));
+        let mut producer = backend.producer();
+        push(&mut producer, 10, &[0x91, 40, 64]);
+        input.poll(&mut sink);
+        assert_eq!(
+            triggers(&sink),
+            vec![(pad(3), 100), (pad(3), 64)],
+            "input events flow after the reconnect"
+        );
+        assert_eq!(backend.live(), 1);
+    }
+
+    #[test]
+    fn repeated_refresh_cycles_do_not_duplicate_reconnects_or_lose_mappings() {
+        let (mut input, backend) = scripted(vec![port("id-1", "Deck A")]);
+        let original = mappings(NoteTarget::Held(InstrumentId(17)));
+        input.controller_mut().set_mappings(original.clone());
+        input.select(port("id-1", "Deck A"));
+        let mut sink = VecSink::default();
+        input.connect(OriginalTime::from_nanos(0)).unwrap();
+        for _ in 0..3 {
+            let refresh = input
+                .refresh(&mut sink, OriginalTime::from_nanos(1))
+                .unwrap();
+            assert!(!refresh.vanished);
+            assert_eq!(refresh.reconnected, None);
+            assert_eq!(refresh.ports, vec![port("id-1", "Deck A")]);
+        }
+        assert_eq!(backend.opened(), 1, "a stable port is not reopened");
+        backend.set_ports(Vec::new());
+        assert!(
+            input
+                .refresh(&mut sink, OriginalTime::from_nanos(2))
+                .unwrap()
+                .vanished
+        );
+        assert_eq!(input.controller().counters().disconnects, 1);
+        for _ in 0..3 {
+            let refresh = input
+                .refresh(&mut sink, OriginalTime::from_nanos(3))
+                .unwrap();
+            assert!(!refresh.vanished, "an absent port does not vanish twice");
+            assert_eq!(refresh.reconnected, None);
+        }
+        assert_eq!(input.controller().counters().disconnects, 1);
+        backend.set_ports(vec![port("id-1", "Deck A")]);
+        assert_eq!(
+            input
+                .refresh(&mut sink, OriginalTime::from_nanos(4))
+                .unwrap()
+                .reconnected,
+            Some(port("id-1", "Deck A"))
+        );
+        for _ in 0..3 {
+            let refresh = input
+                .refresh(&mut sink, OriginalTime::from_nanos(5))
+                .unwrap();
+            assert!(!refresh.vanished);
+            assert_eq!(refresh.reconnected, None, "one reconnect per reappearance");
+        }
+        assert_eq!(backend.opened(), 2, "no duplicate connections");
+        assert_eq!(backend.live(), 1, "earlier connection handles were dropped");
+        assert_eq!(input.controller().counters().disconnects, 1);
+        assert_eq!(
+            input.controller().mappings(),
+            &original,
+            "mappings survive every cycle"
+        );
+    }
+
     /// End-to-end through the real CoreMIDI backend: a process-owned virtual
     /// source (the same mechanism as the macOS IAC Driver), connected,
     /// messaged, disconnected and reconciled.
@@ -1722,5 +2174,49 @@ mod tests {
         assert!(input.status().starts_with("DISCONNECTED"));
         // Mappings survived the disconnect.
         assert_eq!(input.controller().mappings().entries().len(), 1);
+        // Recreate the source under the same name: the saved id is gone, so the
+        // name hint must reconnect it and later input must flow again.
+        let mut source = MidiOutput::new("brownnote-input-test-source")
+            .map_err(|error| format!("{error:?}"))
+            .and_then(|output| {
+                output
+                    .create_virtual(&name)
+                    .map_err(|error| format!("{error:?}"))
+            })
+            .unwrap_or_else(|error| panic!("virtual source: {error}"));
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let reconnected = loop {
+            match input.refresh(&mut sink, OriginalTime::from_nanos(2_000_000)) {
+                Ok(refresh) => {
+                    if let Some(port) = refresh.reconnected {
+                        break port;
+                    }
+                }
+                Err(error) => panic!("refresh: {error}"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the recreated source was never reconnected"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(reconnected.name, name);
+        assert_eq!(input.port(), Some(&reconnected));
+        source.send(&[0x91, 40, 127]).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let report = input.poll(&mut sink);
+            if report.counters.triggered >= 2 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reconnected port never delivered: {:?}",
+                report.counters
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(triggers(&sink), vec![(pad(0), 100), (pad(0), 127)]);
+        assert_eq!(input.controller().counters().disconnects, 1);
     }
 }
