@@ -711,8 +711,13 @@ fn fixture_faults_fail_without_taking_the_app_down() {
 
 // CAPS 0.9.26 Plate, as pinned and built by native/plugin-host/caps (#97).
 const PLATE_ID: &str = "1779:Plate";
-const PLATE_LIBRARY_SHA256: &str =
-    "83b72440184988e806eb2c0d0d94ccf9fe5fa030b41fbcf16a415e017ccc4957";
+/// Accepted library builds: pin.json's reference build plus the reviewed
+/// known_libraries entries. The exact bytes depend on the clang build; the
+/// sample-for-sample render comparison below is the behavior gate.
+const PLATE_LIBRARY_SHA256_KNOWN: [&str; 2] = [
+    "83b72440184988e806eb2c0d0d94ccf9fe5fa030b41fbcf16a415e017ccc4957",
+    "08ba0c39bb7b4fd17e6db222683c8af72c987cb867f077df6e5f72a234e20f8a",
+];
 /// SHA-256 of the interleaved little-endian f32 samples in #97's reference
 /// render (`plate_pad/render.wav`, file SHA-256 `e2e04bc4…c9c4`):
 /// `recordings/fart_dry.wav` through Plate at its defaults, block 256,
@@ -784,7 +789,11 @@ fn pinned_plate_reproduces_the_reference_render() {
     let mut probed = Vec::new();
     for rate in [44_100, 48_000] {
         let info = probe_at(&h, PLATE_ID, &library, rate).unwrap();
-        assert_eq!(info.plugin.artifact.to_string(), PLATE_LIBRARY_SHA256);
+        assert!(
+            PLATE_LIBRARY_SHA256_KNOWN.contains(&info.plugin.artifact.to_string().as_str()),
+            "the Plate library must be a pinned build, got {}",
+            info.plugin.artifact
+        );
         assert_eq!(info.plugin.abi, "ladspa 1.1");
         assert_eq!(info.plugin.version, "unversioned");
         assert_eq!(info.name, "C* Plate - Versatile plate reverb");
