@@ -42,6 +42,17 @@ pub enum Backend {
     Ladspa,
 }
 
+impl Backend {
+    /// The project document's spelling, reused by portable records such as an
+    /// export part identity so the two never drift.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Clap => "clap",
+            Self::Ladspa => "ladspa",
+        }
+    }
+}
+
 impl fmt::Display for Backend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {

@@ -12,13 +12,16 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, fmt, path::PathBuf, str::FromStr};
 
 /// Current manifest format version.
-pub const MANIFEST_FORMAT_VERSION: u32 = 2;
+pub const MANIFEST_FORMAT_VERSION: u32 = 3;
 /// Every manifest version this build can read.
-pub const KNOWN_VERSIONS: &[u32] = &[1, MANIFEST_FORMAT_VERSION];
+pub const KNOWN_VERSIONS: &[u32] = &[1, 2, MANIFEST_FORMAT_VERSION];
 /// Bundle-relative manifest file name.
 pub const MANIFEST_NAME: &str = "manifest.json";
 /// Bundle-relative directory holding copied media (D3).
 pub const MEDIA_DIR: &str = "media";
+/// Bound on one plugin-identity string, matching the project's plugin identity
+/// text bound so a manifest can never carry more than a document could.
+const MAX_IDENTITY_TEXT: usize = 512;
 
 /// Content-hash asset identity, mirroring the #98 `project::AssetId` shape:
 /// media files are named by the SHA-256 of their exact encoded bytes, so two
@@ -112,6 +115,48 @@ pub struct Timing {
     pub sample_rate_hz: u32,
 }
 
+/// Which external plugin made a live take. Identity only: no state, no
+/// parameters, no machine path, so the bundle names a plugin another host can
+/// re-drive where it can load one, and nothing it cannot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginIdentity {
+    pub backend: String,
+    pub id: String,
+    /// SHA-256 of the loaded binary, 64 lowercase hex digits.
+    pub artifact: String,
+    pub abi: String,
+    pub version: String,
+}
+
+impl PluginIdentity {
+    /// Identity for a loss or adapter record. Never includes a machine path.
+    pub fn describe(&self) -> String {
+        let artifact: String = self.artifact.chars().take(12).collect();
+        format!(
+            "{} plugin \"{}\" ({} {}, artifact {artifact}…)",
+            self.backend, self.id, self.version, self.abi
+        )
+    }
+
+    fn validate(&self) -> bool {
+        let text = |value: &str| {
+            !value.is_empty()
+                && value.len() <= MAX_IDENTITY_TEXT
+                && !value.chars().any(char::is_control)
+        };
+        text(&self.backend)
+            && text(&self.id)
+            && text(&self.abi)
+            && text(&self.version)
+            && self.artifact.len() == 64
+            && self
+                .artifact
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+}
+
 /// What a bundle part carries.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -127,6 +172,13 @@ pub enum PartKind {
     },
     SampleClips {
         source: AssetId,
+    },
+    /// Editable, sample-timed notes from a live external instrument take. The
+    /// kind names the plugin identity, never the sampled instrument: the notes
+    /// are the performance, and only a host that can load that plugin can
+    /// sound them. The take ID arrives on every event identity.
+    LiveInstrumentNotes {
+        plugin: PluginIdentity,
     },
 }
 
@@ -325,6 +377,11 @@ impl Manifest {
             if !parts.insert(part.id) {
                 return Err(ManifestError::DuplicatePart(part.id));
             }
+            if let PartKind::LiveInstrumentNotes { plugin } = &part.kind
+                && !plugin.validate()
+            {
+                return Err(ManifestError::InvalidPluginIdentity(part.id));
+            }
         }
         let mut assets = BTreeSet::new();
         for asset in &self.assets {
@@ -476,6 +533,7 @@ pub enum ManifestError {
     ReadOnlyVersion(u32),
     InvalidAudio,
     InvalidMidi,
+    InvalidPluginIdentity(PartId),
     MalformedJson,
     MalformedAssetId,
     Encode,

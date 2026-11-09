@@ -259,7 +259,9 @@ fn load(bundle: &Path) -> Result<Input> {
                     "pad hit needs a matching pad and retained/source media",
                 ));
             }
-            PartKind::InstrumentNotes { .. } => {
+            // Live-instrument notes obey the same note bounds: they stay notes
+            // even when this target cannot load the plugin that played them.
+            PartKind::InstrumentNotes { .. } | PartKind::LiveInstrumentNotes { .. } => {
                 if !event.pitch.is_some_and(|x| x <= 127)
                     || !event.channel.is_some_and(|x| x <= 15)
                     || !event.velocity.is_some_and(|x| (1..=127).contains(&x))
@@ -489,6 +491,27 @@ fn build(
         }
     }
     for part in &manifest.parts {
+        if let PartKind::LiveInstrumentNotes { plugin } = &part.kind {
+            // Never a silent drop and never a sampler guess: this target cannot
+            // load a plugin from a bundle or carry its identity into a track.
+            let notes = manifest
+                .events
+                .iter()
+                .filter(|event| event.part == part.id)
+                .count();
+            report.record(
+                None,
+                Some(part.id),
+                "unsupported",
+                format!(
+                    "{notes} live instrument note(s) kept in the manifest for {}; this target \
+                     cannot load that plugin or carry its identity into a track, so the notes are \
+                     not imported as MIDI. The take's retained audio is the fallback.",
+                    plugin.describe()
+                ),
+            );
+            continue;
+        }
         if !matches!(part.kind, PartKind::InstrumentNotes { .. }) {
             continue;
         }

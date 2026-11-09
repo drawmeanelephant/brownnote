@@ -40,6 +40,13 @@ so an unrelated default synth or approximate sampler cannot double retained
 audio. Notes without retained audio carry an explicit unsupported record.
 Original bundle loss records remain unchanged in the report.
 
+`live_instrument_notes` parts name an external plugin identity. This target
+cannot load a plugin from a bundle or carry its identity into a track, so each
+such part is recorded as an explicit unsupported mapping naming the plugin
+(backend, ID, version, short artifact hash) and its note count. The take's
+retained audio clip is the fallback, the notes are never written as MIDI, and
+no machine path is reported.
+
 Optionally pass `--mappings /absolute/mappings.json`, an adapter-local JSON array:
 
 ```json

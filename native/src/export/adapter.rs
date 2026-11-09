@@ -12,7 +12,8 @@ use super::{
     bundle::{self, BundleError, BundleReceipt, BundleRequest, BundleWriter},
     fixture::{
         FixtureAsset, FixtureEdit, FixtureEvent, FixtureExport, FixtureLoss, FixtureMediaKind,
-        FixturePad, FixturePart, FixturePartKind, FixtureTake, FixtureTarget,
+        FixturePad, FixturePart, FixturePartKind, FixturePluginIdentity, FixtureTake,
+        FixtureTarget,
     },
     manifest::{AssetId, EventId, PartId},
 };
@@ -45,6 +46,9 @@ pub enum AdapterError {
     Bundle(BundleError),
     TempoMismatch,
     Overflow,
+    /// A live-take note part can only be built from a project that still holds
+    /// the live instrument's identity.
+    LiveIdentity,
 }
 impl fmt::Display for AdapterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -70,6 +74,8 @@ enum PartKey {
     Instrument(u128),
     /// One take's retained live-instrument audio.
     LiveTake(u128),
+    /// One live take's editable notes, joined to that audio by take identity.
+    LiveTakeNotes(u128),
 }
 
 impl PartKey {
@@ -91,6 +97,10 @@ impl PartKey {
             }
             Self::LiveTake(take) => {
                 hash.update(b"live-take:");
+                hash.update(take.to_be_bytes());
+            }
+            Self::LiveTakeNotes(take) => {
+                hash.update(b"live-take-notes:");
                 hash.update(take.to_be_bytes());
             }
         }
@@ -187,15 +197,28 @@ pub fn prepare(
         }
     }
     let effective = edits.effective_notes(takes).map_err(AdapterError::Edit)?;
+    // A live take's identity travels with its notes, so a destination can name
+    // the plugin it cannot load instead of inventing a sampled instrument.
+    let live_plugin = document
+        .live_instrument
+        .as_ref()
+        .map(|live| FixturePluginIdentity {
+            backend: live.plugin.backend.as_str().into(),
+            id: live.plugin.id.clone(),
+            artifact: live.plugin.artifact.to_string(),
+            abi: live.plugin.abi.clone(),
+            version: live.plugin.version.clone(),
+        });
     let mut grouped: BTreeMap<PartKey, Vec<EventId>> = BTreeMap::new();
     let mut exported_takes: BTreeMap<u128, FixtureTake> = BTreeMap::new();
     for note in effective {
-        if document
+        let live = document
             .live_instrument
             .as_ref()
-            .is_some_and(|live| live.take(note.id.take).is_some())
-        {
-            // This take is exported as its retained live audio, not as notes.
+            .is_some_and(|live| live.take(note.id.take).is_some());
+        if live && !matches!(note.target, Target::Instrument(_)) {
+            // A live take's instrument notes carry the plugin identity; pad or
+            // sample hits recorded in it stay out of this slice, as before.
             continue;
         }
         let id = event_id(note.id);
@@ -209,6 +232,11 @@ pub fn prepare(
                 FixtureTarget::Instrument(instrument.0),
                 PartKey::Instrument(instrument.0),
             ),
+        };
+        let part = if live {
+            PartKey::LiveTakeNotes(id.take)
+        } else {
+            part
         };
         let take = takes.take(note.id.take).ok_or(AdapterError::Overflow)?;
         let original = take
@@ -259,7 +287,7 @@ pub fn prepare(
                 ),
             }),
         };
-        if let Some(render) = frozen.get(&note.id) {
+        if !live && let Some(render) = frozen.get(&note.id) {
             audio.frozen.insert(
                 id,
                 FrozenHit {
@@ -283,7 +311,9 @@ pub fn prepare(
     // Retained live-instrument takes are the authoritative audio (D4). They
     // export as one clip part each, with the exact plugin identity recorded as
     // baked processing: the state recalls the plugin here, it is not editable
-    // effect state another host can reconstruct.
+    // effect state another host can reconstruct. The take's notes travel in a
+    // separate part naming that same identity, so the performance stays
+    // editable where the destination can load the plugin.
     let mut losses = Vec::new();
     let mut live_parts: BTreeMap<PartId, AssetId> = BTreeMap::new();
     if let Some(live) = &document.live_instrument {
@@ -297,7 +327,8 @@ pub fn prepare(
             let duration_nanos = u64::try_from(duration_nanos).unwrap_or(u64::MAX).max(1);
             let id = EventId {
                 take: take_id.0,
-                // A reserved sequence: no note of this take is exported.
+                // Reserved: the take's audio clip never collides with one of
+                // its note sequences.
                 sequence: u64::MAX,
             };
             let tempo = takes
@@ -331,7 +362,11 @@ pub fn prepare(
                 part,
                 asset,
                 detail: format!(
-                    "live instrument take audio baked from {}; the project's opaque state is a recall record for this plugin, not editable plugin state another host can reconstruct",
+                    "live instrument take audio baked from {}; this take's notes are exported in \
+                     their own part, sample-timed and pinned to that identity, and a destination \
+                     that cannot load the plugin reports them as an unsupported mapping with this \
+                     retained audio as the fallback; the project's opaque state is a recall record \
+                     for this plugin, not editable plugin state another host can reconstruct",
                     live.describe()
                 ),
             });
@@ -352,6 +387,10 @@ pub fn prepare(
                     }
                     PartKey::LiveTake(_) => FixturePartKind::SampleClips {
                         source: *live_parts.get(&id).ok_or(AdapterError::Overflow)?,
+                    },
+                    PartKey::LiveTakeNotes(take) => FixturePartKind::LiveInstrumentNotes {
+                        take,
+                        plugin: live_plugin.clone().ok_or(AdapterError::LiveIdentity)?,
                     },
                 },
             })

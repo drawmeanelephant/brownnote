@@ -339,6 +339,15 @@ pub fn render(
         let instrument = manifest
             .part(event.part)
             .is_some_and(|p| matches!(p.kind, PartKind::InstrumentNotes { .. }));
+        // A live take's notes have no per-hit render by design: the take's own
+        // retained audio, exported as its clip part, is the audio for this
+        // performance. Nothing is lost, so nothing is recorded as a loss.
+        if manifest
+            .part(event.part)
+            .is_some_and(|p| matches!(p.kind, PartKind::LiveInstrumentNotes { .. }))
+        {
+            continue;
+        }
         if instrument && frozen.is_none() && event.asset.is_none() {
             manifest.losses.push(LossRecord::UnsupportedMapping {
                 event: event.id,
