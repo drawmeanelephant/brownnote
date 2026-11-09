@@ -570,8 +570,8 @@ fn publish(out: &Path, audio: &wav::Audio, record: &str) -> std::io::Result<()> 
         .file_name()
         .map_or_else(|| "render".into(), |n| n.to_string_lossy().into_owned());
     let staging = parent.join(format!(".{name}.partial-{}", std::process::id()));
+    std::fs::create_dir(&staging)?;
     let result = (|| {
-        std::fs::create_dir(&staging)?;
         wav::write_float(&staging.join("render.wav"), audio)?;
         std::fs::write(staging.join("render.json"), record)?;
         std::fs::rename(&staging, out)

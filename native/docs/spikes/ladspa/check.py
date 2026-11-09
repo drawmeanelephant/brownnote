@@ -174,8 +174,31 @@ def check_failures(run, probe, caps, fixtures, env):
     leftovers = [p.name for p in run.iterdir() if ".partial-" in p.name]
     if leftovers:
         raise AssertionError(f"staging directories left behind: {leftovers}")
+    check_existing_staging(run, probe, caps, pad)
+    results.append({"case": "staging exists", "exit": 1,
+                    "stderr": "existing staging directory left untouched"})
     print("PASS: no failure published output or left staging directories", flush=True)
     return results
+
+
+def check_existing_staging(run, probe, caps, pad):
+    out = run / "staging-collision"
+    setup = (
+        "import os, sys; from pathlib import Path; "
+        "out = Path(sys.argv[4]); "
+        "stage = out.parent / f'.{out.name}.partial-{os.getpid()}'; "
+        "stage.mkdir(); (stage / 'keep.txt').write_text('untouched\\n'); "
+        "os.execv(sys.argv[1], [sys.argv[1], 'render', sys.argv[2], 'Plate', sys.argv[3], sys.argv[4]])"
+    )
+    result = subprocess.run([sys.executable, "-c", setup, str(probe), str(caps), str(pad), str(out)],
+                            capture_output=True, text=True)
+    staging = list(run.glob(f".{out.name}.partial-*"))
+    if result.returncode != 1 or out.exists() or len(staging) != 1:
+        raise AssertionError(f"existing staging was removed or adopted: {result.stderr}")
+    if (staging[0] / "keep.txt").read_text() != "untouched\n":
+        raise AssertionError("existing staging contents were modified")
+    shutil.rmtree(staging[0])
+    print("PASS: existing staging is refused and left untouched", flush=True)
 
 
 def save_evidence(run):
