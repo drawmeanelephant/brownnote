@@ -60,6 +60,29 @@ fn script(dir: &Path, body: &str) -> PathBuf {
     path
 }
 
+fn ready_process(dir: &Path, body: &str) -> std::process::Child {
+    let mut child = Command::new(script(dir, body))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let ready = dir.join("ready");
+    let startup = Instant::now() + Duration::from_secs(2);
+    while !ready.exists() && Instant::now() < startup {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "signal fixture exited before installing its handler"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    if !ready.exists() {
+        terminate(&mut child);
+        panic!("signal fixture did not become ready");
+    }
+    child
+}
+
 fn runs(dir: &Path) -> usize {
     fs::read_to_string(dir.join("runs"))
         .map(|text| text.lines().count())
@@ -230,10 +253,9 @@ fn failures_keep_their_kind_and_leave_no_partial_files() {
 }
 
 #[test]
-fn a_brownnote_that_does_not_answer_is_asked_to_stop_and_then_killed() {
+fn render_timeout_keeps_its_deadline_and_leaves_no_partial_files() {
     let dir = dir();
-    // Stops on SIGTERM like the real brownnote, which forwards it to the bench
-    // before leaving.
+    // The deadline applies even when process setup has not installed its trap.
     let bin = script(
         &dir,
         "d=$(dirname \"$0\")\nsleep 30 & child=$!\n\
@@ -253,37 +275,50 @@ fn a_brownnote_that_does_not_answer_is_asked_to_stop_and_then_killed() {
     let error = render(&job).unwrap_err();
     assert!(matches!(error, RenderError::Timeout), "{error:?}");
     assert!(start.elapsed() < Duration::from_millis(1200));
-    assert!(
-        dir.join("term").exists(),
-        "the timeout skipped SIGTERM, so the bench would never hear about it"
-    );
     assert!(fs::read_dir(&cache).unwrap().next().is_none());
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
+fn a_ready_brownnote_receives_sigterm_through_the_render_wait_path() {
+    let dir = dir();
+    let mut child = ready_process(
+        &dir,
+        "d=$(dirname \"$0\")\nsleep 30 & child=$!\n\
+         trap 'kill $child 2>/dev/null; echo term > \"$d/term\"; exit 0' TERM\n\
+         echo ready > \"$d/ready\"\nwait $child",
+    );
+    let start = Instant::now();
+    let error = wait_for_render(&mut child, Duration::from_millis(200)).unwrap_err();
+    assert!(matches!(error, RenderError::Timeout), "{error:?}");
+    assert!(start.elapsed() < Duration::from_millis(1200));
+    assert!(
+        dir.join("term").exists(),
+        "ready handler did not receive SIGTERM"
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn a_brownnote_that_ignores_sigterm_is_still_killed_within_the_grace() {
+    use std::os::unix::process::ExitStatusExt;
+
     let dir = dir();
     // An ignored signal stays ignored across exec, so this stands in for a
     // bench that will not act on the signal brownnote forwards.
-    let bin = script(&dir, "trap '' TERM\nexec sleep 30");
-    let cache = dir.join("cache");
-    let mut job = job(
-        &bin,
-        &cache,
-        chain(&[stage("Reverb", &[], None)]),
-        source(),
-        catalog(),
-    );
-    job.timeout = Duration::from_millis(200);
     let start = Instant::now();
-    let error = render(&job).unwrap_err();
+    let mut child = ready_process(
+        &dir,
+        "trap '' TERM\necho ready > \"$(dirname \"$0\")/ready\"\nexec sleep 30",
+    );
+    let error = wait_for_render(&mut child, Duration::from_millis(200)).unwrap_err();
     assert!(matches!(error, RenderError::Timeout), "{error:?}");
     assert!(
         start.elapsed() < Duration::from_secs(5),
         "the grace ran long: {:?}",
         start.elapsed()
     );
+    assert_eq!(child.try_wait().unwrap().unwrap().signal(), Some(9));
     fs::remove_dir_all(dir).unwrap();
 }
 
