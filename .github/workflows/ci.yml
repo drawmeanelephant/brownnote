@@ -128,8 +128,11 @@ jobs:
       - name: Test
         run: cargo test --manifest-path native/Cargo.toml
 
-      - name: Prepare checksum-pinned CLAP effect
-        run: python3 -c 'import runpy; runpy.run_path("native/docs/spikes/clap/prepare.py")["prepare_effect"]()'
+      - name: Required pinned CLAP instrument and effect research
+        run: |
+          python3 native/docs/spikes/clap/check.py \
+            --lock-file "$RUNNER_TEMP/brownnote-clap-validation.lock" \
+            --target-dir "$GITHUB_WORKSPACE/native/target"
 
       - name: Required CLAP helper and real-effect tests
         env:
