@@ -1,0 +1,15 @@
+# pass,source,channel,pitch,velocity,target,onset_ns,end_ns
+# All onsets snap to the same sixteenth at 116 BPM (129310345 ns rounded).
+# Different velocities, sources, channels and targets must never be collapsed.
+0,7,0,60,19,pad,120000001,180000003
+0,7,0,60,111,pad,135000009,230000017
+0,8,0,60,64,instrument,135000009,150000011
+0,7,1,60,77,sample,135000009,170000013
+1,7,0,60,31,pad,120000001,260000001
+1,7,0,60,127,pad,135000009,270000002
+1,9,0,60,1,instrument,135000009,155000007
+1,7,0,61,83,sample,135000009,175000019
+2,7,0,60,43,pad,120000001,280000021
+2,7,0,60,113,pad,135000009,290000023
+2,8,15,127,65,instrument,135000009,160000027
+2,7,0,0,79,sample,135000009,190000029
