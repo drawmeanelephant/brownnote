@@ -12,8 +12,9 @@ use brownnote_native::export::{
         FixturePart, FixturePartKind, FixtureTake, FixtureTarget,
     },
     manifest::{
-        AssetId, AudioRole, EventId, LossRecord, MANIFEST_FORMAT_VERSION, MANIFEST_NAME, MEDIA_DIR,
-        Manifest, ManifestError, PartEntry, PartId, PartKind, PluginIdentity, TimeOrigin, Timing,
+        AssetId, AssetKind, AudioRole, EventId, LossRecord, MANIFEST_FORMAT_VERSION, MANIFEST_NAME,
+        MEDIA_DIR, Manifest, ManifestError, PartEntry, PartId, PartKind, PluginIdentity,
+        TimeOrigin, Timing,
     },
     midi,
 };
@@ -2214,5 +2215,282 @@ fn live_take_notes_export_with_the_plugin_identity_and_retained_audio() {
     assert!(detail.contains("unsupported mapping"));
     assert!(detail.contains("not editable plugin state"));
     assert!(!detail.contains("/machine/fixture-notes.clap"));
+    fs::remove_dir_all(base).unwrap();
+}
+
+/// #171's outcome for the other target kinds: a pad hit recorded during a
+/// live-instrument pass is not inside the take's retained plugin capture (the
+/// capture is the plugin's own blocks, the pad mixer is summed later), so it
+/// must export as the pad clip it is instead of disappearing from the bundle.
+#[test]
+fn live_take_pad_hit_exports_as_a_pad_clip_beside_the_take_notes() {
+    let base = temporary("live-pad-hits");
+    fs::create_dir_all(&base).unwrap();
+    let cache = base.join("cache");
+    fs::create_dir_all(&cache).unwrap();
+    let project = base.join("project");
+    let samples: Vec<f32> = (0..4_800)
+        .flat_map(|frame| {
+            let value = (frame as f32 / 48_000.0 * 220.0 * std::f32::consts::TAU).sin() * 0.25;
+            [value, -value]
+        })
+        .collect();
+    let audio = encode_fixture(48_000, 2, &samples);
+    let asset = AssetId::of(&audio);
+    let project_asset = project::AssetId::of(&audio);
+    let pad_source = encode_fixture(48_000, 1, &vec![0.25; 24_000]);
+    let pad_retained = encode_fixture(44_100, 1, &vec![0.5; 36_000]);
+    let pad_source_id = project::AssetId::of(&pad_source);
+    let pad_retained_id = project::AssetId::of(&pad_retained);
+    let pad_source_asset = AssetId::of(&pad_source);
+    let pad_retained_asset = AssetId::of(&pad_retained);
+    let plugin = Plugin {
+        backend: Backend::Clap,
+        id: "org.brownnote.fixture.instrument".into(),
+        artifact: brownnote_native::pedals::offline::Hash256::of(b"fixture pad hits bundle"),
+        abi: "clap-1.2".into(),
+        version: "0.4.0".into(),
+    };
+    let stage = Stage {
+        plugin: plugin.clone(),
+        location: PathBuf::from("/machine/fixture-pad-hits.clap"),
+        params: Vec::new(),
+        state: Some(vec![6, 5].into()),
+    };
+    let mut live = LiveInstrumentDocument::from_stage(&stage, "Fixture Instrument".into(), true);
+    live.takes.push(LiveTakeDocument {
+        take: "12".into(),
+        asset: project_asset,
+        rate: 48_000,
+        frames: 2_400,
+    });
+    let mut document = Document {
+        assets: vec![
+            Asset {
+                reference: AssetRef::of(&audio),
+                kind: MediaKind::LiveTakeRender,
+            },
+            Asset {
+                reference: AssetRef::of(&pad_source),
+                kind: MediaKind::Source,
+            },
+            Asset {
+                reference: AssetRef::of(&pad_retained),
+                kind: MediaKind::RetainedRender,
+            },
+        ],
+        live_instrument: Some(live),
+        ..Document::default()
+    };
+    document.pads[3].sample = Some(SampleAssignment {
+        source: pad_source_id,
+        retained: Some(pad_retained_id),
+    });
+    document.validate().unwrap();
+    let mut sources = Vec::new();
+    for (id, name, bytes) in [
+        (project_asset, "live-pad-hits.wav", &audio),
+        (pad_source_id, "pad-source.wav", &pad_source),
+        (pad_retained_id, "pad-retained.wav", &pad_retained),
+    ] {
+        let path = cache.join(name);
+        fs::write(&path, bytes).unwrap();
+        sources.push(MediaSource { id, path });
+    }
+    Store::new(project.clone())
+        .save(&document, &sources)
+        .unwrap();
+    fs::remove_dir_all(&cache).unwrap();
+
+    // One live pass at 60 BPM into take 12: a held instrument note and a pad
+    // hit on pad 3, from the same pad bus the pass was played over.
+    let mut takes = Takes::new(LoopBars::try_from(4).unwrap(), TakeId(12));
+    takes
+        .set_tempo(Tempo::try_from(LIVE_RECORDING_MILLI_BPM).unwrap())
+        .unwrap();
+    let take = takes.arm(PassOptions::default()).unwrap();
+    takes.start(take).unwrap();
+    let key = |channel, pitch| NoteKey {
+        source: SourceId(41),
+        channel: Channel::try_from(channel).unwrap(),
+        pitch: Pitch::try_from(pitch).unwrap(),
+    };
+    let played = takes
+        .note_on(
+            take,
+            Target::Instrument(InstrumentId(1)),
+            key(0, 60),
+            Velocity::try_from(100).unwrap(),
+            OriginalTime::from_nanos(200_000_000),
+        )
+        .unwrap();
+    takes
+        .note_off(take, key(0, 60), OriginalTime::from_nanos(300_000_000))
+        .unwrap();
+    let hit = takes
+        .note_on(
+            take,
+            Target::Pad(PadId::try_from(3).unwrap()),
+            key(0, 36),
+            Velocity::try_from(110).unwrap(),
+            OriginalTime::from_nanos(900_000_000),
+        )
+        .unwrap();
+    takes
+        .note_off(take, key(0, 36), OriginalTime::from_nanos(1_100_000_000))
+        .unwrap();
+    takes.finish(take).unwrap();
+    takes
+        .set_tempo(Tempo::try_from(LIVE_PROJECT_MILLI_BPM).unwrap())
+        .unwrap();
+    // The notes' real identities: take 12, the sequences the pass recorded.
+    let neutral = |id: performance::EventId| EventId {
+        take: id.take.0,
+        sequence: id.sequence,
+    };
+    assert_eq!((played.take.0, played.sequence), (12, 0));
+    assert_eq!((hit.take.0, hit.sequence), (12, 1));
+    let note_event = neutral(played);
+    let pad_event_id = neutral(hit);
+
+    let destination = base.join("bundle");
+    let request = BundleRequest {
+        source_root: project.clone(),
+        destination: destination.clone(),
+        origin: TimeOrigin { nanos: ORIGIN },
+        timing: Timing {
+            tempo_milli_bpm: LIVE_PROJECT_MILLI_BPM,
+            sample_rate_hz: 48_000,
+        },
+    };
+    let receipt = adapter::write_saved_project_bundle(
+        &mut SystemWriter,
+        &request,
+        &takes,
+        &EditModel::default(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let manifest = Manifest::decode(&fs::read(destination.join(MANIFEST_NAME)).unwrap()).unwrap();
+    assert_eq!(manifest, receipt.manifest);
+    assert_eq!(manifest.validate(), Ok(()));
+    // The take's audio clip, its held note and the pad hit: nothing dropped.
+    assert_eq!(receipt.event_count, 3);
+    assert_eq!(manifest.events.len(), 3);
+    assert_eq!(receipt.manifest.parts.len(), 3);
+    assert!(
+        !manifest.losses.iter().any(|loss| matches!(
+            loss,
+            LossRecord::UnsupportedMapping { event, .. } if *event == pad_event_id
+        )),
+        "the pad hit is exported, not reported as an unsupported mapping: {:?}",
+        manifest.losses
+    );
+
+    // The instrument note keeps its live-take part and the plugin identity.
+    let notes_part = manifest
+        .parts
+        .iter()
+        .find(|part| matches!(part.kind, PartKind::LiveInstrumentNotes { .. }))
+        .unwrap();
+    let PartKind::LiveInstrumentNotes { plugin: identity } = &notes_part.kind else {
+        unreachable!()
+    };
+    assert_eq!(identity.backend, "clap");
+    assert_eq!(identity.id, plugin.id);
+    assert_eq!(identity.artifact, plugin.artifact.to_string());
+    let note_events: Vec<_> = manifest
+        .events
+        .iter()
+        .filter(|event| event.part == notes_part.id)
+        .map(|event| {
+            (
+                event.id,
+                event.pad,
+                event.asset,
+                event.start_nanos,
+                event.duration_nanos,
+            )
+        })
+        .collect();
+    // The held note stays sample-timed in the take's own part, with no pad and
+    // no per-hit render.
+    assert_eq!(
+        note_events,
+        [(note_event, None, None, 100_000_000, 50_000_000)]
+    );
+
+    // The pad hit is a normal pad-clip part for pad 3: the pad's retained
+    // render is the media it plays from, the source stays as provenance, and
+    // the per-hit audio is the exporter's usual baked pad render.
+    let pad_part = manifest
+        .parts
+        .iter()
+        .find(|part| matches!(part.kind, PartKind::PadClips { .. }))
+        .unwrap();
+    assert_eq!(pad_part.kind, PartKind::PadClips { pad: 3 });
+    let pad_events: Vec<_> = manifest
+        .events
+        .iter()
+        .filter(|event| event.part == pad_part.id)
+        .collect();
+    assert_eq!(pad_events.len(), 1);
+    let pad_event = pad_events[0];
+    // Halved by hand from the fixture: the take recorded at 60 BPM plays at the
+    // project's 120 BPM.
+    assert_eq!(pad_event.id, pad_event_id);
+    assert_eq!(pad_event.start_nanos, 450_000_000);
+    assert_eq!(pad_event.duration_nanos, 100_000_000);
+    assert_eq!(pad_event.velocity, Some(110));
+    assert_eq!(pad_event.pitch, Some(36));
+    assert_eq!(pad_event.channel, Some(0));
+    assert_eq!(pad_event.source, Some(pad_source_asset));
+    let hit_audio = manifest
+        .audio
+        .iter()
+        .find(|entry| entry.event == Some(pad_event_id) && entry.role == AudioRole::HitWet)
+        .expect("the pad hit is audible in the bundle");
+    assert_eq!(pad_event.asset, Some(hit_audio.asset));
+    assert!(hit_audio.frames > 0);
+    assert!(manifest.losses.iter().any(|loss| matches!(
+        loss,
+        LossRecord::BakedProcessing { part, asset, detail }
+            if *part == pad_part.id && *asset == hit_audio.asset && detail.contains("native one-shot")
+    )));
+    // The pad's retained render is bundle media, copied byte-for-byte.
+    assert_eq!(
+        manifest.asset(pad_retained_asset).unwrap().kind,
+        AssetKind::RetainedRender
+    );
+    let copied =
+        fs::read(destination.join(&manifest.asset(pad_retained_asset).unwrap().path)).unwrap();
+    assert_eq!(copied, pad_retained);
+
+    // The retained take audio is unchanged and byte-for-byte: the pad hit is
+    // the pad mixer's signal, never part of the plugin's capture, so exporting
+    // it adds no duplicated audio.
+    let audio_part = manifest
+        .parts
+        .iter()
+        .find(|part| matches!(part.kind, PartKind::SampleClips { .. }))
+        .unwrap();
+    assert_eq!(audio_part.kind, PartKind::SampleClips { source: asset });
+    let audio_events: Vec<_> = manifest
+        .events
+        .iter()
+        .filter(|event| event.part == audio_part.id)
+        .collect();
+    assert_eq!(audio_events.len(), 1);
+    assert_eq!(
+        audio_events[0].id,
+        EventId {
+            take: 12,
+            sequence: u64::MAX
+        }
+    );
+    assert_eq!(audio_events[0].asset, Some(asset));
+    assert_eq!(audio_events[0].duration_nanos, 50_000_000);
+    let bundled = fs::read(destination.join(&manifest.asset(asset).unwrap().path)).unwrap();
+    assert_eq!(bundled, audio);
     fs::remove_dir_all(base).unwrap();
 }

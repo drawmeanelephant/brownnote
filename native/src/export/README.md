@@ -53,9 +53,10 @@ Any truncated-hash collision fails duplicate-part validation, never merges.
 
 ## Live takes
 
-A project with a live CLAP instrument exports every retained take twice: one
+A project with a live CLAP instrument exports each retained take's audio as one
 `sample_clips` part whose single event is the byte-for-byte retained WAV, and —
-when the take has notes — one `live_instrument_notes` part per take:
+when the take has instrument-target notes — one `live_instrument_notes` part
+per take:
 
 ```json
 {
@@ -86,6 +87,12 @@ are the real take event IDs, so notes and audio join by take identity. Identity
 is name, artifact hash, ABI and version only: the plugin's machine path is
 never exported, and no plugin state is claimed to be portable.
 
+A live take can also hold pad or sample hits played over the pass. The capture
+is the plugin's own output and the pad mixer is summed after it, so those hits
+are in neither the retained WAV nor the take's notes: they keep their usual
+`pad_clips` or `sample_clips` part with the normal retained/source asset
+resolution, one event each, instead of being dropped from the bundle.
+
 ## Sound ownership and bounds
 
 Pad hits follow native one-shot playback: linear interpolation, pitch/rate,
@@ -102,15 +109,16 @@ Optional dry renders are also retained media. Required media never regenerates:
 missing or corrupt bytes fail export even if source audio exists.
 
 Without a frozen instrument render, MIDI still exports, but an explicit loss
-states that the instrument is absent from audio fallbacks. Live-take notes have
-no per-hit render by design: the take's retained audio clip already carries that
-performance, so they add no fallback hit and no loss. Unrecoverable dry
-audio is also reported, not replaced with wet audio. The reference sums wet
-audio, applies the project's static master gain, and clamps to [-1,1], without
-normalization or tanh. Stems remain pre-master and unclamped. This offline
-handoff preserves all hits; it does not simulate finite live voice-pool
-stealing, master automation, or unavailable shared nonlinear master effects.
-It is not a listening or SoundCraft-import claim (D19).
+states that the instrument is absent from audio fallbacks. Live-take instrument
+notes have no per-hit render by design: the take's retained audio clip already
+carries that performance, so they add no fallback hit and no loss. Pad and
+sample hits from such a take are rendered from their own media like any other
+hit. Unrecoverable dry audio is also reported, not replaced with wet audio.
+The reference sums wet audio, applies the project's static master gain, and
+clamps to [-1,1], without normalization or tanh. Stems remain pre-master and
+unclamped. This offline handoff preserves all hits; it does not simulate finite
+live voice-pool stealing, master automation, or unavailable shared nonlinear
+master effects. It is not a listening or SoundCraft-import claim (D19).
 
 Rendering happens off the audio callback and holds decoded/rendered files in
 memory. RIFF sizes, output-frame allocations, invalid settings, and non-finite
