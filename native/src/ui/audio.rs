@@ -8,12 +8,20 @@ impl State {
     pub(super) fn retry(&mut self) {
         let selection = self.output.selection().clone();
         self.stop_for_output_change(selection.clone(), "Retrying selected output".into());
-        self.open_output_selection(&selection, &|slots, selection| {
-            Output::open_selected(slots, selection).map_err(|error| error.to_string())
+        self.open_output_selection(&selection, &|slots, selection, live| {
+            Output::open_selected_with_live(slots, selection, |rate, buffer| {
+                let voice = live.mount_current(rate, buffer);
+                let note = live.status_note();
+                (voice, note)
+            })
+            .map_err(|error| error.to_string())
         });
     }
 
     pub(super) fn stop_for_output_change(&mut self, selection: OutputSelection, reason: String) {
+        // D16: the host and its voice belong to the old stream. Save what the
+        // plugin holds, then stop it; the next open rebuilds at the new rate.
+        self.live.suspend();
         let output = Output::silent_selected(self.assets.slots().clone(), selection, reason);
         self.install_output(output);
     }
@@ -21,19 +29,55 @@ impl State {
     pub(super) fn open_output_selection(
         &mut self,
         selection: &OutputSelection,
-        open: &dyn Fn(Slots, &OutputSelection) -> Result<Output, String>,
+        open: &dyn Fn(Slots, &OutputSelection, &mut super::live::Live) -> Result<Output, String>,
     ) {
         // The stop phase has already dropped the previous device stream.
-        let output = match open(self.assets.slots().clone(), selection) {
+        let slots = self.assets.slots().clone();
+        let output = match open(slots, selection, &mut self.live) {
             Ok(mut output) => {
                 output.status.push_str(" · Playing voices stopped");
                 output
             }
             Err(error) => {
+                self.live.suspend();
                 Output::silent_selected(self.assets.slots().clone(), selection.clone(), error)
             }
         };
         self.install_output(output);
+    }
+
+    /// The default project-open output: the live instrument mounts at the
+    /// stream's own rate and buffer, once the project document is installed.
+    pub(super) fn open_project_output(&mut self, slots: Slots) -> Result<Output, String> {
+        let selection = self.output.selection().clone();
+        if self.output.opened().is_some() {
+            let live = &mut self.live;
+            match Output::open_selected_with_live(slots, &selection, |rate, buffer| {
+                let voice = live.mount_current(rate, buffer);
+                let note = live.status_note();
+                (voice, note)
+            }) {
+                Ok(output) => Ok(output),
+                Err(error) => {
+                    self.live.suspend();
+                    Err(error.to_string())
+                }
+            }
+        } else if self.output.failed {
+            let _ = self.live.mount_current(44_100, 512);
+            Ok(Output::silent_selected(
+                slots,
+                selection,
+                "Project opened; audio remains unavailable".into(),
+            ))
+        } else {
+            let _ = self.live.mount_current(44_100, 512);
+            Ok(Output::virtual_driver(
+                slots,
+                self.output.status.clone(),
+                false,
+            ))
+        }
     }
 
     pub(super) fn install_output(&mut self, output: Output) {

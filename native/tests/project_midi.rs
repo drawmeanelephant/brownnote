@@ -225,7 +225,7 @@ fn unsupported_project_versions_still_fail_before_schema_or_store_changes() -> R
             .err()
             .ok_or("unsupported version saved")?;
         assert_eq!(failure.commit, CommitState::Unchanged);
-        assert_eq!(failure.error, StoreError::Document(expected));
+        assert_eq!(*failure.error, StoreError::Document(expected));
         assert!(!fixture.root().exists());
     }
     Ok(())

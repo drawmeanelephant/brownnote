@@ -108,6 +108,31 @@ Existing v1 fixtures load unchanged.
 
 `cargo test --manifest-path native/Cargo.toml --test project_takes` covers
 round trip, validation, legacy bytes and the active-pass refusal.
+
+## Live CLAP instrument (#112)
+
+Project format v1 accepts one more optional field, `live_instrument`, with its
+own `version: 1` (`project::live::LiveInstrumentDocument`, see
+`live-instruments.md`). Missing means no live instrument; default documents
+omit it and older v1 fixtures load unchanged.
+
+- Identity is the CLAP tuple (backend, plugin ID, artifact SHA-256, ABI,
+  version). A bundle path is a `location_hint` only, never identity and never
+  required (D8).
+- Parameters are exact ascending `{ id, value }` pairs; `state` is opaque
+  plugin bytes bounded by `MAX_STATE_BYTES`. `enabled` records whether the
+  project asks the instrument to run.
+- `takes` records retained take clips: canonical decimal `TakeId`, `rate`,
+  `frames`, and a `live_take_render` asset (stereo float WAV). The bytes are
+  authoritative project media (D4), not a cache and not an offline render.
+- `Document::validate` rejects malformed identity, parameters, state, take IDs,
+  rates/frames and missing or wrong-kind take assets as
+  `DocumentError::LiveInstrument` / `MissingAsset`.
+- `session::Prepared::live` carries the record for a current or recovery open;
+  `Prepared::live_takes` maps each valid take to two decoded mixer slots.
+- A missing bundle or changed artifact does not fail the open: the instrument
+  is disabled with its identity and reason, and retained takes still play.
+
 ## Library integration and validation
 
 `native/src/lib.rs` exports `project`. Its regular dependencies are:

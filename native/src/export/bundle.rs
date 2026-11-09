@@ -374,6 +374,13 @@ pub fn build_manifest(
         });
     }
     manifest.losses = losses;
+    for loss in &export.losses {
+        manifest.losses.push(LossRecord::BakedProcessing {
+            part: loss.part,
+            asset: loss.asset,
+            detail: loss.detail.clone(),
+        });
+    }
     Ok(manifest)
 }
 

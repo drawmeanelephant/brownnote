@@ -81,6 +81,8 @@ pub struct Transport {
     scheduled: BTreeSet<(u64, EventId)>,
     /// Scheduled ends of replayed held-instrument notes.
     ends: BTreeSet<(u64, EventId)>,
+    /// Retained live-take clips scheduled at their loop cycles.
+    clips: BTreeSet<(u64, TakeId)>,
     /// MIDI backend clock to app clock, per connection source.
     midi_anchor: Option<(SourceId, u64, u64)>,
     /// Controller held-note IDs captured into the current pass.
@@ -275,17 +277,24 @@ pub fn record(s: &mut State) {
         }
     }
     let t = &mut s.transport;
+    let capturing = pass.started;
+    let started = pass.start;
     t.pass = Some(pass);
     t.held.clear();
     t.reason = None;
     t.error = None;
     t.notice = None;
+    if capturing {
+        super::live::begin_take_capture(s, id, started);
+    }
 }
 
 fn start_playing(t: &mut Transport, origin: u64) {
     t.playing = Some(origin);
     t.anchor = None;
     t.scheduled.clear();
+    t.ends.clear();
+    t.clips.clear();
 }
 
 /// PLAY / STOP.
@@ -308,6 +317,7 @@ pub fn stop(s: &mut State, reason: &str) -> bool {
     t.anchor = None;
     t.scheduled.clear();
     t.ends.clear();
+    t.clips.clear();
     if t.pass.is_some_and(|pass| !pass.started) {
         if let Some(pass) = t.pass.take() {
             let _ = s.takes.cancel(pass.id);
@@ -353,12 +363,16 @@ fn finish(s: &mut State) {
         .takes
         .pass(pass.id)
         .map_or(0, |p| p.completed_notes().len());
+    let mut retained = false;
+    let mut discarded = false;
     if notes == 0 {
         let _ = s.takes.cancel(pass.id);
+        discarded = true;
         t.notice = Some(reason(t, "nothing played, empty pass discarded".into()));
     } else {
         match s.takes.finish(pass.id) {
             Ok(()) => {
+                retained = true;
                 t.notice = Some(reason(
                     t,
                     format!("take {} recorded: {notes} note(s)", pass.id.0),
@@ -366,6 +380,7 @@ fn finish(s: &mut State) {
             }
             Err(error) => {
                 let _ = s.takes.cancel(pass.id);
+                discarded = true;
                 t.error = Some(format!("Pass discarded: {error}"));
             }
         }
@@ -373,6 +388,14 @@ fn finish(s: &mut State) {
     t.pass = None;
     t.held.clear();
     t.reason = None;
+    if discarded {
+        super::live::cancel_take_capture(s, pass.id);
+    } else if retained {
+        // The pass window is what the live instrument played; an early stop
+        // trims at the stop time, a loop-end close keeps the full cycle.
+        let end = app_nanos(s).clamp(pass.start + 1, pass.end);
+        super::live::finish_take_capture(s, pass.id, pass.start, end);
+    }
 }
 
 /// Discard the open pass, held notes included; committed takes are untouched.
@@ -382,6 +405,7 @@ pub fn cancel(s: &mut State) {
         s.transport.held.clear();
         s.transport.reason = None;
         s.transport.notice = Some("Pass discarded".into());
+        super::live::cancel_take_capture(s, pass.id);
     }
 }
 
@@ -437,10 +461,14 @@ pub fn reset(s: &mut State) {
 pub fn poll(s: &mut State) -> bool {
     let now = app_nanos(s);
     let before = (s.transport.counters, s.transport.pass.map(|p| p.started));
+    let mut just_started = None;
     if let Some(pass) = &mut s.transport.pass {
         if !pass.started && now >= pass.start {
             match s.takes.start(pass.id) {
-                Ok(()) => pass.started = true,
+                Ok(()) => {
+                    pass.started = true;
+                    just_started = Some((pass.id, pass.start));
+                }
                 Err(error) => s.transport.error = Some(format!("{error}")),
             }
         }
@@ -451,6 +479,9 @@ pub fn poll(s: &mut State) -> bool {
         {
             pass.closing = true;
         }
+    }
+    if let Some((id, start)) = just_started {
+        super::live::begin_take_capture(s, id, start);
     }
     let was = s.transport.pass.is_some();
     finish(s);
@@ -482,6 +513,7 @@ fn schedule(s: &mut State, now: u64) {
             s.transport.anchor = Some(anchor);
             s.transport.scheduled.clear();
             s.transport.ends.clear();
+            s.transport.clips.clear();
             anchor
         }
     };
@@ -506,8 +538,49 @@ fn schedule(s: &mut State, now: u64) {
     );
     s.transport.scheduled = s.transport.scheduled.split_off(&floor);
     s.transport.ends = s.transport.ends.split_off(&floor);
+    s.transport
+        .clips
+        .retain(|(at, _)| *at >= now.saturating_sub(LOOKAHEAD_NANOS));
+    // Retained live takes replay as their captured stereo audio (D4), not as
+    // a re-render and not as a second instrument performance. A muted or
+    // removed take stays silent like its notes.
+    let retained: Vec<(TakeId, usize, usize)> = s
+        .live
+        .takes
+        .iter()
+        .filter(|(id, _)| {
+            s.takes
+                .take(**id)
+                .is_none_or(|take| !take.muted() && take.removal().is_none())
+        })
+        .map(|(id, clip)| (*id, clip.left, clip.right))
+        .collect();
+    for (take, left, right) in &retained {
+        let first = (from.saturating_sub(origin)) / length;
+        let last = horizon.saturating_sub(origin) / length;
+        for cycle in first..=last {
+            let at = origin + cycle * length;
+            if at < from || at >= horizon || !s.transport.clips.insert((at, *take)) {
+                continue;
+            }
+            let action = ScheduledAction::Clip {
+                id: EventId {
+                    take: *take,
+                    sequence: u64::MAX,
+                },
+                left: *left,
+                right: *right,
+                velocity: 1.0,
+                gain: 1.0,
+            };
+            replay(s, anchor, epoch, at, OriginalTime::default(), action);
+        }
+    }
     let mut unsounded = 0;
     for note in notes {
+        if s.live.takes.contains_key(&note.id.take) {
+            continue;
+        }
         let pad = match note.target {
             Target::Pad(pad) => Some(pad),
             target if s.instrument.plays(target) => None,

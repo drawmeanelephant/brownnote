@@ -288,7 +288,7 @@ fn project_controls_output_and_queue_admission_failure_are_atomic() {
         saved(&mut s, &project);
         let before = snapshot(&s).unwrap().document;
         let voice = playing(&mut s);
-        s.projects.open_output = Rc::new(move |slots, _| {
+        s.projects.open_output = Some(Rc::new(move |slots, _| {
             if !full {
                 return Err("injected output refusal".into());
             }
@@ -298,7 +298,7 @@ fn project_controls_output_and_queue_admission_failure_are_atomic() {
                 assert!(candidate.send(Command::Panic));
             }
             Ok(candidate)
-        });
+        }));
         open(&mut s);
         finish(&mut s);
         assert!(

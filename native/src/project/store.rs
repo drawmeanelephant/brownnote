@@ -210,7 +210,9 @@ pub enum CommitState {
 #[derive(Debug)]
 pub struct SaveFailure {
     pub commit: CommitState,
-    pub error: StoreError,
+    /// Boxed so every save `Result` stays small; the commit state is the
+    /// actionable part and this is the detailed cause.
+    pub error: Box<StoreError>,
 }
 impl fmt::Display for SaveFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -307,7 +309,10 @@ impl<F: FileSystem> Store<F> {
     ) -> Result<SaveReceipt, SaveFailure> {
         let mut commit = CommitState::Unchanged;
         self.save_inner(document, sources, &mut commit)
-            .map_err(|error| SaveFailure { commit, error })
+            .map_err(|error| SaveFailure {
+                commit,
+                error: Box::new(error),
+            })
     }
 
     pub(super) fn private(&self) -> PathBuf {

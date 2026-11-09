@@ -66,6 +66,15 @@ pub enum Command {
     HeldOff {
         id: EventId,
     },
+    /// Start one retained stereo clip from two mono slots. A clip is project
+    /// media for a take, not a pad hit: it has no pad or choke identity and
+    /// does not light a pad meter.
+    Clip {
+        left: usize,
+        right: usize,
+        velocity: f32,
+        gain: f32,
+    },
 }
 
 /// The UI's view of what each slot holds, kept so a new `Output` can be
@@ -159,7 +168,8 @@ impl Meters {
 #[derive(Clone, Copy)]
 struct Voice {
     event: Option<EventId>,
-    pad: usize,
+    /// The pad this voice reports to its meter; `None` for retained clips.
+    pad: Option<usize>,
     slot: usize,
     group: usize,
     position: f64,
@@ -322,6 +332,14 @@ impl Mixer {
                     None,
                 );
             }
+            Command::Clip {
+                left,
+                right,
+                velocity,
+                gain,
+            } => {
+                self.clip(left, right, velocity, gain, None);
+            }
         }
     }
 
@@ -335,10 +353,72 @@ impl Mixer {
             pan,
             semitones,
         } = trigger;
+        let theta = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
+        let step = f64::from(
+            self.slots
+                .get(slot)
+                .and_then(Option::as_ref)
+                .map_or(0, |s| s.rate),
+        ) / f64::from(self.rate)
+            * 2.0_f64.powf(f64::from(semitones) / 12.0);
+        self.spawn(
+            event,
+            Some(pad),
+            slot,
+            group,
+            step,
+            theta.cos() * velocity * gain,
+            theta.sin() * velocity * gain,
+        )
+    }
+
+    /// A retained stereo take clip: two mono slots, hard left and right, at
+    /// unity. It is not a pad hit, so it neither chokes nor lights a pad meter.
+    fn clip(
+        &mut self,
+        left: usize,
+        right: usize,
+        velocity: f32,
+        gain: f32,
+        event: Option<EventId>,
+    ) -> bool {
+        let usable = |slots: &[Option<Sample>], retiring: &[bool], slot: usize| {
+            slots
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_some_and(|sample| !sample.data.is_empty())
+                && !retiring.get(slot).copied().unwrap_or(true)
+        };
+        if !usable(&self.slots, &self.retiring, left) || !usable(&self.slots, &self.retiring, right)
+        {
+            return false;
+        }
+        let level = velocity * gain;
+        let device = f64::from(self.rate);
+        let left_rate = self.slots[left].as_ref().map_or(0, |s| s.rate);
+        let right_rate = self.slots[right].as_ref().map_or(0, |s| s.rate);
+        let left_step = f64::from(left_rate) / device;
+        let right_step = f64::from(right_rate) / device;
+        // A clip has no choke group: `usize::MAX` never matches a pad group.
+        self.spawn(event, None, left, usize::MAX, left_step, level, 0.0)
+            && self.spawn(event, None, right, usize::MAX, right_step, 0.0, level)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn(
+        &mut self,
+        event: Option<EventId>,
+        pad: Option<usize>,
+        slot: usize,
+        group: usize,
+        step: f64,
+        left: f32,
+        right: f32,
+    ) -> bool {
         let Some(src) = self.slots.get(slot).and_then(Option::as_ref) else {
             return false;
         };
-        if self.retiring[slot] || pad >= 16 || src.data.is_empty() {
+        if self.retiring[slot] || pad.is_some_and(|pad| pad >= 16) || src.data.is_empty() {
             return false;
         }
         if self.choke {
@@ -379,7 +459,6 @@ impl Mixer {
                 });
             self.tails[tail] = Some(old);
         }
-        let theta = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
         self.age += 1;
         self.voices[voice] = Some(Voice {
             event,
@@ -387,10 +466,9 @@ impl Mixer {
             slot,
             group,
             position: 0.0,
-            step: f64::from(src.rate) / f64::from(self.rate)
-                * 2.0_f64.powf(f64::from(semitones) / 12.0),
-            left: theta.cos() * velocity * gain,
-            right: theta.sin() * velocity * gain,
+            step,
+            left,
+            right,
             age: self.age,
             fade: None,
         });
@@ -495,6 +573,13 @@ impl Mixer {
             }
             ScheduledAction::HeldOn { .. } => mounted,
             ScheduledAction::NoteOff { .. } => true,
+            ScheduledAction::Clip { left, right, .. } => [left, right].into_iter().all(|slot| {
+                slots
+                    .get(slot)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|s| !s.data.is_empty())
+                    && !retiring.get(slot).copied().unwrap_or(true)
+            }),
         }) {
             self.command(Command::Panic);
         }
@@ -526,6 +611,17 @@ impl Mixer {
                         }
                         if let Some(player) = &mut self.instrument {
                             player.note_off(id);
+                        }
+                    }
+                    ScheduledAction::Clip {
+                        id,
+                        left,
+                        right,
+                        velocity,
+                        gain,
+                    } => {
+                        if !self.clip(left, right, velocity, gain, Some(id)) {
+                            self.schedule.unavailable();
                         }
                     }
                 }
@@ -592,7 +688,9 @@ impl Mixer {
         self.collect();
         let mut counts = [0; 16];
         for v in self.voices.iter().flatten() {
-            counts[v.pad] += 1;
+            if let Some(pad) = v.pad {
+                counts[pad] += 1;
+            }
         }
         for (meter, count) in self.meters.pads.iter().zip(counts) {
             meter.store(count, Relaxed);

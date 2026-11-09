@@ -95,6 +95,15 @@ pub struct FixturePart {
     pub event_ids: Vec<EventId>,
 }
 
+/// A processing record the adapter supplies explicitly, joined to one part
+/// and asset. Kept neutral so bundle.rs never reads a project or plugin type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FixtureLoss {
+    pub part: PartId,
+    pub asset: AssetId,
+    pub detail: String,
+}
+
 /// The whole synthetic export input: takes (events), pads, assets and parts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FixtureExport {
@@ -102,4 +111,7 @@ pub struct FixtureExport {
     pub pads: Vec<FixturePad>,
     pub assets: Vec<FixtureAsset>,
     pub parts: Vec<FixturePart>,
+    /// Explicit baked-processing records, such as a live instrument take's
+    /// honest identity. Validation still checks every join.
+    pub losses: Vec<FixtureLoss>,
 }

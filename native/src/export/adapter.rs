@@ -11,8 +11,8 @@ use super::{
     audio::{AudioSettings, FrozenHit, PadSettings},
     bundle::{self, BundleError, BundleReceipt, BundleRequest, BundleWriter},
     fixture::{
-        FixtureAsset, FixtureEdit, FixtureEvent, FixtureExport, FixtureMediaKind, FixturePad,
-        FixturePart, FixturePartKind, FixtureTake, FixtureTarget,
+        FixtureAsset, FixtureEdit, FixtureEvent, FixtureExport, FixtureLoss, FixtureMediaKind,
+        FixturePad, FixturePart, FixturePartKind, FixtureTake, FixtureTarget,
     },
     manifest::{AssetId, EventId, PartId},
 };
@@ -68,6 +68,8 @@ enum PartKey {
     Pad(u8),
     Sample(AssetId),
     Instrument(u128),
+    /// One take's retained live-instrument audio.
+    LiveTake(u128),
 }
 
 impl PartKey {
@@ -86,6 +88,10 @@ impl PartKey {
             Self::Instrument(instrument) => {
                 hash.update(b"instrument:");
                 hash.update(instrument.to_be_bytes());
+            }
+            Self::LiveTake(take) => {
+                hash.update(b"live-take:");
+                hash.update(take.to_be_bytes());
             }
         }
         let digest = hash.finalize();
@@ -158,9 +164,9 @@ pub fn prepare(
         .filter_map(|asset| {
             let kind = match asset.kind {
                 MediaKind::Source => FixtureMediaKind::Source,
-                MediaKind::RetainedRender | MediaKind::InstrumentRender => {
-                    FixtureMediaKind::RetainedRender
-                }
+                MediaKind::RetainedRender
+                | MediaKind::InstrumentRender
+                | MediaKind::LiveTakeRender => FixtureMediaKind::RetainedRender,
                 MediaKind::InstrumentSource => return None,
             };
             Some(asset_id(asset.reference.id).map(|id| FixtureAsset {
@@ -184,6 +190,14 @@ pub fn prepare(
     let mut grouped: BTreeMap<PartKey, Vec<EventId>> = BTreeMap::new();
     let mut exported_takes: BTreeMap<u128, FixtureTake> = BTreeMap::new();
     for note in effective {
+        if document
+            .live_instrument
+            .as_ref()
+            .is_some_and(|live| live.take(note.id.take).is_some())
+        {
+            // This take is exported as its retained live audio, not as notes.
+            continue;
+        }
         let id = event_id(note.id);
         let (target, part) = match note.target {
             Target::Pad(pad) => (FixtureTarget::Pad(pad.into()), PartKey::Pad(pad.into())),
@@ -266,24 +280,90 @@ pub fn prepare(
             .events
             .push(event);
     }
+    // Retained live-instrument takes are the authoritative audio (D4). They
+    // export as one clip part each, with the exact plugin identity recorded as
+    // baked processing: the state recalls the plugin here, it is not editable
+    // effect state another host can reconstruct.
+    let mut losses = Vec::new();
+    let mut live_parts: BTreeMap<PartId, AssetId> = BTreeMap::new();
+    if let Some(live) = &document.live_instrument {
+        for take in &live.takes {
+            let Some(take_id) = take.id() else { continue };
+            let asset = asset_id(take.asset)?;
+            let key = PartKey::LiveTake(take_id.0);
+            let part = key.id();
+            let duration_nanos =
+                u128::from(take.frames) * 1_000_000_000 / u128::from(take.rate.max(1));
+            let duration_nanos = u64::try_from(duration_nanos).unwrap_or(u64::MAX).max(1);
+            let id = EventId {
+                take: take_id.0,
+                // A reserved sequence: no note of this take is exported.
+                sequence: u64::MAX,
+            };
+            let tempo = takes
+                .take(take_id)
+                .map_or(takes.tempo().milli_bpm(), |saved| {
+                    saved.timing().recording_tempo().milli_bpm()
+                });
+            exported_takes
+                .entry(take_id.0)
+                .or_insert_with(|| FixtureTake {
+                    id: take_id.0,
+                    recording_tempo_milli_bpm: tempo,
+                    events: Vec::new(),
+                })
+                .events
+                .push(FixtureEvent {
+                    id,
+                    target: FixtureTarget::Sample(asset),
+                    start_nanos: request.origin.nanos,
+                    duration_nanos,
+                    velocity: None,
+                    pitch: None,
+                    channel: None,
+                    asset: Some(asset),
+                    variant_of: None,
+                    edit: None,
+                });
+            grouped.entry(key).or_default().push(id);
+            live_parts.insert(part, asset);
+            losses.push(FixtureLoss {
+                part,
+                asset,
+                detail: format!(
+                    "live instrument take audio baked from {}; the project's opaque state is a recall record for this plugin, not editable plugin state another host can reconstruct",
+                    live.describe()
+                ),
+            });
+        }
+    }
     let parts = grouped
         .into_iter()
-        .map(|(key, event_ids)| FixturePart {
-            id: key.id(),
-            event_ids,
-            kind: match key {
-                PartKey::Pad(pad) => FixturePartKind::PadClips { pad },
-                PartKey::Sample(source) => FixturePartKind::SampleClips { source },
-                PartKey::Instrument(instrument) => FixturePartKind::InstrumentNotes { instrument },
-            },
+        .map(|(key, event_ids)| {
+            let id = key.id();
+            Ok(FixturePart {
+                id,
+                event_ids,
+                kind: match key {
+                    PartKey::Pad(pad) => FixturePartKind::PadClips { pad },
+                    PartKey::Sample(source) => FixturePartKind::SampleClips { source },
+                    PartKey::Instrument(instrument) => {
+                        FixturePartKind::InstrumentNotes { instrument }
+                    }
+                    PartKey::LiveTake(_) => FixturePartKind::SampleClips {
+                        source: *live_parts.get(&id).ok_or(AdapterError::Overflow)?,
+                    },
+                },
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, AdapterError>>()?;
     Ok(ProjectExport {
         events: FixtureExport {
             takes: exported_takes.into_values().collect(),
             pads,
             assets,
             parts,
+            losses,
         },
         audio,
     })

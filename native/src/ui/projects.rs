@@ -36,7 +36,10 @@ pub struct Projects {
     pub notice: String,
     pub error: Option<String>,
     pub recovery: Option<(PathBuf, RecoveryOptions)>,
-    pub open_output: OpenOutput,
+    /// Test seam for an injected output. The app leaves this unset and uses
+    /// `State::open_project_output`, which mounts the live instrument at the
+    /// opened stream's real rate and buffer.
+    pub open_output: Option<OpenOutput>,
     service: Result<Service, String>,
     pending: Option<Pending>,
     recovered_from: Option<PathBuf>,
@@ -53,20 +56,7 @@ impl Default for Projects {
             service: Service::new().map_err(|error| error.to_string()),
             pending: None,
             recovered_from: None,
-            open_output: Rc::new(|slots, current| {
-                if current.opened().is_some() {
-                    Output::open_selected(slots, current.selection())
-                        .map_err(|error| error.to_string())
-                } else if current.failed {
-                    Ok(Output::silent_selected(
-                        slots,
-                        current.selection().clone(),
-                        "Project opened; audio remains unavailable".into(),
-                    ))
-                } else {
-                    Ok(Output::virtual_driver(slots, current.status.clone(), false))
-                }
-            }),
+            open_output: None,
         }
     }
 }
@@ -82,6 +72,7 @@ fn snapshot(s: &State) -> Result<Snapshot, String> {
     // edit. Keep playing that sound, but require render completion before save.
     if s.media.busy()
         || s.instrument.busy()
+        || s.live.busy()
         || s.pedals
             .pads
             .iter()
@@ -122,7 +113,24 @@ fn snapshot(s: &State) -> Result<Snapshot, String> {
             .with_instrument(&instrument, font, renders, &s.takes, &s.edit.model)
             .map_err(|error| error.to_string())?;
     }
+    if let Some(live) = s.live.for_save()? {
+        snapshot = snapshot
+            .with_live_instrument(live)
+            .map_err(|error| error.to_string())?;
+    }
     Ok(snapshot)
+}
+
+/// What an open must not lose while its worker runs. The live plugin's opaque
+/// state is refreshed by inspection (some plugins advance it on every save),
+/// so it is not an observable edit; identity, parameters, enablement and
+/// retained takes still participate.
+fn user_state(document: &Document) -> Document {
+    let mut document = document.clone();
+    if let Some(live) = &mut document.live_instrument {
+        live.state = None;
+    }
+    document
 }
 
 fn begin(s: &mut State, root: PathBuf, kind: Kind, request: Request) {
@@ -250,17 +258,40 @@ pub fn poll(s: &mut State) -> bool {
             }
             (Kind::Open(choice, before), Completion::Opened(prepared)) => {
                 if s.devices.busy()
-                    || snapshot(s).map(|now| now.document != *before).unwrap_or(true)
+                    || snapshot(s)
+                        .map(|now| user_state(&now.document) != user_state(&before))
+                        .unwrap_or(true)
                 {
                     return Err(Error::Admission(
                         "active kit or pending work changed while opening; retry explicitly".into(),
                     ));
                 }
-                let mut output = (s.projects.open_output)(prepared.registry.slots().clone(), &s.output)
-                    .map_err(Error::Admission)?;
-                prepared.admit(&mut output)?;
                 let importer = ImportService::new(prepared.media.clone())
                     .map_err(|_| Error::WorkerStopped)?;
+                // Stop the old helper and install the saved live instrument
+                // before the stream opens, so a real output mounts its voice at
+                // this stream's rate and buffer. A missing bundle is not an
+                // open failure: the output still opens with the instrument
+                // disabled and its retained takes still play.
+                let previous_live = s.live.document.clone();
+                s.live
+                    .install_project(prepared.live.clone(), prepared.live_takes.clone());
+                let hook = s.projects.open_output.clone();
+                let opened = match hook {
+                    Some(hook) => hook(prepared.registry.slots().clone(), &s.output),
+                    None => s.open_project_output(prepared.registry.slots().clone()),
+                };
+                let mut output = match opened {
+                    Ok(output) => output,
+                    Err(error) => {
+                        s.live.restore_document(previous_live);
+                        return Err(Error::Admission(error));
+                    }
+                };
+                if let Err(error) = prepared.admit(&mut output) {
+                    s.live.restore_document(previous_live);
+                    return Err(error);
+                }
                 let mut next_pedals =
                     pedals::Pedals::with_bin(s.pedals.cache.clone(), s.pedals.brownnote.clone());
                 next_pedals.catalog_fn = s.pedals.catalog_fn.clone();

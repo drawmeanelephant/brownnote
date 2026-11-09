@@ -19,12 +19,14 @@ use brownnote_native::export::{
 };
 use brownnote_native::{
     edit::EditModel,
+    pedals::offline::{Backend, Plugin, Stage},
     performance::{
         self, Channel, InstrumentId, LoopBars, NoteKey, OriginalTime, Pitch, SourceId, TakeId,
         Target, Tempo, Velocity,
     },
     project::{
         self, Asset, AssetRef, Document, MediaKind, PadId, SampleAssignment,
+        live::{LiveInstrumentDocument, LiveTakeDocument},
         store::{MediaSource, Store},
     },
     takes::{PassOptions, Takes},
@@ -216,6 +218,7 @@ fn two_part_fixture() -> TwoPartFixture {
                 event_ids: vec![note],
             },
         ],
+        losses: Vec::new(),
     };
     TwoPartFixture {
         export,
@@ -1766,4 +1769,107 @@ fn system_writer_publishes_a_relocatable_bundle_on_disk() {
         assert_eq!(AssetId::of(&copied), asset.id);
     }
     fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn live_instrument_take_exports_its_recorded_audio_and_honest_identity() {
+    let base = temporary("live-take");
+    fs::create_dir_all(&base).unwrap();
+    let cache = base.join("cache");
+    fs::create_dir_all(&cache).unwrap();
+    let project = base.join("project");
+    let samples: Vec<f32> = (0..4_800)
+        .flat_map(|frame| {
+            let value = (frame as f32 / 48_000.0 * 440.0 * std::f32::consts::TAU).sin() * 0.3;
+            [value, -value]
+        })
+        .collect();
+    let audio = encode_fixture(48_000, 2, &samples);
+    let asset = AssetId::of(&audio);
+    let project_asset = project::AssetId::of(&audio);
+    let path = cache.join("live.wav");
+    fs::write(&path, &audio).unwrap();
+    let plugin = Plugin {
+        backend: Backend::Clap,
+        id: "org.brownnote.fixture.instrument".into(),
+        artifact: brownnote_native::pedals::offline::Hash256::of(b"fixture bundle"),
+        abi: "clap-1.2".into(),
+        version: "0.4.0".into(),
+    };
+    let stage = Stage {
+        plugin: plugin.clone(),
+        location: PathBuf::from("/machine/fixture.clap"),
+        params: Vec::new(),
+        state: Some(vec![9, 8, 7].into()),
+    };
+    let mut live = LiveInstrumentDocument::from_stage(&stage, "Fixture Instrument".into(), true);
+    live.takes.push(LiveTakeDocument {
+        take: "12".into(),
+        asset: project_asset,
+        rate: 48_000,
+        frames: 2_400,
+    });
+    let document = Document {
+        assets: vec![Asset {
+            reference: AssetRef::of(&audio),
+            kind: MediaKind::LiveTakeRender,
+        }],
+        live_instrument: Some(live),
+        ..Document::default()
+    };
+    document.validate().unwrap();
+    Store::new(project.clone())
+        .save(
+            &document,
+            &[MediaSource {
+                id: project_asset,
+                path: path.clone(),
+            }],
+        )
+        .unwrap();
+    fs::remove_dir_all(&cache).unwrap();
+
+    let destination = base.join("bundle");
+    let request = request(&project, &destination);
+    let takes = Takes::new(LoopBars::try_from(4).unwrap(), TakeId(20));
+    let edits = EditModel::default();
+    let receipt = adapter::write_saved_project_bundle(
+        &mut SystemWriter,
+        &request,
+        &takes,
+        &edits,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(receipt.event_count, 1);
+    assert_eq!(receipt.manifest.parts.len(), 1);
+    let manifest = Manifest::decode(&fs::read(destination.join(MANIFEST_NAME)).unwrap()).unwrap();
+    let part = &manifest.parts[0];
+    assert_eq!(
+        part.kind,
+        brownnote_native::export::manifest::PartKind::SampleClips { source: asset }
+    );
+    let event = manifest
+        .events
+        .iter()
+        .find(|event| event.part == part.id)
+        .unwrap();
+    assert_eq!(event.asset, Some(asset));
+    assert_eq!(event.duration_nanos, 50_000_000);
+    // The retained take is copied byte-for-byte, not re-rendered.
+    let bundled = fs::read(destination.join(&manifest.asset(asset).unwrap().path)).unwrap();
+    assert_eq!(bundled, audio);
+    let loss = manifest
+        .losses
+        .iter()
+        .find(|loss| matches!(loss, LossRecord::BakedProcessing { asset: a, .. } if *a == asset))
+        .unwrap();
+    let LossRecord::BakedProcessing { detail, .. } = loss else {
+        unreachable!()
+    };
+    assert!(detail.contains("org.brownnote.fixture.instrument"));
+    assert!(detail.contains(&plugin.version));
+    assert!(!detail.contains("/machine/fixture.clap"));
+    assert!(detail.contains("not editable plugin state"));
+    fs::remove_dir_all(base).unwrap();
 }

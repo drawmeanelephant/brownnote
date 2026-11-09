@@ -1117,7 +1117,7 @@ fn corrupt_immutable_candidate_is_rejected_instead_of_replaced() {
         .save(&fixture.b, &fixture.sources_b)
         .unwrap_err();
     assert_eq!(failure.commit, CommitState::Unchanged);
-    assert!(matches!(failure.error, StoreError::Media(_)));
+    assert!(matches!(*failure.error, StoreError::Media(_)));
     assert_eq!(fs::read(destination).unwrap(), corrupt);
     fixture.assert_state(Some(first));
 }
@@ -1151,12 +1151,12 @@ fn invalid_documents_and_source_sets_fail_before_any_io() {
     let mut invalid = fixture.a.clone();
     invalid.version = 2;
     assert_eq!(
-        store.save(&invalid, &fixture.sources_a).unwrap_err().error,
+        *store.save(&invalid, &fixture.sources_a).unwrap_err().error,
         StoreError::Document(DocumentError::NewerVersion(2))
     );
     let sources = vec![fixture.sources_a[0].clone(); 2];
     assert_eq!(
-        store.save(&fixture.a, &sources).unwrap_err().error,
+        *store.save(&fixture.a, &sources).unwrap_err().error,
         StoreError::InvalidSources
     );
     assert!(store.into_fs().events.is_empty());
@@ -1176,7 +1176,7 @@ fn new_project_parent_sync_and_writer_exclusion_are_real() {
         .save(&fixture.b, &fixture.sources_b)
         .unwrap_err();
     assert_eq!(failure.commit, CommitState::Unchanged);
-    assert_eq!(failure.error, StoreError::Io(io::ErrorKind::WouldBlock));
+    assert_eq!(*failure.error, StoreError::Io(io::ErrorKind::WouldBlock));
     fixture.assert_state(Some(first));
     drop(lock);
     Store::new(fixture.root.clone())
