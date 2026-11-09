@@ -7,7 +7,13 @@ pub mod recovery;
 pub mod session;
 pub mod store;
 
-use crate::pedals::render::{Chain, MAX_STAGES, Stage};
+use crate::{
+    midi::{
+        input::{MAPPINGS_FORMAT_VERSION, MappingDocumentError, MappingsDocument},
+        mapping::Mappings,
+    },
+    pedals::render::{Chain, MAX_STAGES, Stage},
+};
 pub use media::{Asset, AssetId, AssetRef, MediaKind};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, fmt};
@@ -89,6 +95,9 @@ pub struct Document {
     pub assets: Vec<Asset>,
     pub master: f32,
     pub choke: bool,
+    /// D8: channel-keyed project data, never the selected input device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub midi_mappings: Option<MappingsDocument>,
 }
 
 impl Default for Document {
@@ -99,6 +108,7 @@ impl Default for Document {
             assets: Vec::new(),
             master: 0.8,
             choke: true,
+            midi_mappings: None,
         }
     }
 }
@@ -119,6 +129,7 @@ pub enum DocumentError {
     InvalidChain(PadId),
     MissingRetained(PadId),
     WrongMediaKind(AssetId),
+    MidiMappings(MappingDocumentError),
 }
 
 impl fmt::Display for DocumentError {
@@ -151,8 +162,22 @@ impl Document {
         serde_json::to_vec_pretty(self).map_err(|_| DocumentError::InvalidDocument)
     }
 
+    /// Legacy v1 documents without mappings open with an empty mapping bank.
+    pub fn mappings(&self) -> Result<Mappings, DocumentError> {
+        match &self.midi_mappings {
+            Some(document) => document.to_mappings(),
+            None => MappingsDocument {
+                version: MAPPINGS_FORMAT_VERSION,
+                mappings: Vec::new(),
+            }
+            .to_mappings(),
+        }
+        .map_err(DocumentError::MidiMappings)
+    }
+
     pub fn validate(&self) -> Result<(), DocumentError> {
         check_version(self.version)?;
+        self.mappings()?;
         if !in_range(self.master, 0.0, 1.0) {
             return Err(DocumentError::Setting {
                 pad: None,
