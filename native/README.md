@@ -204,7 +204,8 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 
-# Audible, no window: pad 0 for two seconds, exit 0 only for frames and signal.
+# Audible, no window: pad 0 for two seconds, exit 0 only for frames and signal,
+# then the callback-duration, observed-frame and presentation-lead block.
 cargo run --release -- --check-audio
 
 # The pedal catalog, with no window and no audio device.

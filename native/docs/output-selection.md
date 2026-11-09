@@ -106,9 +106,34 @@ owned temporary directory before launching the app.
    Confirm the new choice is saved and attempts the current system default
    with default configuration. Verify Tab focus and status updates through
    both failures and recovery. Check VoiceOver announcements manually.
+7. With the built-in output connected, run the release `--check-audio` and
+   record its printed block. It reports callback cost, observed buffer lengths
+   and CPAL's own presentation estimate for the system default. It still says
+   round-trip latency is unmeasured, so it does not close the latency gate.
 
 The optional second-output run, maintainer listening, and first-use latency
 measurements remain unresolved. `--check-audio` probes the system default,
-not the UI's saved selection. The probe reports callback
-duration, observed callback frames and CPAL's output-presentation estimate
-separately. None is round-trip latency; this UI makes no latency claim.
+not the UI's saved selection. It plays pad 0 for two seconds and prints a
+stable block after the status and meter lines:
+
+```text
+frames=<rendered frames>, peak=<mastered peak>
+callbacks=<observed>, dropped=<queue overflow>, rejected=<replayed or foreign>, inverted_lead=<unavailable predictions>
+callback_duration_us=min=<us>, p50=<us>, p95=<us>, n=<observed>
+callback_frames=min=<frames>, max=<frames>, n=<observed>
+presentation_lead_us=min=<us>, p50=<us>, p95=<us>, n=<observed>
+round_trip_latency=unmeasured (output-only callback and presentation instants cannot derive it)
+```
+
+`callback_duration_us` is the wall-clock time inside the output callback:
+timestamp publish, command drain, sample render and live mix.
+`callback_frames` is the buffer length CPAL actually delivered, not the
+requested fixed size. `presentation_lead_us` is CPAL's own predicted
+`playback - callback` instant for that callback. Each is reported separately,
+and none is round-trip latency, which output-only timestamps cannot derive.
+Percentiles are nearest-rank over the observations; the callback keeps at most
+64 queued and the summary keeps at most 4096 values. `dropped` counts
+observations the bounded queue refused, not lost audio. `rejected` counts
+observations that did not advance, and `inverted_lead` counts callbacks whose
+CPAL prediction did not follow their callback instant; those are counted, not
+treated as a zero lead.
