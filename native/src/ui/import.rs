@@ -248,7 +248,7 @@ pub fn panel(s: &State) -> El {
         .child(rune::el().grow(1.0).min_h(0.0))
         .child(caption("WAV · PCM16 / FLOAT32 · MONO / STEREO · 8–192 kHz · 1 FRAME–30 SECONDS").wrap())
         .child(caption("Replaces this pad only. Playing voices keep their sound; the next hit uses the import.").wrap())
-        .child(caption("Unsaved session media. Project saving is not available here yet.").wrap())
+        .child(caption("Unsaved session media. Use PROJECT to save a portable kit.").wrap())
 }
 
 pub enum SceneKind {

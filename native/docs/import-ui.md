@@ -2,8 +2,8 @@
 
 Refs #99. This is the second import slice, not an issue close. It reuses
 `State::import_sample`, its worker, `SessionMedia`, and the runtime registry.
-Project save/reopen/relocation UI integration remains #100. Hearing the result
-requires a maintainer listening check.
+The PROJECT controls save and reopen owned media through #100's store.
+Hearing the result still requires a maintainer listening check.
 
 ## Interaction
 
@@ -30,6 +30,7 @@ admission, success, cancellation, invalid input, busy worker, and unavailable
 worker. A failed or cancelled import leaves the existing sound and unrelated
 pads intact. Publication remains off the UI/audio callbacks. Unsaved session
 media is not a durable project save.
+After importing, close the panel and use **PROJECT** to save the kit.
 
 ## Application integration
 
@@ -66,4 +67,6 @@ voice through replacement, then listen to the next hit. Check that errors and
 cancellation leave the previous sound audible. Virtual mixer tests cannot
 establish that listening evidence.
 
-Do not close #99 until its real save/reopen/relocation gate is satisfied.
+The project-control tests also exercise keyboard import, save, fresh application
+state, reopen and relocation after removing the original sample path. These
+automated checks do not replace the remaining listening evidence.

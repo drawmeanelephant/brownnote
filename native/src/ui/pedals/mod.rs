@@ -510,3 +510,5 @@ fn land(s: &mut State, pad: usize, chain: Chain, ticket: Replacement, rendered: 
         Err(_) => false,
     }
 }
+
+include!("../projects/pedal_state.rs");
