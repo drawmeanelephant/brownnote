@@ -12,9 +12,9 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, fmt, path::PathBuf, str::FromStr};
 
 /// Current manifest format version.
-pub const MANIFEST_FORMAT_VERSION: u32 = 1;
+pub const MANIFEST_FORMAT_VERSION: u32 = 2;
 /// Every manifest version this build can read.
-pub const KNOWN_VERSIONS: &[u32] = &[MANIFEST_FORMAT_VERSION];
+pub const KNOWN_VERSIONS: &[u32] = &[1, MANIFEST_FORMAT_VERSION];
 /// Bundle-relative manifest file name.
 pub const MANIFEST_NAME: &str = "manifest.json";
 /// Bundle-relative directory holding copied media (D3).
@@ -89,12 +89,13 @@ pub struct PartId(pub u64);
 /// within a take by monotonically increasing sequence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EventId {
-    pub take: u64,
+    #[serde(with = "identity128")]
+    pub take: u128,
     pub sequence: u64,
 }
 
 /// The bundle's single time origin. Every event time in the manifest is
-/// relative to this origin, so all parts, stems and any future reference mix
+/// relative to this origin, so all parts, stems and the reference mix
 /// align to one origin instead of per-take clocks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -103,7 +104,7 @@ pub struct TimeOrigin {
 }
 
 /// Export timing context: recording tempo in milli-BPM and the bundle sample
-/// rate that future audio writers align to.
+/// rate that audio writers align to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Timing {
@@ -117,9 +118,16 @@ pub struct Timing {
 pub enum PartKind {
     /// Separate pad-hit clips; every hit stays its own event, collisions are
     /// never collapsed.
-    PadClips { pad: u8 },
-    /// Instrument notes (MIDI writer is a follow-up PR).
-    InstrumentNotes { instrument: u64 },
+    PadClips {
+        pad: u8,
+    },
+    InstrumentNotes {
+        #[serde(with = "identity128")]
+        instrument: u128,
+    },
+    SampleClips {
+        source: AssetId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +157,9 @@ pub struct EventEntry {
     /// Retained media copied into the bundle for this hit (D4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset: Option<AssetId>,
+    /// Original, unprocessed source, kept even when `asset` is a baked hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<AssetId>,
     /// Base event of the per-hit variant group this event renders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant_of: Option<EventId>,
@@ -171,6 +182,46 @@ pub struct AssetEntry {
     pub bytes: u64,
     /// Bundle-relative path; always `media/<sha256>.wav`.
     pub path: PathBuf,
+}
+
+/// Each hit entry is an independent clip/track, never a destructive overlap
+/// on a shared pad track. Stems/reference begin at frame zero of `origin`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioEntry {
+    pub role: AudioRole,
+    pub part: Option<PartId>,
+    pub event: Option<EventId>,
+    pub asset: AssetId,
+    pub start_frame: u64,
+    pub frames: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioRole {
+    HitWet,
+    HitDry,
+    StemWet,
+    StemDry,
+    Reference,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MidiTrack {
+    /// SMF track zero is the conductor; note tracks are one-based.
+    pub index: u16,
+    pub part: PartId,
+    pub events: Vec<EventId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MidiEntry {
+    pub path: PathBuf,
+    pub ppq: u16,
+    pub tracks: Vec<MidiTrack>,
 }
 
 /// An explicit, joinable record of information the neutral bundle cannot
@@ -204,6 +255,10 @@ pub struct Manifest {
     pub events: Vec<EventEntry>,
     pub assets: Vec<AssetEntry>,
     pub losses: Vec<LossRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio: Vec<AudioEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub midi: Option<MidiEntry>,
 }
 
 impl Manifest {
@@ -216,6 +271,8 @@ impl Manifest {
             events: Vec::new(),
             assets: Vec::new(),
             losses: Vec::new(),
+            audio: Vec::new(),
+            midi: None,
         }
     }
 
@@ -236,6 +293,9 @@ impl Manifest {
     /// written into a bundle.
     pub fn encode(&self) -> Result<Vec<u8>, ManifestError> {
         self.validate()?;
+        if self.version != MANIFEST_FORMAT_VERSION {
+            return Err(ManifestError::ReadOnlyVersion(self.version));
+        }
         serde_json::to_vec_pretty(self).map_err(|_| ManifestError::Encode)
     }
 
@@ -296,6 +356,14 @@ impl Manifest {
                     asset,
                 });
             }
+            if let Some(asset) = event.source
+                && !assets.contains(&asset)
+            {
+                return Err(ManifestError::DanglingEventAsset {
+                    event: event.id,
+                    asset,
+                });
+            }
             if let Some(variant_of) = event.variant_of
                 && !events.contains(&variant_of)
             {
@@ -329,6 +397,61 @@ impl Manifest {
                 }
             }
         }
+        for entry in &self.audio {
+            if !assets.contains(&entry.asset)
+                || entry.part.is_some_and(|id| !parts.contains(&id))
+                || entry.event.is_some_and(|id| {
+                    self.event(id)
+                        .is_none_or(|event| Some(event.part) != entry.part)
+                })
+                || entry.frames == 0
+                || entry.start_frame.checked_add(entry.frames).is_none()
+                || match entry.role {
+                    AudioRole::HitWet | AudioRole::HitDry => entry.event.is_none(),
+                    AudioRole::StemWet | AudioRole::StemDry => {
+                        entry.part.is_none() || entry.event.is_some() || entry.start_frame != 0
+                    }
+                    AudioRole::Reference => {
+                        entry.part.is_some() || entry.event.is_some() || entry.start_frame != 0
+                    }
+                }
+            {
+                return Err(ManifestError::InvalidAudio);
+            }
+        }
+        if let Some(midi) = &self.midi {
+            let mut seen = BTreeSet::new();
+            let mut indices = BTreeSet::new();
+            if midi.path != std::path::Path::new("notes.mid") || midi.ppq != 960 {
+                return Err(ManifestError::InvalidMidi);
+            }
+            for track in &midi.tracks {
+                if track.index == 0
+                    || !indices.insert(track.index)
+                    || !matches!(
+                        self.part(track.part).map(|part| &part.kind),
+                        Some(PartKind::InstrumentNotes { .. })
+                    )
+                {
+                    return Err(ManifestError::InvalidMidi);
+                }
+                for id in &track.events {
+                    if !seen.insert(*id)
+                        || self.event(*id).is_none_or(|event| event.part != track.part)
+                    {
+                        return Err(ManifestError::InvalidMidi);
+                    }
+                }
+            }
+            if self.events.iter().any(|event| {
+                matches!(
+                    self.part(event.part).map(|part| &part.kind),
+                    Some(PartKind::InstrumentNotes { .. })
+                ) && !seen.contains(&event.id)
+            }) {
+                return Err(ManifestError::InvalidMidi);
+            }
+        }
         Ok(())
     }
 }
@@ -350,6 +473,9 @@ pub fn check_version(version: u32) -> Result<(), ManifestError> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManifestError {
+    ReadOnlyVersion(u32),
+    InvalidAudio,
+    InvalidMidi,
     MalformedJson,
     MalformedAssetId,
     Encode,
@@ -373,3 +499,33 @@ impl fmt::Display for ManifestError {
     }
 }
 impl std::error::Error for ManifestError {}
+
+// JSON numbers are not portable 128-bit identities. V2 writes decimal strings;
+// accept v1's u64 numbers while preserving the complete real registry IDs.
+mod identity128 {
+    use serde::{
+        Deserializer, Serializer,
+        de::{self, Visitor},
+    };
+    use std::fmt;
+
+    pub fn serialize<S: Serializer>(value: &u128, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.to_string())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u128, D::Error> {
+        struct Identity;
+        impl Visitor<'_> for Identity {
+            type Value = u128;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a decimal identity string or a legacy unsigned integer")
+            }
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<u128, E> {
+                value.parse().map_err(E::custom)
+            }
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<u128, E> {
+                Ok(u128::from(value))
+            }
+        }
+        deserializer.deserialize_any(Identity)
+    }
+}
