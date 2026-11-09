@@ -1,0 +1,8 @@
+[workspace]
+resolver = "3"
+members = ["host"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false

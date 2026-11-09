@@ -1,0 +1,6 @@
+# Bypass parameter set at frame 0; output should equal the input.
+sample_rate	48000
+frames	48000
+block	512
+input	sine	440	0.5	0	12000
+param	0	Bypass	1

@@ -1,0 +1,5 @@
+# Same burst as effect-burst.tsv, rendered for 30 s to measure the real tail.
+sample_rate	48000
+frames	1440000
+block	512
+input	sine	440	0.5	0	12000

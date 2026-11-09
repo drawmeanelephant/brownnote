@@ -1,0 +1,5 @@
+# 250 ms 440 Hz burst into the effect, then 3.75 s of silence for the tail.
+sample_rate	48000
+frames	192000
+block	512
+input	sine	440	0.5	0	12000
