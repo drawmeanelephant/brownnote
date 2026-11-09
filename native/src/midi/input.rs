@@ -1592,6 +1592,21 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         assert_eq!(triggers(&sink), vec![(pad(0), 100)]);
+        // The velocity-zero note-off can be delivered in a later CoreMIDI
+        // callback than the note-on, so wait for it like the disconnect below.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let report = input.poll(&mut sink);
+            if report.counters.unmatched_releases >= 1 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "velocity-zero note-off never arrived: {:?}",
+                report.counters
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
         assert_eq!(input.poll(&mut sink).counters.unmatched_releases, 1);
         // Remove the source: refresh must detect the vanish and reconcile.
         drop(source);
