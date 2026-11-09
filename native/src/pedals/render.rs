@@ -427,21 +427,7 @@ fn run(
                 command.get_program().to_string_lossy()
             ))
         })?;
-    let deadline = Instant::now() + job.timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() >= deadline => {
-                terminate(&mut child);
-                return Err(RenderError::Timeout);
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(5)),
-            Err(error) => {
-                terminate(&mut child);
-                return Err(RenderError::Io(error.to_string()));
-            }
-        }
-    };
+    let status = wait_for_render(&mut child, job.timeout)?;
     let mut stderr = String::new();
     if let Some(mut pipe) = child.stderr.take() {
         let _ = pipe.read_to_string(&mut stderr);
@@ -455,6 +441,27 @@ fn run(
     let mut rendered = trim(output, job.source.data.len());
     rendered.rate = job.source.rate;
     Ok((rendered, clipped(&stderr)))
+}
+
+fn wait_for_render(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, RenderError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if Instant::now() >= deadline => {
+                terminate(child);
+                return Err(RenderError::Timeout);
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(5)),
+            Err(error) => {
+                terminate(child);
+                return Err(RenderError::Io(error.to_string()));
+            }
+        }
+    }
 }
 
 /// How long brownnote gets to act on SIGTERM before it is killed outright.
