@@ -7,6 +7,7 @@ mod graphics;
 #[path = "ui_import_tests.rs"]
 mod import_tests;
 mod instrument;
+mod live;
 mod media;
 mod midi;
 pub(crate) mod pedals;
@@ -58,6 +59,7 @@ pub struct State {
     pub edit_panel: bool,
     pub transport: transport::Transport,
     pub instrument: instrument::Instrument,
+    pub live: live::Live,
     now: f64,
     flashes: [f64; 16],
     wake: Option<rune::Waker>,
@@ -114,6 +116,16 @@ impl State {
             midi::Midi::load(root, !no_audio, brownnote_native::performance::TakeId(0))
         };
         let takes = fresh_takes();
+        let live = if headless {
+            live::Live::disabled()
+        } else {
+            let root = brownnote_native::paths::Resolver::current()
+                .and_then(|paths| {
+                    paths.resolve(brownnote_native::paths::Resource::Preferences, None)
+                })
+                .map_err(|error| error.to_string());
+            live::Live::load(root)
+        };
         Self {
             output,
             assets,
@@ -138,6 +150,7 @@ impl State {
             edit_panel: false,
             transport: transport::Transport::default(),
             instrument: instrument::Instrument::default(),
+            live,
             now: 0.0,
             flashes: [0.0; 16],
             wake: None,
@@ -267,6 +280,7 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     }
     let midi = s.midi.clone();
     let midi_changed = midi::poll(s, &midi);
+    let live_changed = live::poll(s);
     let edit_changed = edit::poll(s, edit_access);
     s.output.advance(elapsed);
     let transport_changed = transport::poll(s);
@@ -287,6 +301,7 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let changed = projects_changed
         || devices_changed
         || midi_changed
+        || live_changed
         || instrument_changed
         || edit_changed
         || transport_changed

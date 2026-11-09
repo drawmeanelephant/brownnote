@@ -2,15 +2,22 @@
 use brownnote_native::engine::{
     Command, Meters, Mixer, QUEUE_CAPACITY, Returned, SLOTS, STEAL_TAILS, Sample, Slots, VOICES,
 };
+use brownnote_native::output::{Callback, PlaybackClock};
+use brownnote_native::pedals::offline::{Backend, Hash256, HelperCommand, Plugin, Stage};
 use brownnote_native::performance::{
     EventId, OriginalTime, TakeId,
     scheduler::{ScheduleOutcome, ScheduledAction, ScheduledEvent, Trigger},
 };
+use brownnote_native::plugins::live::{LiveAction, LiveConfig, LiveEvent, LiveHost, identify};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
     collections::VecDeque,
+    num::NonZeroU32,
+    path::{Path, PathBuf},
     sync::Arc,
+    thread,
+    time::Duration,
 };
 
 struct Counting;
@@ -508,4 +515,313 @@ fn mounted_instrument_callback_allocates_and_frees_nothing() {
             );
         }
     }
+}
+
+/// A real output callback needs a timestamp. The values are only published
+/// into a bounded ring; this helper does not imply a device.
+fn timestamp(frames: u64, rate: u32) -> cpal::OutputStreamTimestamp {
+    let instant = cpal::StreamInstant::from_nanos(frames * 1_000_000_000 / u64::from(rate));
+    cpal::OutputStreamTimestamp {
+        callback: instant,
+        playback: instant,
+    }
+}
+
+fn tracked<T>(callback: &mut Callback, data: &mut [T], timestamp: cpal::OutputStreamTimestamp)
+where
+    T: cpal::SizedSample + cpal::FromSample<f32>,
+    f32: cpal::FromSample<T>,
+{
+    TRACK.set(true);
+    callback.process(data, timestamp);
+    TRACK.set(false);
+}
+
+fn signal<T>(data: &[T]) -> bool
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    data.iter().any(|sample| {
+        let value = <f32 as cpal::Sample>::from_sample(*sample);
+        value != 0.0
+    })
+}
+
+fn mixer_with_signal(rate: u32, meters: &Arc<Meters>) -> Mixer {
+    let (retired, _returns) = rtrb::RingBuffer::new(1);
+    Mixer::new(
+        Slots::from_samples([Sample {
+            data: Arc::from(vec![0.05; rate as usize]),
+            rate,
+        }]),
+        rate,
+        meters.clone(),
+        retired,
+    )
+}
+
+/// The real `output.rs` callback (not a hand-built one): mixer render plus the
+/// timestamp publish, at both rates and several legal block sizes.
+fn real_callback_allocates_nothing<T>(rate: u32, block: usize)
+where
+    T: cpal::SizedSample + cpal::FromSample<f32>,
+    f32: cpal::FromSample<T>,
+{
+    let meters = Arc::new(Meters::default());
+    let mixer = mixer_with_signal(rate, &meters);
+    let (mut send, commands) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
+    let rate = NonZeroU32::new(rate).unwrap_or_else(|| unreachable!());
+    let (clock, _timestamps) = PlaybackClock::new(rate);
+    let mut callback = Callback::new(clock, mixer, commands, 2);
+    let mut data = vec![T::from_sample(0.0); block * 2];
+    assert!(send.push(trigger(0, 0, 0)).is_ok());
+    let mut frames = 0u64;
+    ALLOCS.set(0);
+    FREES.set(0);
+    for _ in 0..(rate.get() as usize / block).max(8) {
+        tracked(&mut callback, &mut data, timestamp(frames, rate.get()));
+        frames += block as u64;
+    }
+    assert_eq!(ALLOCS.get(), 0, "callback allocated at {rate}/{block}");
+    assert_eq!(FREES.get(), 0, "callback freed at {rate}/{block}");
+    assert!(signal(&data), "mixer signal present at {rate}/{block}");
+}
+
+#[test]
+fn real_output_callback_allocates_and_frees_nothing_at_both_rates_and_block_sizes() {
+    for rate in [44_100, 48_000] {
+        for block in [31usize, 64, 256, 512] {
+            real_callback_allocates_nothing::<f32>(rate, block);
+            real_callback_allocates_nothing::<i16>(rate, block);
+        }
+    }
+}
+
+struct LiveEnv {
+    helper: HelperCommand,
+    fixture: PathBuf,
+}
+
+/// The live helper and fixture, or `None` (a skip) unless
+/// `BROWNNOTE_REQUIRE_CLAP=1`, which `make native-test` sets.
+fn live_env() -> Option<LiveEnv> {
+    let require = std::env::var("BROWNNOTE_REQUIRE_CLAP").as_deref() == Ok("1");
+    let helper = std::env::var_os("BROWNNOTE_CLAP_LIVE_HELPER")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("BROWNNOTE_CLAP_HELPER").and_then(|offline| {
+                Path::new(&offline)
+                    .parent()
+                    .map(|dir| dir.join("brownnote-clap-live"))
+            })
+        });
+    let fixture = std::env::var_os("BROWNNOTE_CLAP_FAULT_FIXTURE").map(PathBuf::from);
+    match (helper, fixture) {
+        (Some(helper), Some(fixture)) if helper.is_file() && fixture.is_file() => Some(LiveEnv {
+            helper: HelperCommand {
+                program: helper,
+                args: Vec::new(),
+            },
+            fixture,
+        }),
+        other => {
+            assert!(
+                !require,
+                "BROWNNOTE_REQUIRE_CLAP=1 but the live helper or fixture is missing: {other:?}"
+            );
+            eprintln!("skipping: live CLAP helper or fixture not built ({other:?})");
+            None
+        }
+    }
+}
+
+const LIVE_INSTRUMENT: &str = "org.brownnote.fixture.instrument";
+const LIVE_CRASH: &str = "org.brownnote.fixture.instrument.crash";
+
+fn live_stage(env: &LiveEnv, id: &str, rate: u32) -> Stage {
+    let info = identify(&env.helper, id, &env.fixture, rate, Duration::from_secs(5))
+        .unwrap_or_else(|error| panic!("identify {id}: {error}"));
+    Stage {
+        plugin: info.plugin,
+        location: env.fixture.clone(),
+        params: Vec::new(),
+        state: None,
+    }
+}
+
+fn live_event(frame: u64, sequence: u64) -> LiveEvent {
+    LiveEvent {
+        frame,
+        action: LiveAction::NoteOn {
+            id: EventId {
+                take: TakeId(9),
+                sequence,
+            },
+            channel: brownnote_native::performance::Channel::try_from((sequence % 16) as u8)
+                .unwrap_or_else(|_| unreachable!()),
+            pitch: brownnote_native::performance::Pitch::try_from((sequence % 128) as u8)
+                .unwrap_or_else(|_| unreachable!()),
+            velocity: brownnote_native::performance::Velocity::try_from(100u8)
+                .unwrap_or_else(|_| unreachable!()),
+        },
+    }
+}
+
+/// The same real callback, now holding a live voice: the live render, the
+/// mixer render and the timestamp publish allocate and free nothing, and a
+/// starved or faulting worker never silences the rest of the mixer.
+#[test]
+fn real_output_callback_with_a_live_voice_allocates_and_frees_nothing() {
+    let Some(env) = live_env() else { return };
+    for (rate, plugin) in [
+        (44_100, LIVE_INSTRUMENT),
+        (48_000, LIVE_INSTRUMENT),
+        (48_000, LIVE_CRASH),
+    ] {
+        for block in [31usize, 64, 256, 512] {
+            let config = LiveConfig {
+                lead_frames: 1024,
+                ..LiveConfig::for_device(env.helper.clone(), rate, 512)
+            };
+            let (host, mut sender, voice) = LiveHost::start(live_stage(&env, plugin, rate), config)
+                .unwrap_or_else(|error| panic!("{plugin} {rate}/{block}: {error}"));
+            let meters = Arc::new(Meters::default());
+            let mixer = mixer_with_signal(rate, &meters);
+            let (mut send, commands) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
+            let rated = NonZeroU32::new(rate).unwrap_or_else(|| unreachable!());
+            let (clock, _timestamps) = PlaybackClock::new(rated);
+            let mut callback = Callback::new(clock, mixer, commands, 2);
+            callback.set_live(Some(voice));
+            let mut data = vec![0.0f32; block * 2];
+            assert!(send.push(trigger(0, 0, 0)).is_ok());
+
+            ALLOCS.set(0);
+            FREES.set(0);
+            let mut audible = false;
+            // The very first callback, straight after start, before any wait.
+            tracked(&mut callback, &mut data, timestamp(0, rate));
+            audible |= signal(&data);
+            let base = sender.earliest_exact();
+            for sequence in 0..600u64 {
+                let _ = sender.try_send(live_event(base + sequence % 7, sequence));
+            }
+            for _ in 0..(4096 / block).max(8) {
+                thread::sleep(Duration::from_micros(100));
+                data.fill(0.0);
+                let frame = callback.live_frame().unwrap_or(0);
+                tracked(&mut callback, &mut data, timestamp(frame, rate));
+                audible |= signal(&data);
+            }
+            let panic_at = sender.earliest_exact();
+            let _ = sender.try_send(LiveEvent {
+                frame: panic_at,
+                action: LiveAction::Panic,
+            });
+            // Starved calls: underruns and stale blocks on the callback path.
+            for _ in 0..200 {
+                data.fill(0.0);
+                let frame = callback.live_frame().unwrap_or(0);
+                tracked(&mut callback, &mut data, timestamp(frame, rate));
+            }
+            // Follow a crash through restarts and the disabled state.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while plugin == LIVE_CRASH
+                && host.status().state != brownnote_native::plugins::live::LiveState::Disabled
+            {
+                assert!(std::time::Instant::now() < deadline, "{:?}", host.status());
+                thread::sleep(Duration::from_millis(1));
+                let frame = callback.live_frame().unwrap_or(0);
+                tracked(&mut callback, &mut data, timestamp(frame, rate));
+            }
+            assert_eq!(
+                ALLOCS.get(),
+                0,
+                "callback allocated: {plugin} {rate}/{block}"
+            );
+            assert_eq!(FREES.get(), 0, "callback freed: {plugin} {rate}/{block}");
+            assert!(audible, "mixer stayed audible: {plugin} {rate}/{block}");
+            let status = host.status();
+            assert!(status.counters.callbacks > 0, "{status:?}");
+            if plugin == LIVE_CRASH {
+                assert_eq!(
+                    status.state,
+                    brownnote_native::plugins::live::LiveState::Disabled
+                );
+            }
+        }
+    }
+}
+
+/// A helper or plugin that fails to start produces no voice; the real callback
+/// then runs the mixer exactly as before, with no allocation and no silence.
+#[test]
+fn a_live_voice_that_fails_to_start_never_breaks_or_silences_the_callback() {
+    let stage = Stage {
+        plugin: Plugin {
+            backend: Backend::Clap,
+            id: "org.brownnote.missing.instrument".into(),
+            artifact: Hash256::of(b"missing"),
+            abi: "clap:1.2".into(),
+            version: "0".into(),
+        },
+        location: PathBuf::from("/nonexistent/missing.clap"),
+        params: Vec::new(),
+        state: None,
+    };
+    let config = LiveConfig::for_device(
+        HelperCommand {
+            program: PathBuf::from("/nonexistent/brownnote-clap-live"),
+            args: Vec::new(),
+        },
+        48_000,
+        256,
+    );
+    assert!(
+        LiveHost::start(stage, config).is_err(),
+        "a missing helper starts nothing"
+    );
+    real_callback_allocates_nothing::<f32>(48_000, 64);
+    real_callback_allocates_nothing::<i16>(44_100, 31);
+}
+
+/// A live voice whose helper faults after start becomes silent; the mixer keeps
+/// sounding and the callback keeps allocating nothing.
+#[test]
+fn a_faulting_live_voice_never_silences_the_mixer() {
+    let Some(env) = live_env() else { return };
+    let rate = 48_000;
+    let config = LiveConfig {
+        lead_frames: 1024,
+        ..LiveConfig::for_device(env.helper.clone(), rate, 512)
+    };
+    let (host, _sender, voice) = LiveHost::start(live_stage(&env, LIVE_CRASH, rate), config)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let meters = Arc::new(Meters::default());
+    let mixer = mixer_with_signal(rate, &meters);
+    let (mut send, commands) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
+    let (clock, _timestamps) =
+        PlaybackClock::new(NonZeroU32::new(rate).unwrap_or_else(|| unreachable!()));
+    let mut callback = Callback::new(clock, mixer, commands, 2);
+    callback.set_live(Some(voice));
+    let mut data = vec![0.0f32; 128];
+    assert!(send.push(trigger(0, 0, 0)).is_ok());
+    ALLOCS.set(0);
+    FREES.set(0);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while host.status().state != brownnote_native::plugins::live::LiveState::Disabled {
+        assert!(std::time::Instant::now() < deadline, "{:?}", host.status());
+        let frame = callback.live_frame().unwrap_or(0);
+        tracked(&mut callback, &mut data, timestamp(frame, rate));
+        thread::sleep(Duration::from_millis(1));
+    }
+    // The faulted voice's blocks are gone; the pad still renders.
+    for _ in 0..32 {
+        data.fill(0.0);
+        let frame = callback.live_frame().unwrap_or(0);
+        tracked(&mut callback, &mut data, timestamp(frame, rate));
+        assert!(signal(&data), "mixer audible after a live fault");
+    }
+    assert_eq!(ALLOCS.get(), 0, "callback allocated after live fault");
+    assert_eq!(FREES.get(), 0, "callback freed after live fault");
 }

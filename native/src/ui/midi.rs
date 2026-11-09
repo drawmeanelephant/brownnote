@@ -116,8 +116,9 @@ fn now_nanos(s: &State) -> OriginalTime {
 
 /// The dispatch boundary from the MIDI controller to the app: one-shot pads go
 /// through the real 256-slot command queue, and every action is offered to the
-/// recording transport. Held-instrument starts/ends are captured with their
-/// lifecycle but not sounded: no held-instrument audio backend is mounted.
+/// recording transport. Held-instrument starts/ends, sustain and panic are
+/// also forwarded to a mounted live CLAP instrument (no second scheduler: the
+/// backend names the output frame).
 struct UiSink<'a> {
     state: &'a mut State,
     source: SourceId,
@@ -179,22 +180,30 @@ impl Sink for UiSink<'_> {
             Action::HeldStart(on) => {
                 let at = self.at(on.original_time);
                 instrument::held_start(self.state, &on);
+                super::live::held_start(self.state, &on);
                 transport::held_start(self.state, &on, at);
                 true
             }
             Action::HeldEnd(note) => {
                 let at = self.at(note.original_end());
                 instrument::held_end(self.state, &note);
+                super::live::held_end(self.state, &note);
                 transport::held_end(self.state, &note, at);
                 true
             }
             Action::Control {
                 action: ControlIntent::Panic,
                 ..
-            } => transport::panic(self.state),
-            // Sustain and all-notes-off are applied by the controller's own
-            // lifecycle; their releases arrive here as HeldEnd.
-            Action::Control { .. } => true,
+            } => {
+                super::live::panic(self.state);
+                transport::panic(self.state)
+            }
+            Action::Control { scope, action } => {
+                super::live::control(self.state, scope.channel, action);
+                // Sustain and all-notes-off are applied by the controller's
+                // own lifecycle; their releases arrive here as HeldEnd.
+                true
+            }
         }
     }
 }
@@ -1108,12 +1117,17 @@ mod tests {
     use brownnote_native::{
         engine::QUEUE_CAPACITY,
         midi::{mapping::Mappings, parser::Data7},
-        performance::{Channel, Pitch},
+        pedals::offline::{Backend, Hash256, HelperCommand, Plugin, Stage},
+        performance::{Channel, InstrumentId, Pitch},
+        plugins::live::{LiveState, identify},
     };
     use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime, Tx};
     use std::{
         fs,
+        path::PathBuf,
         sync::atomic::{AtomicUsize, Ordering::Relaxed},
+        thread,
+        time::{Duration, Instant},
     };
 
     struct App {
@@ -1578,5 +1592,160 @@ mod tests {
         assert_eq!(controller.counters().malformed, 1);
         assert!(inner.connected.is_none());
         assert!(status(&fixture.state, &fixture.midi).contains("DISCONNECTED"));
+    }
+
+    /// The live helper and fixture, or `None` (a skip) unless
+    /// `BROWNNOTE_REQUIRE_CLAP=1`, which `make native-test` sets.
+    fn live_helper() -> Option<(HelperCommand, PathBuf)> {
+        let require = std::env::var("BROWNNOTE_REQUIRE_CLAP").as_deref() == Ok("1");
+        let helper = std::env::var_os("BROWNNOTE_CLAP_LIVE_HELPER")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("BROWNNOTE_CLAP_HELPER").and_then(|offline| {
+                    std::path::Path::new(&offline)
+                        .parent()
+                        .map(|dir| dir.join("brownnote-clap-live"))
+                })
+            });
+        let fixture = std::env::var_os("BROWNNOTE_CLAP_FAULT_FIXTURE").map(PathBuf::from);
+        match (helper, fixture) {
+            (Some(helper), Some(fixture)) if helper.is_file() && fixture.is_file() => Some((
+                HelperCommand {
+                    program: helper,
+                    args: Vec::new(),
+                },
+                fixture,
+            )),
+            other => {
+                assert!(
+                    !require,
+                    "BROWNNOTE_REQUIRE_CLAP=1 but the live helper or fixture is missing: {other:?}"
+                );
+                eprintln!("skipping: live CLAP helper or fixture not built ({other:?})");
+                None
+            }
+        }
+    }
+
+    /// The full input path: a mapped held note, release, sustain and panic are
+    /// forwarded to a mounted live instrument through the one backend sender.
+    #[test]
+    fn held_notes_sustain_and_panic_reach_a_mounted_live_instrument() {
+        let Some((helper, fixture)) = live_helper() else {
+            return;
+        };
+        let mut app = app();
+        app.state.live.set_helper(helper);
+        let info = identify(
+            &app.state.live.helper.clone().unwrap(),
+            "org.brownnote.fixture.instrument",
+            &fixture,
+            48_000,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let stage = Stage {
+            plugin: info.plugin,
+            location: fixture,
+            params: Vec::new(),
+            state: None,
+        };
+        let mut voice = app
+            .state
+            .live
+            .mount(stage, 48_000, 256)
+            .unwrap_or_else(|| panic!("mount: {:?}", app.state.live.error));
+
+        let mut producer = connected(&mut app, 0);
+        {
+            let midi = app.midi.clone();
+            let mut inner = midi.inner_mut();
+            let controller = inner.input.as_mut().unwrap().controller_mut();
+            controller
+                .set_mapping(Mapping::Note {
+                    channel: ch(1),
+                    pitch: pitch(40),
+                    target: NoteTarget::Held(InstrumentId(1)),
+                })
+                .unwrap();
+            controller
+                .set_mapping(Mapping::Controller {
+                    channel: ch(1),
+                    number: cc(64),
+                    action: ControlAction::Sustain,
+                })
+                .unwrap();
+            controller
+                .set_mapping(Mapping::Controller {
+                    channel: ch(1),
+                    number: cc(120),
+                    action: ControlAction::Panic,
+                })
+                .unwrap();
+        }
+        push(&mut producer, 10, &[0x91, 40, 100]);
+        push(&mut producer, 20, &[0x81, 40, 0]);
+        push(&mut producer, 30, &[0xb1, 64, 127]);
+        push(&mut producer, 40, &[0x91, 40, 100]);
+        push(&mut producer, 50, &[0x81, 40, 0]);
+        push(&mut producer, 60, &[0xb1, 64, 0]);
+        push(&mut producer, 70, &[0xb1, 120, 0]);
+        assert!(poll(&mut app.state, &app.midi));
+
+        let status = app
+            .state
+            .live
+            .status()
+            .unwrap_or_else(|| unreachable!("mounted"));
+        assert_eq!(
+            status.counters.accepted_events, 7,
+            "note on/off, sustain on/off and panic reached the live sender: {status:?}"
+        );
+
+        // Advance the callback's play cursor so the worker renders the frames
+        // the senders named, then wait for the panic to be applied.
+        let mut buffer = [0.0f32; 512];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut status = status;
+        while status.counters.panics == 0 {
+            voice.render_add(&mut buffer, 2);
+            thread::sleep(Duration::from_millis(1));
+            assert!(Instant::now() < deadline, "worker stalled: {status:?}");
+            status = app.state.live.status().unwrap_or(status);
+        }
+        assert_eq!(status.state, LiveState::Running);
+        assert_eq!(status.counters.panics, 1);
+    }
+
+    /// A helper that cannot start produces no voice and leaves the app, its
+    /// mixer and its pads working.
+    #[test]
+    fn a_live_helper_that_fails_to_start_keeps_the_app_working() {
+        let mut app = app();
+        app.state.live.set_helper(HelperCommand {
+            program: PathBuf::from("/nonexistent/brownnote-clap-live"),
+            args: Vec::new(),
+        });
+        let stage = Stage {
+            plugin: Plugin {
+                backend: Backend::Clap,
+                id: "org.brownnote.missing.instrument".into(),
+                artifact: Hash256::of(b"missing"),
+                abi: "clap:1.2".into(),
+                version: "0".into(),
+            },
+            location: PathBuf::from("/nonexistent/missing.clap"),
+            params: Vec::new(),
+            state: None,
+        };
+        assert!(app.state.live.mount(stage, 48_000, 256).is_none());
+        assert!(!app.state.live.mounted());
+        assert!(app.state.live.error.is_some());
+        app.state.trigger(0, 1.0);
+        app.state.output.advance(0.01);
+        assert!(
+            app.state.output.meters.counts()[0] > 0,
+            "the sample mixer still plays"
+        );
     }
 }
