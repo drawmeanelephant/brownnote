@@ -106,9 +106,12 @@ native-plugin-workflow-test: native-plugin-host
 
 # Required (not opt-in): the live CLAP instrument helper tests hard-fail
 # under BROWNNOTE_REQUIRE_CLAP=1 when the brownnote-clap-live binary or the
-# fault fixture is missing.
+# fault fixture is missing. The mounted app live lane (recall, retained take
+# audio, reopen-disabled, export) runs here too, so its tests cannot silently
+# skip in CI.
 native-clap-live-test: native-plugin-host
 	$(CLAP_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml --test clap_live -- --nocapture
+	$(CLAP_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml --bin brownnote-native ui::live::tests:: -- --nocapture
 
 # Explicit opt-in: provisions and verifies the pinned CAPS 0.9.26 library
 # (native/plugin-host/caps/provision.py, hard hash failures, nothing bundled).
