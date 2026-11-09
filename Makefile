@@ -73,13 +73,32 @@ studio: $(BIN)
 native:
 	$(CARGO) build --release --manifest-path native/Cargo.toml
 
-native-test:
+# The offline plugin helper and its CLAP fault fixture: a separate workspace
+# because it allows unsafe FFI. Tests find the binaries through these paths.
+PLUGIN_HOST = native/plugin-host/Cargo.toml
+PLUGIN_HOST_OUT = $${CARGO_TARGET_DIR:-$(CURDIR)/native/plugin-host/target}/debug
+DYLIB = $(if $(filter Darwin,$(shell uname -s)),dylib,so)
+CLAP_TEST_ENV = BROWNNOTE_CLAP_HELPER="$(PLUGIN_HOST_OUT)/brownnote-plugin-host" \
+	BROWNNOTE_CLAP_FAULT_FIXTURE="$(PLUGIN_HOST_OUT)/libbrownnote_clap_fault_fixture.$(DYLIB)" \
+	BROWNNOTE_REQUIRE_CLAP=1
+
+native-plugin-host:
+	$(CARGO) fmt --all --manifest-path $(PLUGIN_HOST) --check
+	$(CARGO) clippy --locked --manifest-path $(PLUGIN_HOST) --workspace --all-targets -- -D warnings
+	$(CARGO) build --locked --manifest-path $(PLUGIN_HOST) --workspace
+
+native-test: native-plugin-host
 	$(CARGO) fmt --manifest-path native/Cargo.toml --check
 	$(CARGO) clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
-	$(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored --skip pinned_app_recipe_and_adapter
+	$(CLAP_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored --skip pinned_app_recipe_and_adapter
+
+# Explicit opt-in: requires the pinned Airwindows Consolidated bundle in
+# BROWNNOTE_CLAP_EFFECT (see native/plugin-host/README.md).
+native-clap-effect-test: native-plugin-host
+	$(CLAP_TEST_ENV) BROWNNOTE_REQUIRE_CLAP_EFFECT=1 $(CARGO) test --manifest-path native/Cargo.toml --test clap_offline -- --nocapture
 
 # Explicit opt-in: requires the pinned SoundCraft app, CLI and Python environment.
 native-soundcraft-test:
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_recipe_and_adapter -- --ignored --exact
 
-.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-soundcraft-test
+.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-soundcraft-test native-plugin-host native-clap-effect-test

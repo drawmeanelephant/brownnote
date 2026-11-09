@@ -1,0 +1,19 @@
+[package]
+name = "brownnote-plugin-host"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# CLAP 1.2.2 headers and the loader, as pinned by the #96 probe.
+clap-sys = "=0.5.0"
+libloading = "=0.9.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "=0.10.9"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
