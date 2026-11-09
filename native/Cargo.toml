@@ -10,6 +10,10 @@ default-run = "brownnote-native"
 name = "brownnote-showcase"
 path = "src/showcase/main.rs"
 
+[[bin]]
+name = "brownnote-soundcraft"
+path = "src/bin/brownnote-soundcraft.rs"
+
 [dependencies]
 rune = { git = "https://github.com/anomalyco/rune", rev = "cbaf637dfe5fcf3ec8b3f1c3ad27246b69742fbf" }
 # Same pinned revision as rune: effect layers drawn at El::effect slots by the look compositor.
