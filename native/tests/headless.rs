@@ -176,6 +176,43 @@ mod tests {
 
     #[test]
     #[ignore = "needs a GPU adapter"]
+    fn actual_binary_mounts_project_save_open_and_error_controls_at_minimum_size() {
+        for scene in ["project-path", "project-error"] {
+            let tree = run(scene, &["--scene", scene, "--size", "820x600"]);
+            let elements = tree["elements"].as_array().unwrap();
+            for key in [
+                "projects-toggle",
+                "projects-panel",
+                "projects-path",
+                "projects-save",
+                "projects-open",
+                "projects-recover",
+                "projects-cancel",
+            ] {
+                let element = elements
+                    .iter()
+                    .find(|element| element["key"] == key)
+                    .unwrap();
+                let [x, y, w, h]: [f64; 4] =
+                    std::array::from_fn(|index| element["rect"][index].as_f64().unwrap());
+                assert!(
+                    x >= 0.0 && y >= 0.0 && w > 0.0 && h > 0.0 && x + w <= 820.1 && y + h <= 600.1,
+                    "{scene}: {key} overflows"
+                );
+            }
+            if scene == "project-error" {
+                assert!(!text(&tree, "projects-error").is_empty());
+            }
+            assert!(
+                tree["warnings"].as_array().unwrap().is_empty(),
+                "{}",
+                tree["warnings"]
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU adapter"]
     fn compact_binary_layout_keeps_every_pad_above_the_editor() {
         for missing in [false, true] {
             let mut args = vec!["--size", "820x600"];

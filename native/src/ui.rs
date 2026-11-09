@@ -7,6 +7,7 @@ mod graphics;
 mod import_tests;
 mod media;
 pub(crate) mod pedals;
+pub(crate) mod projects;
 mod view;
 use brownnote_native::{
     assets::AssetRegistry,
@@ -32,6 +33,7 @@ pub struct State {
     pub output: Output,
     pub assets: AssetRegistry,
     pub media: media::Media,
+    pub projects: projects::Projects,
     pub settings: [Settings; 16],
     pub selected: usize,
     pub master: f32,
@@ -87,6 +89,7 @@ impl State {
             output,
             assets,
             media,
+            projects: projects::Projects::default(),
             settings: std::array::from_fn(|i| Settings {
                 gain: 1.0,
                 pan: 0.0,
@@ -146,6 +149,9 @@ pub fn setup(s: &mut State, wake: rune::Waker) {
 }
 
 pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    if projects::on_key(s, event, tx) {
+        return true;
+    }
     if media::controls::on_key(s, event, tx) {
         return true;
     }
@@ -174,6 +180,10 @@ pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
 }
 
 pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
+    let projects_changed = projects::poll(s);
+    if s.projects.busy() {
+        tx.wake_after(Duration::from_millis(10));
+    }
     let elapsed = (clock - s.now).max(0.0);
     let was_lit = s.flashes.map(|until| until > s.now);
     s.now = clock;
@@ -194,7 +204,8 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let peak = fresh_peak.max(s.peak * (-elapsed as f32 * 7.0).exp());
     let peak = if peak < 0.001 { 0.0 } else { peak };
     let lit = s.flashes.map(|until| until > clock);
-    let changed = devices_changed
+    let changed = projects_changed
+        || devices_changed
         || failed
         || pedals_changed
         || import_changed
@@ -217,6 +228,14 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
 
 type Scene = (&'static str, fn(&mut State));
 pub const SCENES: &[Scene] = &[
+    ("project-path", |s| {
+        s.projects.visible = true;
+        s.projects.path = rune::TextEdit::new("/kits/Portable kit");
+    }),
+    ("project-error", |s| {
+        s.projects.visible = true;
+        s.projects.error = Some("Project could not be opened. Active kit unchanged.".into());
+    }),
     ("import-path", |s| {
         media::controls::scene(s, media::controls::SceneKind::Path)
     }),

@@ -5,7 +5,7 @@ use super::{
     graphics::{led, logo, meter, waveform},
     ink,
     media::controls as import,
-    pedals,
+    pedals, projects,
 };
 use brownnote_native::{engine::Command, kit::PADS};
 use rune::{Cx, Drag, El, Phase, TextStyle, col, el, row, text};
@@ -93,13 +93,21 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(display(s, tall))
         .child(
             row()
-                .h(14.0)
+                .h(16.0)
                 .justify_between()
                 .center_y()
                 .child(caption("01—16    /    PRESSURE PADS").color(ink("#c0cbbf")))
-                .child(caption("HIT HIGHER. GO LOUDER.")),
+                .child(
+                    row()
+                        .gap(12.0)
+                        .center_y()
+                        .child(projects::header(s))
+                        .child(caption("HIT HIGHER. GO LOUDER.")),
+                ),
         )
-        .children(if s.media.controls.visible {
+        .children(if s.projects.visible {
+            vec![projects::panel(s)]
+        } else if s.media.controls.visible {
             vec![import::panel(s)]
         } else if s.devices.visible {
             vec![devices::panel(s)]
@@ -111,7 +119,14 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .h(14.0)
                 .gap(16.0)
                 .center_y()
-                .child(caption("1–4 / QWER / ASDF / ZXCV     ·     ESC TO VENT").key("hint"))
+                .child(
+                    caption(if s.projects.visible {
+                        "PROJECT FILES     ·     ESC TO PADS"
+                    } else {
+                        "1–4 / QWER / ASDF / ZXCV     ·     ESC TO VENT"
+                    })
+                    .key("hint"),
+                )
                 .child(el().grow(1.0))
                 .child(
                     caption(&s.output.status)

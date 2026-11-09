@@ -10,7 +10,7 @@ use brownnote_native::{
         session::{self, Completion, Error, Job, Request, Service, Snapshot},
     },
 };
-use rune::{El, KeyEvent, TextEdit, TextStyle, Tx, col, row, text_input};
+use rune::{El, Key, KeyEvent, TextEdit, TextStyle, Tx, col, row, text_input};
 use std::{path::PathBuf, rc::Rc, time::Duration};
 
 #[cfg(test)]
@@ -126,7 +126,7 @@ fn begin(s: &mut State, root: PathBuf, kind: Kind, request: Request) {
 }
 
 fn path(s: &State) -> Result<PathBuf, String> {
-    let path = PathBuf::from(s.projects.path.text.trim());
+    let path = PathBuf::from(&s.projects.path.text);
     if !path.is_absolute() {
         return Err(Error::InvalidPath.to_string());
     }
@@ -293,13 +293,28 @@ pub fn poll(s: &mut State) -> bool {
 }
 
 /// Call before pad shortcuts. Text entry must never also trigger playable pads.
-pub fn on_key(s: &mut State, _event: &KeyEvent, tx: &mut Tx) -> bool {
-    if s.projects.visible {
-        tx.wake_after(Duration::from_millis(33));
-        true
-    } else {
-        false
+pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    if !s.projects.visible {
+        return false;
     }
+    if event.key == Key::Escape {
+        if s.projects.busy() {
+            cancel(s);
+        }
+        if !s.projects.busy() {
+            s.projects.visible = false;
+        }
+        tx.wake_after(Duration::from_millis(33));
+        return true;
+    }
+    if event.is_command('i') {
+        return true;
+    }
+    matches!(&event.key, Key::Text(_))
+        && !event.mods.cmd
+        && !event.mods.ctrl
+        && !event.mods.alt
+        && !event.mods.logo
 }
 
 pub fn header(s: &State) -> El {
@@ -311,6 +326,10 @@ pub fn header(s: &State) -> El {
             "PROJECT"
         },
     )
+    .h(16.0)
+    .px(7.0)
+    .checked(s.projects.visible)
+    .label("Save, open and recover projects")
     .on_press(|s: &mut State| s.projects.visible = !s.projects.visible)
 }
 
@@ -325,7 +344,10 @@ pub fn panel(s: &State) -> El {
             .key("projects-path").label("Absolute project directory")
             .single_line().h(32.0).px(8.0).fill(ink("#28382f"))
             .disabled(busy).focusable(!busy)
-            .on_edit(|s: &mut State| &mut s.projects.path))
+            .on_edit(|s: &mut State| &mut s.projects.path)
+            .on_input_key(|s: &mut State, event, tx| {
+                event.key == Key::Escape && on_key(s, event, tx)
+            }))
         .child(row().gap(8.0)
             .child(button("projects-save", "SAVE / SAVE AS").disabled(busy).focusable(!busy).on_press(save))
             .child(button("projects-open", "OPEN (REPLACE KIT)").disabled(busy).focusable(!busy).on_press(open))
