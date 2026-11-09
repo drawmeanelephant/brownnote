@@ -1,0 +1,55 @@
+name: native-package
+on:
+  pull_request:
+    paths:
+      - 'native/**'
+      - '.github/workflows/native-package.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unsigned-test-artifact:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          components: rust-docs
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: native-package-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/Cargo.lock') }}
+      - name: Build and smoke exact unsigned artifact
+        env:
+          CARGO_TERM_COLOR: always
+        run: |
+          # Hosted runner equivalent of the swarm whole-check lock/shared target.
+          guarded() {
+            python3 -c 'import fcntl,os,subprocess,sys; f=open(os.path.join(os.environ["RUNNER_TEMP"],"brownnote-validation.lock"),"a"); fcntl.flock(f,fcntl.LOCK_EX); os.environ.update(CARGO_TARGET_DIR=os.path.join(os.environ["GITHUB_WORKSPACE"],"native/target"),CARGO_BUILD_JOBS="2"); sys.exit(subprocess.call(sys.argv[1:]))' "$@"
+          }
+          guarded python3 native/scripts/test_package.py
+          guarded native/scripts/package-macos.sh
+          artifacts=(build/packages/*.tar.gz)
+          test "${#artifacts[@]}" -eq 1
+          guarded native/scripts/smoke-package.sh "${artifacts[0]}"
+      - name: Upload test artifact and honest support record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: brownnote-macos-arm64-unsigned-test-${{ github.sha }}
+          path: |
+            build/packages/*.tar.gz
+            build/packages/*.sha256
+            build/packages/*.smoke.json
+          if-no-files-found: warn
+          retention-days: 14
