@@ -1,7 +1,7 @@
 use super::{
     State, Tab, accent, button, caption,
     control::{Control, slider},
-    devices,
+    devices, edit, edit_access, edit_read,
     graphics::{led, logo, meter, waveform},
     ink,
     media::controls as import,
@@ -55,6 +55,20 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             }
         },
     ));
+    controls = controls.child(
+        button(
+            "edit-toggle",
+            if s.edit_panel {
+                "BACK TO PADS"
+            } else {
+                "TAKE EDIT"
+            },
+        )
+        .role("switch")
+        .checked(s.edit_panel)
+        .help("Take and event edits · bounded undo, per-take quantization")
+        .on_press(|s: &mut State| s.edit_panel = !s.edit_panel),
+    );
     if s.output.failed {
         controls = controls.child(
             button("retry-audio", "RETRY AUDIO")
@@ -124,6 +138,8 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             vec![devices::panel(s)]
         } else if s.midi_panel {
             vec![midi::panel::<State>(s, &s.midi)]
+        } else if s.edit_panel {
+            vec![edit::panel(s, edit_read, edit_access)]
         } else {
             vec![grid, editor(s)]
         })
