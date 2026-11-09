@@ -256,12 +256,7 @@ fn failures_keep_their_kind_and_leave_no_partial_files() {
 fn render_timeout_keeps_its_deadline_and_leaves_no_partial_files() {
     let dir = dir();
     // The deadline applies even when process setup has not installed its trap.
-    let bin = script(
-        &dir,
-        "d=$(dirname \"$0\")\nsleep 30 & child=$!\n\
-         trap 'kill $child 2>/dev/null; echo term > \"$d/term\"; exit 0' TERM\n\
-         wait $child",
-    );
+    let bin = script(&dir, "exec sleep 30");
     let cache = dir.join("cache");
     let mut job = job(
         &bin,
