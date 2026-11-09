@@ -137,7 +137,12 @@ log("S>C 0x02 CONFIG bpm=120 bpi=8")
 time.sleep(0.3)
 log("S>C 0x07 RESULT args_ok=%d argv_clean=%d intervals=1 note=%s"
     % (args_ok, argv_clean, pw))
-time.sleep(0.6)
+# The second interval waits for the test to finish checking the first
+# one; a fixed sleep let slow (sanitizer) runners miss bpi=8 entirely.
+gate = os.environ.get("FAKE_KUJAMBA_GATE")
+deadline = time.time() + 120
+while gate and not os.path.exists(gate) and time.time() < deadline:
+    time.sleep(0.05)
 log("S>C 0x02 CONFIG bpm=120 bpi=6")
 time.sleep(0.3)
 log("S>C 0x07 RESULT args_ok=%d argv_clean=%d intervals=2 note=%s"
@@ -274,11 +279,13 @@ def main():
     fake_dir = tempfile.mkdtemp(prefix="fake-kujamba-")
     fake_bin = os.path.join(fake_dir, "kujamba")
     pidfile = os.path.join(fake_dir, "kujamba.pid")
+    jam_gate = os.path.join(fake_dir, "second-interval")
     with open(fake_bin, "w") as f:
         f.write(FAKE_KUJAMBA)
     os.chmod(fake_bin, 0o755)
     env = dict(os.environ, STUDIO_PORT=str(port), STUDIO_HOST="127.0.0.1",
-               KUJAMBA=fake_bin, FAKE_KUJAMBA_PIDFILE=pidfile)
+               KUJAMBA=fake_bin, FAKE_KUJAMBA_PIDFILE=pidfile,
+               FAKE_KUJAMBA_GATE=jam_gate)
     # A SIGKILLed earlier run can leave creds/transcript behind; boot must
     # wipe build/jam/ before it ever serves a byte.
     jam_dir = os.path.join(ROOT, "build", "jam")
@@ -1155,6 +1162,8 @@ if (out[1].label !== 'AB')
                     elif w.getnframes() != 176400:
                         fails.append(f"jam: loop.wav {w.getnframes()} "
                                      "frames (want 176400)")
+        open(jam_gate, "w").close()
+        if stem_ids:
             st = jam_get(lambda s: s.get("loopSec") == 3.0, timeout=60)
             if st.get("loopSec") != 3.0:
                 fails.append(f"jam: bpi=6 re-render missing: {st!r}")
