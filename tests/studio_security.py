@@ -90,6 +90,33 @@ class StudioSecurity(unittest.TestCase):
         bucket.rmdir()
         bucket.symlink_to(self.outside, target_is_directory=True)
 
+    def test_outside_and_prefix_sibling_paths_are_rejected_before_metadata_access(self):
+        for candidate in (self.outside / "marker",
+                          self.root.with_name(self.root.name + "-sibling") / "marker"):
+            with self.subTest(path=candidate):
+                with patch.object(self.studio.os.path, "islink",
+                                  side_effect=AssertionError("outside metadata access")):
+                    with self.assertRaises(ValueError):
+                        self.studio._workspace_path(str(candidate))
+
+    def test_trusted_workspace_alias_keeps_patch_roundtrip_and_rejects_child_links(self):
+        alias = Path(self.tmp.name, "workspace-alias")
+        alias.symlink_to(self.root, target_is_directory=True)
+        with patch.dict(self.studio.__dict__, {
+                "ROOT": str(alias), "PATCHES_DIR": str(alias / "build/patches")}):
+            self.assertEqual(self.studio._workspace_path(str(alias)), str(alias))
+            self.assertEqual(self.request("/api/patch", {
+                "name": "saved", "patch": {"v": 1}})[0], 200)
+            self.assertEqual(self.request("/api/patch?name=saved")[0], 200)
+            self.assertTrue((self.root / "build/patches/saved.json").is_file())
+            link = self.root / "build/patches/linked.json"
+            marker = self.outside / "marker.json"
+            marker.write_text('{"v": 1}')
+            link.symlink_to(marker)
+            self.assert_rejected(self.request("/api/patch?name=linked"))
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(marker.read_text(), '{"v": 1}')
+
     def test_patch_roundtrip_and_invalid_names(self):
         name = "Saved kit + 1"
         self.assertEqual(self.request("/api/patch", {

@@ -223,15 +223,18 @@ PAD_LABEL_RE = re.compile(r"[^<>]{0,64}")
 def _workspace_path(path):
     """Reject paths outside ROOT and symlinks below the trusted workspace root."""
     root = os.path.abspath(ROOT)
-    path = os.path.abspath(path)
-    if os.path.commonpath((root, path)) != root:
-        raise ValueError("path outside studio workspace")
+    relative = os.path.relpath(os.path.abspath(path), root)
+    if relative == os.curdir:
+        return root
+    prefix = os.path.join(root, "")
     current = root
-    for part in os.path.relpath(path, root).split(os.sep):
-        current = os.path.join(current, part)
+    for part in relative.split(os.sep):
+        current = os.path.abspath(os.path.join(current, part))
+        if not current.startswith(prefix):
+            raise ValueError("path outside studio workspace")
         if os.path.islink(current):
             raise ValueError("symlinked studio path")
-    return path
+    return current
 
 
 def patch_path(name):

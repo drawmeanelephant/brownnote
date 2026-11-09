@@ -957,6 +957,16 @@ else
 	skip "(ac) studio pages: python3 or scripts/studio.py absent"
 fi
 
+if [ "$have_python" = 1 ] && [ -f scripts/studio.py ]; then
+	if verdict=$(python3 tests/studio_security.py 2>&1); then
+		ok "(ad) studio security: HTTP path and process boundary regressions"
+	else
+		bad "(ad) studio security: $verdict"
+	fi
+else
+	skip "(ad) studio security: python3 or scripts/studio.py absent"
+fi
+
 # ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))

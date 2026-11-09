@@ -22,6 +22,9 @@ resolving through an existing symlink.
 The shared `_workspace_path` check rejects paths outside the workspace
 and symlinked descendants, including dangling, cyclic, and directory links.
 The workspace root itself remains trusted and may have a canonical alias.
+Every candidate prefix is normalized and checked against the root plus its
+directory separator before filesystem metadata is accessed. A sibling whose
+name merely starts with the workspace name is not within that boundary.
 Patch and sample names now use `fullmatch`. Atomic writes validate their
 destination before creating a temporary file. Intake validates both the
 WAV and definition destination before changing either.
@@ -88,6 +91,7 @@ cross-site request, static symlink escape, and real-script phrase tests.
 
 Required checks for this change are `python3 tests/studio_security.py`,
 `python3 tests/studio_smoke.py`, `make test`, and `make native-test`.
+The security regressions also run through `make test` and its existing CI jobs.
 Swarm runs acquire the shared whole-check lock and reuse the shared Cargo
 target with two jobs. Results and any skips are recorded in the PR.
 
