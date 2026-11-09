@@ -135,6 +135,47 @@ mod tests {
 
     #[test]
     #[ignore = "needs a GPU adapter"]
+    fn actual_binary_mounts_import_controls_and_all_status_scenes_at_minimum_size() {
+        for (scene, status) in [
+            ("import-path", "Choose a path"),
+            ("import-busy", "IMPORTING"),
+            ("import-error", "IMPORT FAILED"),
+            ("import-success", "IMPORTED"),
+        ] {
+            let tree = run(scene, &["--scene", scene, "--size", "820x600"]);
+            let elements = tree["elements"].as_array().unwrap();
+            assert!(elements.iter().any(|element| {
+                element["key"] == "import-panel" && element["role"] == "dialog"
+            }));
+            assert!(text(&tree, "import-status").starts_with(status));
+            for key in [
+                "import-path",
+                "import-submit",
+                "import-cancel",
+                "import-status",
+            ] {
+                let element = elements
+                    .iter()
+                    .find(|element| element["key"] == key)
+                    .unwrap();
+                let rect: [f64; 4] =
+                    std::array::from_fn(|index| element["rect"][index].as_f64().unwrap());
+                let [x, y, w, h] = rect;
+                assert!(
+                    x >= 0.0 && y >= 0.0 && w > 0.0 && h > 0.0 && x + w <= 820.1 && y + h <= 600.1,
+                    "{scene}: {key} is outside the minimum window: {rect:?}"
+                );
+            }
+            assert!(
+                tree["warnings"].as_array().unwrap().is_empty(),
+                "{scene}: {}",
+                tree["warnings"]
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU adapter"]
     fn compact_binary_layout_keeps_every_pad_above_the_editor() {
         for missing in [false, true] {
             let mut args = vec!["--size", "820x600"];
@@ -159,6 +200,9 @@ mod tests {
                 std::array::from_fn(|i| element["rect"][i].as_f64().unwrap())
             };
             let [_, editor_y, _, _] = rect("editor");
+            let [x, y, w, h] = rect("import-toggle");
+            assert!(x >= 0.0 && y >= 0.0 && w > 0.0 && h > 0.0);
+            assert!(x + w <= 820.1 && y + h <= 600.1);
             for i in 0..16 {
                 let [x, y, w, h] = rect(&format!("pad-{i}"));
                 assert!(x >= 0.0 && x + w <= 820.0 && h >= 60.0);
