@@ -94,6 +94,7 @@ impl Fixture {
                 channel: None,
                 velocity: Some(100),
                 asset: Some(asset),
+                source: Some(asset),
                 variant_of: None,
             });
         }
@@ -111,6 +112,7 @@ impl Fixture {
                 channel: Some(0),
                 velocity: Some(velocity),
                 asset: None,
+                source: None,
                 variant_of: None,
             });
         }
