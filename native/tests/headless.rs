@@ -302,7 +302,7 @@ mod tests {
         for part in [
             "1 TAKES · 4 NOTES",
             "REPLAY 2 SENT · 2 PLAYED",
-            "2 HELD NOT SOUNDED (NO INSTRUMENT BACKEND)",
+            "2 HELD NOT SOUNDED (NO INSTRUMENT LOADED)",
             "SEL T1: 4 NOTES · HELD 500ms/800ms",
         ] {
             assert!(status.contains(part), "{part}: {status}");

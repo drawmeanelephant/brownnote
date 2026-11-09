@@ -3,7 +3,7 @@ use super::{
     control::{Control, slider},
     devices, edit, edit_access, edit_read,
     graphics::{led, logo, meter, waveform},
-    ink,
+    ink, instrument,
     media::controls as import,
     midi, pedals, projects, transport,
 };
@@ -69,6 +69,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         .help("Take and event edits · bounded undo, per-take quantization")
         .on_press(|s: &mut State| s.edit_panel = !s.edit_panel),
     );
+    controls = controls.child(instrument::header(s));
     if s.output.failed {
         controls = controls.child(
             button("retry-audio", "RETRY AUDIO")
@@ -137,6 +138,8 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             vec![import::panel(s)]
         } else if s.devices.visible {
             vec![devices::panel(s)]
+        } else if s.instrument.visible {
+            vec![instrument::panel(s)]
         } else if s.midi_panel {
             vec![midi::panel::<State>(s, &s.midi)]
         } else if s.edit_panel {

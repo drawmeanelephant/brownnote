@@ -10,8 +10,9 @@
 //!
 //! One-shot pads ignore release (as live), so they are stored as zero-length
 //! notes and replayed without a note-off. Held-instrument notes keep their
-//! real FIFO durations (D14) but are not sounded: no held-instrument audio
-//! backend is mounted in the app.
+//! real FIFO durations (D14) and replay as a scheduled start plus a separately
+//! scheduled end on the mounted instrument; with no instrument they are
+//! counted as not sounded.
 use super::{State, caption, ink};
 use brownnote_native::{
     engine::Command,
@@ -78,6 +79,8 @@ pub struct Transport {
     pass: Option<Pass>,
     anchor: Option<Anchor>,
     scheduled: BTreeSet<(u64, EventId)>,
+    /// Scheduled ends of replayed held-instrument notes.
+    ends: BTreeSet<(u64, EventId)>,
     /// MIDI backend clock to app clock, per connection source.
     midi_anchor: Option<(SourceId, u64, u64)>,
     /// Controller held-note IDs captured into the current pass.
@@ -304,6 +307,7 @@ pub fn stop(s: &mut State, reason: &str) -> bool {
     t.playing = None;
     t.anchor = None;
     t.scheduled.clear();
+    t.ends.clear();
     if t.pass.is_some_and(|pass| !pass.started) {
         if let Some(pass) = t.pass.take() {
             let _ = s.takes.cancel(pass.id);
@@ -477,6 +481,7 @@ fn schedule(s: &mut State, now: u64) {
             };
             s.transport.anchor = Some(anchor);
             s.transport.scheduled.clear();
+            s.transport.ends.clear();
             anchor
         }
     };
@@ -500,17 +505,51 @@ fn schedule(s: &mut State, now: u64) {
         },
     );
     s.transport.scheduled = s.transport.scheduled.split_off(&floor);
+    s.transport.ends = s.transport.ends.split_off(&floor);
     let mut unsounded = 0;
     for note in notes {
-        let Target::Pad(pad) = note.target else {
-            unsounded += 1;
-            continue;
+        let pad = match note.target {
+            Target::Pad(pad) => Some(pad),
+            target if s.instrument.plays(target) => None,
+            _ => {
+                unsounded += 1;
+                continue;
+            }
         };
         let Ok(offset) = note
             .start
             .split_loop(bars)
             .and_then(|position| position.within.at_tempo_nanos(tempo))
         else {
+            continue;
+        };
+        let Some(pad) = pad else {
+            // Start and end enter the scheduling window independently, so a
+            // note longer than the window still ends on its own frame.
+            let Ok(duration) = note.end.at_tempo_nanos(tempo).and_then(|end| {
+                note.start
+                    .at_tempo_nanos(tempo)
+                    .map(|start| end.saturating_sub(start))
+            }) else {
+                continue;
+            };
+            let original = original_time(s, note.id);
+            for at in cycle_times(origin, length, offset, from, horizon) {
+                if s.transport.scheduled.insert((at, note.id)) {
+                    let action = ScheduledAction::HeldOn {
+                        id: note.id,
+                        pitch: note.key.pitch.value(),
+                        velocity: note.velocity.value(),
+                    };
+                    replay(s, anchor, epoch, at, original, action);
+                }
+            }
+            for at in cycle_times(origin, length, offset + duration, from, horizon) {
+                if s.transport.ends.insert((at, note.id)) {
+                    let action = ScheduledAction::NoteOff { id: note.id };
+                    replay(s, anchor, epoch, at, original, action);
+                }
+            }
             continue;
         };
         let first = (from - origin) / length;
@@ -524,37 +563,68 @@ fn schedule(s: &mut State, now: u64) {
                 continue;
             };
             let settings = s.settings[pad.index()];
-            let delta = u128::from(at.saturating_sub(anchor.app)) * u128::from(anchor.rate) / NANOS;
-            let original = s
-                .takes
-                .take(note.id.take)
-                .and_then(|take| take.notes().iter().find(|n| n.on().id == note.id))
-                .map_or(OriginalTime::default(), |n| n.on().original_time);
-            let result = s.output.schedule(ScheduledEvent {
-                epoch,
-                frame: anchor.frame + u64::try_from(delta).unwrap_or(u64::MAX / 2),
-                original_time: original,
-                action: ScheduledAction::NoteOn {
-                    id: note.id,
-                    trigger: Trigger {
-                        pad: pad.index(),
-                        slot,
-                        group,
-                        velocity: f32::from(note.velocity.value()) / 127.0,
-                        gain: settings.gain,
-                        pan: settings.pan,
-                        semitones: settings.pitch,
-                    },
+            let action = ScheduledAction::NoteOn {
+                id: note.id,
+                trigger: Trigger {
+                    pad: pad.index(),
+                    slot,
+                    group,
+                    velocity: f32::from(note.velocity.value()) / 127.0,
+                    gain: settings.gain,
+                    pan: settings.pan,
+                    semitones: settings.pitch,
                 },
-            });
-            if result.outcome == ScheduleOutcome::Accepted {
-                s.transport.counters.scheduled += 1;
-            } else {
-                s.transport.counters.schedule_lost += 1;
-            }
+            };
+            let original = original_time(s, note.id);
+            replay(s, anchor, epoch, at, original, action);
         }
     }
     s.transport.unsounded = unsounded;
+}
+
+fn original_time(s: &State, id: EventId) -> OriginalTime {
+    s.takes
+        .take(id.take)
+        .and_then(|take| take.notes().iter().find(|n| n.on().id == id))
+        .map_or(OriginalTime::default(), |n| n.on().original_time)
+}
+
+/// App times in `[from, horizon)` of an event `offset` into each loop cycle.
+fn cycle_times(
+    origin: u64,
+    length: u64,
+    offset: u64,
+    from: u64,
+    horizon: u64,
+) -> impl Iterator<Item = u64> {
+    let base = origin.saturating_add(offset);
+    let first = from.saturating_sub(base).div_ceil(length);
+    let last = horizon.saturating_sub(base) / length;
+    (first..=last)
+        .map(move |cycle| base.saturating_add(cycle.saturating_mul(length)))
+        .filter(move |at| (from..horizon).contains(at))
+}
+
+fn replay(
+    s: &mut State,
+    anchor: Anchor,
+    epoch: StreamEpoch,
+    at: u64,
+    original: OriginalTime,
+    action: ScheduledAction,
+) {
+    let delta = u128::from(at.saturating_sub(anchor.app)) * u128::from(anchor.rate) / NANOS;
+    let result = s.output.schedule(ScheduledEvent {
+        epoch,
+        frame: anchor.frame + u64::try_from(delta).unwrap_or(u64::MAX / 2),
+        original_time: original,
+        action,
+    });
+    if result.outcome == ScheduleOutcome::Accepted {
+        s.transport.counters.scheduled += 1;
+    } else {
+        s.transport.counters.schedule_lost += 1;
+    }
 }
 
 /// (bar, beat, count-in) of the running loop, both one-based.
@@ -613,7 +683,7 @@ pub fn status(s: &State) -> String {
     ));
     if t.unsounded > 0 {
         parts.push(format!(
-            "{} HELD NOT SOUNDED (NO INSTRUMENT BACKEND)",
+            "{} HELD NOT SOUNDED (NO INSTRUMENT LOADED)",
             t.unsounded
         ));
     }

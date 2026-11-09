@@ -86,8 +86,21 @@ impl AssetRef {
 #[serde(rename_all = "snake_case")]
 pub enum MediaKind {
     Source,
-    /// Authoritative audible output, including pedal/plugin/instrument renders.
+    /// Authoritative audible output, including pedal/plugin renders.
     RetainedRender,
+    /// Exact SF2 bytes of the project instrument (D18). Never decoded as audio;
+    /// stored under the same content-addressed media name as every asset.
+    InstrumentSource,
+    /// One frozen instrument note (stereo float WAV). Exported as retained
+    /// audio, never loaded into a pad sample slot.
+    InstrumentRender,
+}
+
+impl MediaKind {
+    /// Pad-playable WAV media that occupies an engine sample slot.
+    pub fn is_pad_audio(self) -> bool {
+        matches!(self, Self::Source | Self::RetainedRender)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

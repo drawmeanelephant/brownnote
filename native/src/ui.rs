@@ -6,6 +6,7 @@ mod graphics;
 #[cfg(test)]
 #[path = "ui_import_tests.rs"]
 mod import_tests;
+mod instrument;
 mod media;
 mod midi;
 pub(crate) mod pedals;
@@ -56,6 +57,7 @@ pub struct State {
     /// View-side gate for the take/event edit panel.
     pub edit_panel: bool,
     pub transport: transport::Transport,
+    pub instrument: instrument::Instrument,
     now: f64,
     flashes: [f64; 16],
     wake: Option<rune::Waker>,
@@ -135,6 +137,7 @@ impl State {
             takes,
             edit_panel: false,
             transport: transport::Transport::default(),
+            instrument: instrument::Instrument::default(),
             now: 0.0,
             flashes: [0.0; 16],
             wake: None,
@@ -206,6 +209,9 @@ pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if projects::on_key(s, event, tx) {
         return true;
     }
+    if instrument::on_key(s, event, tx) {
+        return true;
+    }
     if media::controls::on_key(s, event, tx) {
         return true;
     }
@@ -255,6 +261,10 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     if s.devices.busy() {
         tx.wake_after(Duration::from_millis(1));
     }
+    let instrument_changed = instrument::poll(s);
+    if instrument::wants_wake(s) {
+        tx.wake_after(Duration::from_millis(10));
+    }
     let midi = s.midi.clone();
     let midi_changed = midi::poll(s, &midi);
     let edit_changed = edit::poll(s, edit_access);
@@ -277,6 +287,7 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let changed = projects_changed
         || devices_changed
         || midi_changed
+        || instrument_changed
         || edit_changed
         || transport_changed
         || failed

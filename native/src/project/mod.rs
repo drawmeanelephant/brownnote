@@ -9,6 +9,7 @@ pub mod store;
 
 use crate::{
     edit::{EditModel, EditsDocument, EditsDocumentError},
+    instrument::{self, InstrumentDocument},
     midi::{
         input::{MAPPINGS_FORMAT_VERSION, MappingDocumentError, MappingsDocument},
         mapping::Mappings,
@@ -106,6 +107,10 @@ pub struct Document {
     /// The current edit layer over `takes` (D15); undo history is not saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edits: Option<EditsDocument>,
+    /// The one sampled instrument (D18): identity, source, preset and the
+    /// retained per-note renders; absent means none was loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrument: Option<InstrumentDocument>,
 }
 
 impl Default for Document {
@@ -119,6 +124,7 @@ impl Default for Document {
             midi_mappings: None,
             takes: None,
             edits: None,
+            instrument: None,
         }
     }
 }
@@ -143,6 +149,7 @@ pub enum DocumentError {
     /// Boxed: take/event identities would bloat every store/session `Result`.
     Takes(Box<TakesDocumentError>),
     Edits(Box<EditsDocumentError>),
+    Instrument(instrument::DocumentError),
 }
 
 impl fmt::Display for DocumentError {
@@ -232,6 +239,13 @@ impl Document {
                 return Err(DocumentError::DuplicateAsset(asset.reference.id));
             }
         }
+        if let Some(instrument) = &self.instrument {
+            instrument.validate().map_err(DocumentError::Instrument)?;
+            self.require_asset(instrument.source, MediaKind::InstrumentSource)?;
+            for render in &instrument.renders {
+                self.require_asset(render.asset, MediaKind::InstrumentRender)?;
+            }
+        }
         for (index, pad) in self.pads.iter().enumerate() {
             let id = PadId(index as u8);
             for (name, value, min, max) in [
@@ -282,7 +296,11 @@ impl Document {
             .find(|a| a.reference.id == id)
             .ok_or(DocumentError::MissingAsset(id))?;
         // A retained render can itself be reused as another pad's source.
-        if kind == MediaKind::RetainedRender && asset.kind != kind {
+        let fits = match kind {
+            MediaKind::Source => asset.kind.is_pad_audio(),
+            kind => asset.kind == kind,
+        };
+        if !fits {
             return Err(DocumentError::WrongMediaKind(id));
         }
         Ok(())

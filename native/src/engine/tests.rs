@@ -600,6 +600,7 @@ fn an_old_voice_keeps_playing_after_a_shorter_sample_loads_and_the_old_slot_unlo
 fn returned_sample(item: Returned) -> Sample {
     match item {
         Returned::Retired { sample, .. } | Returned::Rejected(sample) => sample,
+        Returned::Instrument(_) => panic!("no instrument was mounted"),
     }
 }
 
@@ -608,6 +609,7 @@ fn drain(returns: &mut rtrb::Consumer<Returned>) -> Vec<Sample> {
     while let Ok(item) = returns.pop() {
         match item {
             Returned::Retired { sample, .. } | Returned::Rejected(sample) => samples.push(sample),
+            Returned::Instrument(_) => panic!("no instrument was mounted"),
         }
     }
     samples

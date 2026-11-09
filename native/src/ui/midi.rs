@@ -92,14 +92,15 @@ mod preferences {
     }
 }
 
-use super::{State, button, caption, ink, media::pad_id, transport};
+use super::{State, button, caption, ink, instrument, media::pad_id, transport};
 use brownnote_native::{
     engine::Command,
+    instrument::INSTRUMENT,
     midi::{
         input::{self, Action, Input, PortInfo, Report, Sink},
         mapping::{ControlAction, ControlIntent, Mapping, MappingKey, Mappings, NoteTarget},
     },
-    performance::{OriginalTime, SourceId, TakeId},
+    performance::{OriginalTime, Pitch, SourceId, TakeId},
     project::PadId,
 };
 use rune::{El, Key, KeyEvent, Tx, col, row};
@@ -177,11 +178,13 @@ impl Sink for UiSink<'_> {
             }
             Action::HeldStart(on) => {
                 let at = self.at(on.original_time);
+                instrument::held_start(self.state, &on);
                 transport::held_start(self.state, &on, at);
                 true
             }
             Action::HeldEnd(note) => {
                 let at = self.at(note.original_end());
+                instrument::held_end(self.state, &note);
                 transport::held_end(self.state, &note, at);
                 true
             }
@@ -610,6 +613,50 @@ pub fn assign_to_pad(midi: &Midi, pad: PadId) {
     }
 }
 
+/// Play every not-yet-mapped note of the learn candidate's channel on the
+/// project instrument (held, D14). Existing pad mappings on it are kept.
+pub fn assign_channel_to_instrument(midi: &Midi) {
+    let outcome = midi.inner_mut().input.as_mut().and_then(|input| {
+        let controller = input.controller_mut();
+        let Some(MappingKey::Note { channel, .. }) = controller.take_learn_candidate() else {
+            return None;
+        };
+        let mut entries = controller.mappings().entries().to_vec();
+        let before = entries.len();
+        for pitch in 0..=127 {
+            let Ok(pitch) = Pitch::try_from(pitch) else {
+                continue;
+            };
+            let key = MappingKey::Note { channel, pitch };
+            if entries.iter().all(|mapping| mapping.key() != key) {
+                entries.push(Mapping::Note {
+                    channel,
+                    pitch,
+                    target: NoteTarget::Held(INSTRUMENT),
+                });
+            }
+        }
+        let added = entries.len() - before;
+        Some(match Mappings::new(entries) {
+            Ok(mappings) => {
+                controller.set_mappings(mappings);
+                Ok(format!(
+                    "ch {} → INSTRUMENT: {added} note(s) mapped as held; pad notes kept",
+                    channel.value() + 1
+                ))
+            }
+            Err(error) => Err(format!("{:?}", error.0)),
+        })
+    });
+    if let Some(result) = outcome {
+        let mut inner = midi.inner_mut();
+        match result {
+            Ok(notice) => inner.notice = Some(notice),
+            Err(error) => inner.error = Some(error),
+        }
+    }
+}
+
 /// Runs before the performance key handler, like the other focused modules.
 pub fn on_key(s: &mut State, midi: &Midi, event: &KeyEvent, _tx: &mut Tx) -> bool {
     let _ = s;
@@ -826,6 +873,12 @@ pub fn panel<S: 'static>(s: &State, midi: &Midi) -> El {
                         move |_s: &mut S| assign_to_pad(&midi, pad)
                     }),
                 );
+                learn_row = learn_row.child(
+                    button("midi-assign-instrument", "WHOLE CHANNEL → INSTRUMENT").on_press({
+                        let midi = midi.clone();
+                        move |_s: &mut S| assign_channel_to_instrument(&midi)
+                    }),
+                );
             }
             MappingKey::Controller { .. } => {
                 for (key_name, label, action) in [
@@ -846,11 +899,65 @@ pub fn panel<S: 'static>(s: &State, midi: &Midi) -> El {
         }
     }
     body = body.child(learn_row).child(
-        caption("Learn captures a note-on or CC only — never a release. A note maps to the selected pad (one-shot); a CC maps to sustain, all-notes-off or panic.").wrap(),
+        caption("Learn captures a note-on or CC only — never a release. A note maps to the selected pad (one-shot) or its whole channel to the instrument (held); a CC maps to sustain, all-notes-off or panic.").wrap(),
     );
     // Mapping list (project DTOs; #100 owns persisting them in the project).
     let mut list = col().key("midi-mappings").gap(4.0);
+    // A whole channel on the instrument is one row, not 128.
+    let mut held = std::collections::BTreeMap::<u8, Vec<MappingKey>>::new();
+    for mapping in controller.mappings().entries() {
+        if let Mapping::Note {
+            channel,
+            target: NoteTarget::Held(_),
+            ..
+        } = mapping
+        {
+            held.entry(channel.value()).or_default().push(mapping.key());
+        }
+    }
+    held.retain(|_, keys| keys.len() > 1);
+    for (channel, keys) in &held {
+        let text = format!(
+            "ch {} · {} notes → HELD instrument",
+            channel + 1,
+            keys.len()
+        );
+        let keys = keys.clone();
+        list = list.child(
+            row()
+                .gap(8.0)
+                .center_y()
+                .child(
+                    caption(&text)
+                        .key(format!("midi-held-channel-{channel}"))
+                        .role("status")
+                        .label(&text),
+                )
+                .child(
+                    button(&format!("midi-remove-held-{channel}"), "REMOVE").on_press({
+                        let midi = midi.clone();
+                        move |_s: &mut S| {
+                            let mut inner = midi.inner_mut();
+                            if let Some(input) = &mut inner.input {
+                                for key in &keys {
+                                    input.controller_mut().remove_mapping(*key);
+                                }
+                            }
+                        }
+                    }),
+                ),
+        );
+    }
     for (index, mapping) in controller.mappings().entries().iter().enumerate() {
+        if let Mapping::Note {
+            channel,
+            target: NoteTarget::Held(_),
+            ..
+        } = mapping
+            && held.contains_key(&channel.value())
+        {
+            continue;
+        }
         let key = mapping.key();
         let text = describe_mapping(mapping);
         list = list.child(

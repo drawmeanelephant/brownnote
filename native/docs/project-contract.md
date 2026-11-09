@@ -32,11 +32,13 @@ Take serialization lives here (see "Takes and edits"), using #104's semantic
 IDs and immutable integer nanosecond originals relative to each take, with its
 recording tempo. Playback derives musical positions at the current tempo;
 device frames and MIDI PPQ are boundary conversions. Quantize-off reproduces
-originals exactly. No instrument backend or arbitrary JSON schema is added.
+originals exactly. No arbitrary JSON schema is added.
 
 Machine audio/MIDI device selection, window layout and cache location are
-excluded (D8). Instrument configuration will be added with its own feature
-contract, not serialized from runtime state.
+excluded (D8). The optional `instrument` entry is its own versioned contract
+(`instrument::InstrumentDocument`, see `sampled-instrument.md`), not
+serialized runtime state. Its SF2 bytes are an `instrument_source` asset and
+its per-note renders are `instrument_render` assets.
 
 ## MIDI mappings (#105, D8)
 

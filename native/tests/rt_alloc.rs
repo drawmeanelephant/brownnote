@@ -397,3 +397,115 @@ fn callback_repeated_steals_saturated_tails_and_retirement_allocate_and_free_not
         );
     }
 }
+
+/// The mounted sampled instrument (D18) on the callback: mounting, live and
+/// scheduled held notes past every capacity, releases, panic, a remount and an
+/// unmount neither allocate nor free; replaced players leave by the return queue.
+#[test]
+#[allow(clippy::unwrap_used)]
+fn mounted_instrument_callback_allocates_and_frees_nothing() {
+    const SF2: &[u8] = include_bytes!("../docs/spikes/sampled-instrument/fixtures/mechanics.sf2");
+    let font = brownnote_native::instrument::Font::prepare(SF2, None).unwrap();
+    for rate in [44_100, 48_000] {
+        for block in [31, 64, 256] {
+            let meters = Arc::new(Meters::default());
+            let (retired, mut returns) = rtrb::RingBuffer::new(4);
+            let mut mixer = Mixer::new(
+                Slots::from_samples([Sample {
+                    data: Arc::from(vec![0.0; 16]),
+                    rate,
+                }]),
+                rate,
+                meters.clone(),
+                retired,
+            );
+            let mut sender = mixer.take_scheduler().unwrap_or_else(|| unreachable!());
+            let epoch = sender.epoch();
+            let first = font.player(rate, 0.5).unwrap();
+            let second = font.player(rate, 0.5).unwrap();
+            let id = |sequence| EventId {
+                take: TakeId(3),
+                sequence,
+            };
+            let mut output = [0.0; 512];
+            let mut render = |mixer: &mut Mixer, frames: usize| {
+                for _ in 0..frames.div_ceil(block) {
+                    mixer.render(&mut output[..block * 2], 2);
+                }
+            };
+            ALLOCS.set(0);
+            FREES.set(0);
+            TRACK.set(true);
+            mixer.command(Command::Instrument(first));
+            // More notes than voices and held slots, many on one pitch.
+            for sequence in 0..200 {
+                mixer.command(Command::HeldOn {
+                    id: id(sequence),
+                    pitch: 40 + (sequence % 3) as u8,
+                    velocity: 100,
+                });
+                render(&mut mixer, block);
+            }
+            let peak = f32::from_bits(meters.peak.swap(0, std::sync::atomic::Ordering::Relaxed));
+            for sequence in (0..200).step_by(2) {
+                mixer.command(Command::HeldOff { id: id(sequence) });
+            }
+            render(&mut mixer, rate as usize / 10);
+            for i in 0..64 {
+                let at = sender.frame() + 100 + i;
+                let on = ScheduledEvent {
+                    epoch,
+                    frame: at,
+                    original_time: OriginalTime::from_nanos(0),
+                    action: ScheduledAction::HeldOn {
+                        id: id(1_000 + i),
+                        pitch: 60,
+                        velocity: 90,
+                    },
+                };
+                assert_eq!(sender.try_schedule(on).outcome, ScheduleOutcome::Accepted);
+                let off = ScheduledEvent {
+                    frame: at + u64::from(rate) / 20,
+                    action: ScheduledAction::NoteOff { id: id(1_000 + i) },
+                    ..on
+                };
+                assert_eq!(sender.try_schedule(off).outcome, ScheduleOutcome::Accepted);
+            }
+            render(&mut mixer, rate as usize / 5);
+            mixer.command(Command::Panic);
+            render(&mut mixer, rate as usize / 10);
+            mixer.command(Command::Instrument(second));
+            mixer.command(Command::HeldOn {
+                id: id(5_000),
+                pitch: 72,
+                velocity: 127,
+            });
+            render(&mut mixer, rate as usize / 10);
+            mixer.command(Command::UnmountInstrument);
+            render(&mut mixer, rate as usize);
+            TRACK.set(false);
+            assert_eq!(
+                ALLOCS.get(),
+                0,
+                "instrument callback allocated at {rate}/{block}"
+            );
+            assert_eq!(
+                FREES.get(),
+                0,
+                "instrument callback freed at {rate}/{block}"
+            );
+            assert!(peak > 0.0, "held notes sounded at {rate}/{block}");
+            let c = sender.counters();
+            assert_eq!((c.dispatched, c.outstanding), (128, 0));
+            let mut players = 0;
+            while let Ok(item) = returns.pop() {
+                assert!(matches!(item, Returned::Instrument(_)));
+                players += 1;
+            }
+            assert_eq!(
+                players, 2,
+                "both players returned, none dropped on the callback"
+            );
+        }
+    }
+}
