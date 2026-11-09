@@ -1,7 +1,8 @@
 //! The CLAP FFI boundary. Every `unsafe` call into a plugin is in this file;
 //! the rest of the helper sees owned Rust values. Ported from the #96 probe
-//! (`native/docs/spikes/clap/host/src/clap.rs`), keeping only what offline
-//! effect rendering needs.
+//! (`native/docs/spikes/clap/host/src/clap.rs`), keeping what offline effect
+//! rendering and the live instrument helper need: note ports, timed note and
+//! parameter events in `process`, and the plugin's note-end reports.
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char, c_void};
@@ -11,13 +12,15 @@ use std::ptr;
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
-    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_value,
+    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_END, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
+    CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_note, clap_event_param_value,
     clap_input_events, clap_output_events,
 };
 use clap_sys::ext::audio_ports::{
     CLAP_EXT_AUDIO_PORTS, clap_audio_port_info, clap_plugin_audio_ports,
 };
 use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_plugin_latency};
+use clap_sys::ext::note_ports::{CLAP_EXT_NOTE_PORTS, clap_note_port_info, clap_plugin_note_ports};
 use clap_sys::ext::params::{CLAP_EXT_PARAMS, clap_param_info, clap_plugin_params};
 use clap_sys::ext::render::{CLAP_EXT_RENDER, CLAP_RENDER_OFFLINE, clap_plugin_render};
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
@@ -329,6 +332,134 @@ fn no_events() -> (Vec<clap_event_param_value>, clap_output_events) {
     )
 }
 
+/// A timed input event for [`Instance::process_events`]. `time` is the frame
+/// offset within the block; events must be in time order.
+// Only the `brownnote-clap-live` binary constructs these; the offline
+// binary compiles the same file.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum InputEvent {
+    NoteOn {
+        time: u32,
+        note_id: i32,
+        channel: i16,
+        key: i16,
+        velocity: f64,
+    },
+    NoteOff {
+        time: u32,
+        note_id: i32,
+        channel: i16,
+        key: i16,
+        velocity: f64,
+    },
+    Param {
+        time: u32,
+        id: u32,
+        value: f64,
+    },
+}
+
+/// A `CLAP_EVENT_NOTE_END` the plugin reported from `process`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoteEnd {
+    pub time: u32,
+    pub note_id: i32,
+    pub channel: i16,
+    pub key: i16,
+}
+
+/// Every variant starts with the CLAP header, so a pointer to the union is a
+/// valid `clap_event_header` pointer.
+#[repr(C)]
+#[derive(Clone, Copy)]
+union RawEvent {
+    header: clap_event_header,
+    note: clap_event_note,
+    param: clap_event_param_value,
+}
+
+fn raw_event(event: &InputEvent) -> RawEvent {
+    let note = |type_, time, note_id, channel, key, velocity| RawEvent {
+        note: clap_event_note {
+            header: clap_event_header {
+                size: size_of::<clap_event_note>() as u32,
+                time,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_,
+                flags: 0,
+            },
+            note_id,
+            port_index: 0,
+            channel,
+            key,
+            velocity,
+        },
+    };
+    match *event {
+        InputEvent::NoteOn {
+            time,
+            note_id,
+            channel,
+            key,
+            velocity,
+        } => note(CLAP_EVENT_NOTE_ON, time, note_id, channel, key, velocity),
+        InputEvent::NoteOff {
+            time,
+            note_id,
+            channel,
+            key,
+            velocity,
+        } => note(CLAP_EVENT_NOTE_OFF, time, note_id, channel, key, velocity),
+        InputEvent::Param { time, id, value } => {
+            let mut param = param_event(id, value);
+            param.header.time = time;
+            RawEvent { param }
+        }
+    }
+}
+
+unsafe extern "C" fn raw_size(list: *const clap_input_events) -> u32 {
+    // SAFETY: ctx is the Vec<RawEvent> built for this call.
+    unsafe { (*((*list).ctx as *const Vec<RawEvent>)).len() as u32 }
+}
+unsafe extern "C" fn raw_get(
+    list: *const clap_input_events,
+    index: u32,
+) -> *const clap_event_header {
+    // SAFETY: as above; out-of-range indices return null per the spec.
+    unsafe {
+        let v = &*((*list).ctx as *const Vec<RawEvent>);
+        v.get(index as usize).map_or(ptr::null(), |e| {
+            e as *const RawEvent as *const clap_event_header
+        })
+    }
+}
+unsafe extern "C" fn collect_note_end(
+    list: *const clap_output_events,
+    ev: *const clap_event_header,
+) -> bool {
+    // SAFETY: ctx is the Vec<NoteEnd> for this call; the plugin passes an
+    // event that is valid for the call, and its size is checked before the
+    // note fields are read.
+    unsafe {
+        let header = &*ev;
+        if header.space_id == CLAP_CORE_EVENT_SPACE_ID
+            && header.type_ == CLAP_EVENT_NOTE_END
+            && header.size as usize >= size_of::<clap_event_note>()
+        {
+            let note = &*(ev as *const clap_event_note);
+            (*((*list).ctx as *mut Vec<NoteEnd>)).push(NoteEnd {
+                time: header.time,
+                note_id: note.note_id,
+                channel: note.channel,
+                key: note.key,
+            });
+        }
+    }
+    true
+}
+
 #[derive(Clone, Debug)]
 pub struct ParamInfo {
     pub id: u32,
@@ -362,6 +493,27 @@ impl Instance {
         } else {
             Some(unsafe { &*p })
         }
+    }
+
+    /// `(supported, preferred)` note dialects of each note port.
+    #[allow(dead_code)]
+    pub fn note_ports(&self, is_input: bool) -> Vec<(u32, u32)> {
+        let Some(ext) = self.ext::<clap_plugin_note_ports>(CLAP_EXT_NOTE_PORTS) else {
+            return Vec::new();
+        };
+        let (Some(count), Some(get)) = (ext.count, ext.get) else {
+            return Vec::new();
+        };
+        // SAFETY: main-thread queries on a valid instance.
+        let n = unsafe { count(self.plugin, is_input) };
+        (0..n)
+            .filter_map(|i| {
+                // SAFETY: zeroed info is a valid out-parameter.
+                let mut info: clap_note_port_info = unsafe { std::mem::zeroed() };
+                unsafe { get(self.plugin, i, is_input, &mut info) }
+                    .then_some((info.supported_dialects, info.preferred_dialect))
+            })
+            .collect()
     }
 
     /// Channel count of each audio port.
@@ -512,6 +664,19 @@ impl Instance {
         input: &mut [Vec<Vec<f32>>],
         output: &mut [Vec<Vec<f32>>],
     ) -> Result<(), HostError> {
+        self.process_events(frames, &[], &mut Vec::new(), input, output)
+    }
+
+    /// [`Self::process`] with timed input events. Note ends the plugin reports
+    /// are appended to `note_ends`; other output events are ignored.
+    pub fn process_events(
+        &mut self,
+        frames: u32,
+        events: &[InputEvent],
+        note_ends: &mut Vec<NoteEnd>,
+        input: &mut [Vec<Vec<f32>>],
+        output: &mut [Vec<Vec<f32>>],
+    ) -> Result<(), HostError> {
         let mut in_ptrs: Vec<Vec<*mut f32>> = input
             .iter_mut()
             .map(|p| p.iter_mut().map(|c| c.as_mut_ptr()).collect())
@@ -529,11 +694,15 @@ impl Instance {
         };
         let in_bufs: Vec<clap_audio_buffer> = in_ptrs.iter_mut().map(buffer).collect();
         let mut out_bufs: Vec<clap_audio_buffer> = out_ptrs.iter_mut().map(buffer).collect();
-        let (raw, outs) = no_events();
+        let raw: Vec<RawEvent> = events.iter().map(raw_event).collect();
         let ins = clap_input_events {
             ctx: &raw as *const _ as *mut c_void,
-            size: Some(in_size),
-            get: Some(in_get),
+            size: Some(raw_size),
+            get: Some(raw_get),
+        };
+        let outs = clap_output_events {
+            ctx: note_ends as *mut Vec<NoteEnd> as *mut c_void,
+            try_push: Some(collect_note_end),
         };
         let process = clap_process {
             steady_time: self.steady_time,
