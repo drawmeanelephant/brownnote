@@ -1,5 +1,8 @@
 # Sampled-instrument backend spike (#108, first PR)
 
+> Follow-up: the app integration keeps D14 by giving each overlapping
+> same-pitch note its own RustySynth channel. See `../../sampled-instrument.md`.
+
 ## Recommendation
 
 **No-go for direct native integration of RustySynth 1.3.8. Bounded go for

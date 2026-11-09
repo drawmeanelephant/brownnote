@@ -141,3 +141,6 @@ jobs:
 
       - name: Required CLAP live-instrument helper tests
         run: make native-clap-live-test
+
+      - name: Required LADSPA helper and pinned Plate tests
+        run: make native-ladspa-plate-test

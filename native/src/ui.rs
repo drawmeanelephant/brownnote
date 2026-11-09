@@ -6,10 +6,12 @@ mod graphics;
 #[cfg(test)]
 #[path = "ui_import_tests.rs"]
 mod import_tests;
+mod instrument;
 mod media;
 mod midi;
 pub(crate) mod pedals;
 pub(crate) mod projects;
+mod transport;
 mod view;
 use brownnote_native::{
     assets::AssetRegistry,
@@ -54,6 +56,8 @@ pub struct State {
     pub takes: Takes,
     /// View-side gate for the take/event edit panel.
     pub edit_panel: bool,
+    pub transport: transport::Transport,
+    pub instrument: instrument::Instrument,
     now: f64,
     flashes: [f64; 16],
     wake: Option<rune::Waker>,
@@ -109,11 +113,7 @@ impl State {
                 .map_err(|error| error.to_string());
             midi::Midi::load(root, !no_audio, brownnote_native::performance::TakeId(0))
         };
-        // 8 bars is always a valid LoopBars (the accepted set is 1, 2, 4, 8);
-        // TakeId(1) keeps this registry clear of the MIDI input's TakeId(0).
-        let loop_bars =
-            LoopBars::try_from(8).unwrap_or_else(|_| unreachable!("8 bars is a valid loop length"));
-        let takes = Takes::new(loop_bars, TakeId(1));
+        let takes = fresh_takes();
         Self {
             output,
             assets,
@@ -136,6 +136,8 @@ impl State {
             edit: edit::Editor::default(),
             takes,
             edit_panel: false,
+            transport: transport::Transport::default(),
+            instrument: instrument::Instrument::default(),
             now: 0.0,
             flashes: [0.0; 16],
             wake: None,
@@ -156,6 +158,7 @@ impl State {
             pan: settings.pan,
             semitones: settings.pitch,
         });
+        transport::capture_trigger(self, pad, velocity);
         self.selected = pad;
         self.flashes[pad] = self.now + 0.120;
     }
@@ -169,6 +172,15 @@ impl State {
         let sample = &asset.imported.sample;
         (sample.data.len() as f32 / sample.rate as f32, sample.rate)
     }
+}
+
+/// An empty registry for a new or take-less project.
+pub fn fresh_takes() -> Takes {
+    // 8 bars is always a valid LoopBars (the accepted set is 1, 2, 4, 8);
+    // TakeId(1) keeps this registry clear of the MIDI input's TakeId(0).
+    let loop_bars =
+        LoopBars::try_from(8).unwrap_or_else(|_| unreachable!("8 bars is a valid loop length"));
+    Takes::new(loop_bars, TakeId(1))
 }
 
 pub fn init() -> State {
@@ -195,6 +207,9 @@ pub fn setup(s: &mut State, wake: rune::Waker) {
 
 pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if projects::on_key(s, event, tx) {
+        return true;
+    }
+    if instrument::on_key(s, event, tx) {
         return true;
     }
     if media::controls::on_key(s, event, tx) {
@@ -224,7 +239,7 @@ pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         if s.edit_panel {
             s.edit_panel = false;
         } else {
-            s.output.send(Command::Panic);
+            transport::panic(s);
         }
     } else if let Some(pad) = pad {
         s.trigger(pad, 1.0);
@@ -246,10 +261,18 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     if s.devices.busy() {
         tx.wake_after(Duration::from_millis(1));
     }
+    let instrument_changed = instrument::poll(s);
+    if instrument::wants_wake(s) {
+        tx.wake_after(Duration::from_millis(10));
+    }
     let midi = s.midi.clone();
     let midi_changed = midi::poll(s, &midi);
     let edit_changed = edit::poll(s, edit_access);
     s.output.advance(elapsed);
+    let transport_changed = transport::poll(s);
+    if s.transport.active() {
+        tx.wake_after(Duration::from_millis(10));
+    }
     let import_changed = media::controls::poll(s);
     let media_changed = media::poll(s);
     if s.media.busy() {
@@ -264,7 +287,9 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let changed = projects_changed
         || devices_changed
         || midi_changed
+        || instrument_changed
         || edit_changed
+        || transport_changed
         || failed
         || pedals_changed
         || import_changed
@@ -341,6 +366,7 @@ pub const SCENES: &[Scene] = &[
         s.edit_panel = true;
         let _ = edit::scene(&mut s.edit, &mut s.takes, edit::SceneKind::Error);
     }),
+    ("transport-midi", transport::scene_midi),
     ("playing", |s| {
         for pad in [0, 4, 10] {
             s.trigger(pad, 1.0);

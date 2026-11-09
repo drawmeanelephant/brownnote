@@ -3,9 +3,9 @@ use super::{
     control::{Control, slider},
     devices, edit, edit_access, edit_read,
     graphics::{led, logo, meter, waveform},
-    ink,
+    ink, instrument,
     media::controls as import,
-    midi, pedals, projects,
+    midi, pedals, projects, transport,
 };
 use brownnote_native::{engine::Command, kit::PADS};
 use rune::{Cx, Drag, El, Phase, TextStyle, col, el, row, text};
@@ -39,7 +39,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .gradient(ink("#56382e"), ink("#34251f"))
                 .border_gradient(1.0, ink("#92604d"), ink("#4b342b"))
                 .on_press_tx(|s: &mut State, tx| {
-                    s.output.send(Command::Panic);
+                    transport::panic(s);
                     tx.wake_after(Duration::from_millis(1));
                 }),
         );
@@ -69,6 +69,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         .help("Take and event edits · bounded undo, per-take quantization")
         .on_press(|s: &mut State| s.edit_panel = !s.edit_panel),
     );
+    controls = controls.child(instrument::header(s));
     if s.output.failed {
         controls = controls.child(
             button("retry-audio", "RETRY AUDIO")
@@ -121,7 +122,8 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .h(16.0)
                 .justify_between()
                 .center_y()
-                .child(caption("01—16    /    PRESSURE PADS").color(ink("#c0cbbf")))
+                .gap(12.0)
+                .child(transport::strip(s))
                 .child(
                     row()
                         .gap(12.0)
@@ -136,6 +138,8 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             vec![import::panel(s)]
         } else if s.devices.visible {
             vec![devices::panel(s)]
+        } else if s.instrument.visible {
+            vec![instrument::panel(s)]
         } else if s.midi_panel {
             vec![midi::panel::<State>(s, &s.midi)]
         } else if s.edit_panel {
@@ -450,7 +454,7 @@ fn pad(s: &State, index: usize) -> El {
                 tx.wake_after(Duration::from_millis(1));
             } else if d.phase == Phase::Up && d.cancelled() {
                 // Rune consumes Escape to cancel a held pointer before window keys.
-                s.output.send(Command::Panic);
+                transport::panic(s);
                 tx.wake_after(Duration::from_millis(1));
             }
         });

@@ -1,0 +1,47 @@
+Replace __builtin_sinf/__builtin_cosf template arguments with sinf/cosf.
+Apple clang rejects a builtin as a non-type template argument
+("no matching function for call to 'v4f_map'"); GCC accepts it, which is
+why the unmodified Debian arm64 package builds. Behavior is unchanged:
+both spellings name the same float sine and cosine.
+
+--- a/dsp/v4f.h
++++ b/dsp/v4f.h
+@@ -155,10 +155,10 @@
+ 			{
+ 				v4f_t *y = data();
+ 				v4f_t w = -v4f_pi * f;
+-				y[0] = v4f_map<__builtin_sinf> (w);
+-				y[1] = v4f_map<__builtin_sinf> (v4f_2 * w);
++				y[0] = v4f_map<sinf> (w);
++				y[1] = v4f_map<sinf> (v4f_2 * w);
+ 				/* b in above scalar implementation is y[2] in the flat data */
+-				y[2] = v4f_2 * v4f_map<__builtin_cosf> (w); /* b */
++				y[2] = v4f_2 * v4f_map<cosf> (w); /* b */
+ 				z = 0;
+ 			}
+ 
+--- a/dsp/v4f_IIR2.h
++++ b/dsp/v4f_IIR2.h
+@@ -45,8 +45,8 @@
+ 			{
+ 				v4f_t w = v4f_2pi * f;
+ 
+-				sin = v4f_map<__builtin_sinf> (w);
+-				cos = v4f_map<__builtin_cosf> (w);
++				sin = v4f_map<sinf> (w);
++				cos = v4f_map<cosf> (w);
+ 
+ 				alpha = sin / (v4f_2 * Q);
+ 			}
+@@ -549,9 +549,9 @@
+ 			{
+ 				v4f_t * a = state + i*Item;
+ 				f *= v4f_2pi;
+-				a[0] = v4f_map<__builtin_sinf> (f);
++				a[0] = v4f_map<sinf> (f);
+ 				a[0] *= gain;
+-				a[5] = v4f_map<__builtin_cosf> (f);
++				a[5] = v4f_map<cosf> (f);
+ 				set_r (i, r);
+ 			}
+ 		void set_r (int i, v4f_t r)

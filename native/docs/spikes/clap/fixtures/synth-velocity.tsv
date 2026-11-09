@@ -1,0 +1,10 @@
+# Same key at velocity 1.0 then 0.25.
+sample_rate	48000
+frames	48000
+block	256
+input	silence
+param	0	Attack	0.022360679774997897
+on	1000	1	57	1
+off	10000	1	57
+on	20000	2	57	0.25
+off	29000	2	57

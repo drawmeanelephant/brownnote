@@ -1,0 +1,27 @@
+{
+  "plugin": "C* Audio Plugin Suite (CAPS)",
+  "version": "0.9.26",
+  "license": "GPL-3.0-or-later",
+  "homepage": "http://quitte.de/dsp/caps.html",
+  "source_url": "http://quitte.de/dsp/caps_0.9.26.tar.bz2",
+  "mirror_url": "https://deb.debian.org/debian/pool/main/c/caps/caps_0.9.26.orig.tar.bz2",
+  "source_sha256": "e7496c5bce05abebe3dcb635926153bbb58a9337a6e423f048d3b61d8a4f98c9",
+  "patch": "caps-clang-arm64.patch",
+  "patch_sha256": "a911348aa797e50df71db5380f91fcbbad5c9030948cfb45259fbd28f09407ff",
+  "build": ["make", "-j2", "CC=c++", "_LDFLAGS=-bundle", "caps.so"],
+  "library": "caps.so",
+  "library_sha256": "83b72440184988e806eb2c0d0d94ccf9fe5fa030b41fbcf16a415e017ccc4957",
+  "known_libraries": [
+    {
+      "sha256": "08ba0c39bb7b4fd17e6db222683c8af72c987cb867f077df6e5f72a234e20f8a",
+      "compiler": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+      "note": "GitHub macos-latest runner; archive bytes differ from the reference build only by toolchain, and the pinned render comparison remains the behavior gate"
+    }
+  ],
+  "built_with": {
+    "host": "macOS arm64",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+    "evidence": "#97, native/docs/spikes/ladspa/evidence/measurements.json (caps_build)"
+  },
+  "target": {"unique_id": 1779, "label": "Plate", "id": "1779:Plate"}
+}

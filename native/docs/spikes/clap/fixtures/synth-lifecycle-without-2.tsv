@@ -1,0 +1,10 @@
+# Same as synth-lifecycle without note id 2; locates its onset frame.
+sample_rate	48000
+frames	48000
+block	256
+input	silence
+param	0	Attack	0.022360679774997897
+on	1000	1	57	1
+on	9001	3	57	0.25
+off	14000	1	57
+off	26000	3	57

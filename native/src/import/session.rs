@@ -29,6 +29,11 @@ impl SessionMedia {
         }
         Ok(())
     }
+
+    /// The owned bytes of one published asset.
+    pub fn get(&self, id: AssetId) -> Option<Arc<[u8]>> {
+        self.bytes.lock().ok()?.get(&id).cloned()
+    }
 }
 
 impl MediaPublisher for SessionMedia {
