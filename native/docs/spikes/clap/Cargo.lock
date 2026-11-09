@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "brownnote-clap-fault-fixture"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+]
+
+[[package]]
 name = "brownnote-clap-probe"
 version = "0.1.0"
 dependencies = [

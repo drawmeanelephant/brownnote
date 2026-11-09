@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import platform
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -55,6 +56,82 @@ KEEP_WAVS = ["synth/life-256.wav", "synth/wildcard-off.wav", "synth/same-key-dur
              "effect/burst-512.wav"]
 
 
+FAULT = ROOT / ".work/plugins/brownnote-fault-fixture.clap"
+FAULT_INFO = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>brownnote-fault-fixture</string>
+<key>CFBundleIdentifier</key><string>org.brownnote.fault-fixture</string>
+<key>CFBundlePackageType</key><string>BNDL</string>
+</dict></plist>
+"""
+
+
+def bundle_fault_fixture(target_dir):
+    macos = FAULT / "Contents/MacOS"
+    macos.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(target_dir / "release/libbrownnote_clap_fault_fixture.dylib",
+                    macos / "brownnote-fault-fixture")
+    (FAULT / "Contents/Info.plist").write_text(FAULT_INFO)
+
+
+def run_failures(binary, out):
+    """Each case runs as its own process; exit codes are part of the evidence."""
+    fails = out / "failures"
+    fails.mkdir()
+    garbage = fails / "garbage.clap"
+    garbage.write_bytes(bytes(range(256)) * 64)
+    state = fails / "keep-state.bin"
+    state.write_bytes(b"project-owned plugin state that must survive a failed load")
+    before = hashlib.sha256(state.read_bytes()).hexdigest()
+    # A loadable Mach-O dylib that exports no clap_entry.
+    not_a_clap = fails / "not-a-clap.dylib"
+    subprocess.run(["cc", "-dynamiclib", "-x", "c", "-", "-o", not_a_clap],
+                   input=b"int brownnote_not_clap = 1;\n", check=True)
+    cases = {
+        "missing-bundle": (ROOT / ".work/plugins/absent.clap", "org.brownnote.fault.passthrough"),
+        "garbage-binary": (garbage, "org.brownnote.fault.passthrough"),
+        "not-a-clap": (not_a_clap, "org.brownnote.fault.passthrough"),
+        "unknown-id": (FAULT, "org.brownnote.fault.absent"),
+        "init-fails": (FAULT, "org.brownnote.fault.init-fails"),
+        "activate-fails": (FAULT, "org.brownnote.fault.activate-fails"),
+    }
+    for name, (bundle, pid) in cases.items():
+        args = [binary, "render", bundle, pid, "fault-sine.tsv", fails / f"load-{name}-out", "x",
+                "--load-state", state]
+        print("+ " + shlex.join(str(a) for a in args), flush=True)
+        r = subprocess.run(args, cwd=FIX, capture_output=True, text=True)
+        err = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
+        # Committed evidence must not carry this machine's checkout path.
+        detail = err.get("detail")
+        if detail:
+            detail = detail.replace(str(fails), "<run>/failures").replace(str(ROOT), "<spike>")
+        (fails / f"load-{name}.json").write_text(json.dumps({
+            "exit_code": r.returncode, "error": err.get("error"), "detail": detail,
+            "output_created": (fails / f"load-{name}-out").exists(),
+            "state_unchanged": hashlib.sha256(state.read_bytes()).hexdigest() == before,
+        }) + "\n")
+
+    exits = {}
+    for fault in ("passthrough", "crash", "hang", "nonfinite"):
+        args = [binary, "inproc", FAULT, f"org.brownnote.fault.{fault}", "fault-sine.tsv", fails,
+                f"inproc-{fault}", "--timeout-ms", "200"]
+        print("+ " + shlex.join(str(a) for a in args), flush=True)
+        exits[fault] = subprocess.run(args, cwd=FIX, timeout=60).returncode
+    (fails / "inproc-exit-codes.json").write_text(json.dumps(exits) + "\n")
+
+    for fault in ("passthrough", "crash", "hang", "nonfinite", "init-fails"):
+        probe(binary, "isolate", FAULT, f"org.brownnote.fault.{fault}", "fault-sine.tsv", fails,
+              f"helper-{fault}", "--timeout-ms", "200", "--max-restarts", "2")
+    for block in ("64", "256"):
+        probe(binary, "render", FAULT, "org.brownnote.fault.passthrough", "fault-sine-long.tsv",
+              fails, f"inproc-passthrough-{block}", "--block", block)
+        probe(binary, "isolate", FAULT, "org.brownnote.fault.passthrough", "fault-sine-long.tsv",
+              fails, f"helper-passthrough-{block}", "--block", block)
+    probe(binary, "isolate", EFFECT, EFFECT_ID, "effect-burst.tsv", fails, "helper-effect-256",
+          "--block", "256", "--timeout-ms", "1000")
+
+
 def command(args, **kw):
     print("+ " + shlex.join(str(a) for a in args), flush=True)
     return subprocess.run(args, check=True, **kw)
@@ -81,11 +158,13 @@ def main():
         print(prep.stdout, end="")
         hashes = json.loads(prep.stdout.strip().splitlines()[-1])
         manifest = ROOT / "Cargo.toml"
-        command(["cargo", "fmt", "--manifest-path", manifest, "--check"])
+        # cargo fmt cannot find targets of a virtual manifest from outside it.
+        command(["cargo", "fmt", "--all", "--check"], cwd=ROOT)
         command(["cargo", "clippy", "--locked", "--manifest-path", manifest, "--all-targets",
                  "--", "-D", "warnings"])
         command(["cargo", "build", "--locked", "--release", "--manifest-path", manifest])
         binary = args.target_dir / "release/brownnote-clap-probe"
+        bundle_fault_fixture(args.target_dir)
 
         (ROOT / "out").mkdir(exist_ok=True)
         out = Path(tempfile.mkdtemp(prefix="run-", dir=ROOT / "out"))
@@ -103,6 +182,7 @@ def main():
             for blob, name in (("s0", "fresh-s0"), ("s1", "fresh-s1"), ("s0", "fresh-s0-again")):
                 probe(binary, "render", bundle, pid, fixture, out / sub, name,
                       "--load-state", out / sub / f"state-{blob}.bin")
+        run_failures(binary, out)
         repeat = out / "repeat"
         for sub, name, bundle, pid, fixture, extra in RENDERS:
             if name in REPEAT:
