@@ -88,7 +88,7 @@ pub fn decode_wav(reader: impl Read, path: &Path) -> Result<Sample, KitError> {
     decode_wav_max(reader, path, |rate| u64::from(rate) * KIT_SECONDS)
 }
 
-fn decode_wav_max(
+pub fn decode_wav_max(
     reader: impl Read,
     path: &Path,
     max: impl Fn(u32) -> u64,

@@ -4,6 +4,7 @@
 //! The v1 kit boundary remains provisional until the #104 contract lands.
 pub mod media;
 pub mod recovery;
+pub mod session;
 pub mod store;
 
 use crate::pedals::render::{Chain, MAX_STAGES, Stage};
