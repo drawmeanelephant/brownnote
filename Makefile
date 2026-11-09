@@ -76,6 +76,10 @@ native:
 native-test:
 	$(CARGO) fmt --manifest-path native/Cargo.toml --check
 	$(CARGO) clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
-	$(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored
+	$(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored --skip pinned_app_recipe_and_adapter
 
-.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test
+# Explicit opt-in: requires the pinned SoundCraft app, CLI and Python environment.
+native-soundcraft-test:
+	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_recipe_and_adapter -- --ignored --exact
+
+.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-soundcraft-test
