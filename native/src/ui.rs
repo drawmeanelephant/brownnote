@@ -44,6 +44,10 @@ pub struct State {
     pub peak: f32,
     pub pedals: pedals::Pedals,
     pub devices: devices::Devices,
+    pub midi: midi::Midi,
+    /// View-side mirror of the MIDI panel visibility (the lane handle keeps its
+    /// own flag for the header label and Escape handling).
+    pub midi_panel: bool,
     now: f64,
     flashes: [f64; 16],
     wake: Option<rune::Waker>,
@@ -87,6 +91,18 @@ impl State {
                 "Audio off (--no-audio)".into()
             },
         );
+        // Interactive startup mounts the real MIDI input (D8 machine preference
+        // under Resource::Preferences); headless/test constructors stay safe.
+        let midi = if headless {
+            midi::Midi::disabled()
+        } else {
+            let root = brownnote_native::paths::Resolver::current()
+                .and_then(|paths| {
+                    paths.resolve(brownnote_native::paths::Resource::Preferences, None)
+                })
+                .map_err(|error| error.to_string());
+            midi::Midi::load(root, !no_audio, brownnote_native::performance::TakeId(0))
+        };
         Self {
             output,
             assets,
@@ -104,6 +120,8 @@ impl State {
             peak: 0.0,
             pedals,
             devices,
+            midi,
+            midi_panel: false,
             now: 0.0,
             flashes: [0.0; 16],
             wake: None,
@@ -157,6 +175,11 @@ pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if media::controls::on_key(s, event, tx) {
         return true;
     }
+    let midi = s.midi.clone();
+    if midi::on_key(s, &midi, event, tx) {
+        s.midi_panel = false;
+        return true;
+    }
     if event.mods.cmd || event.mods.ctrl || event.mods.alt || event.mods.logo {
         return false;
     }
@@ -194,6 +217,8 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     if s.devices.busy() {
         tx.wake_after(Duration::from_millis(1));
     }
+    let midi = s.midi.clone();
+    let midi_changed = midi::poll(s, &midi);
     s.output.advance(elapsed);
     let import_changed = media::controls::poll(s);
     let media_changed = media::poll(s);
@@ -208,6 +233,7 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let lit = s.flashes.map(|until| until > clock);
     let changed = projects_changed
         || devices_changed
+        || midi_changed
         || failed
         || pedals_changed
         || import_changed
@@ -258,6 +284,11 @@ pub const SCENES: &[Scene] = &[
     }),
     ("output-invalid", |s| {
         devices::scene(s, devices::SceneKind::Invalid)
+    }),
+    ("midi", |s| {
+        s.midi_panel = true;
+        let midi = s.midi.clone();
+        midi::scene(s, &midi, midi::SceneKind::Connected);
     }),
     ("playing", |s| {
         for pad in [0, 4, 10] {
