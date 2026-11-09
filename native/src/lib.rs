@@ -1,3 +1,4 @@
+pub mod adapters;
 pub mod assets;
 pub mod edit;
 pub mod engine;
