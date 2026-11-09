@@ -494,10 +494,19 @@ pub fn mappings(midi: &Midi) -> Option<Mappings> {
 
 /// Replace the project mappings after a project opens. Device choice is
 /// machine-local and stays as it was.
-pub fn set_mappings(midi: &Midi, mappings: Mappings) {
-    if let Some(input) = midi.inner_mut().input.as_mut() {
-        input.controller_mut().set_mappings(mappings);
+pub fn set_mappings(s: &mut State, mappings: Mappings) {
+    let midi = s.midi.clone();
+    let mut owned = midi.inner_mut().input.take();
+    if let Some(input) = owned.as_mut() {
+        let now = now_nanos(s);
+        let source = input.controller().source();
+        input.controller_mut().replace_project_mappings(
+            mappings,
+            &mut UiSink::new(s, source, true),
+            now,
+        );
     }
+    midi.inner_mut().input = owned;
 }
 
 /// Deterministic virtual input for scenes and tests: a connected fixture

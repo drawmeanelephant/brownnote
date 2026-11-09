@@ -267,6 +267,7 @@ pub fn poll(s: &mut State) -> bool {
                 }
                 // All fallible validation/preparation/admission is above this
                 // point. Cancel old workers only when committing the replacement.
+                midi::set_mappings(s, prepared.mappings);
                 for index in 0..16 {
                     s.cancel_import(index);
                     pedals::cancel_work(s, index);
@@ -284,7 +285,6 @@ pub fn poll(s: &mut State) -> bool {
                 s.media = media::Media::with_service(prepared.media, Ok(importer));
                 s.assets = prepared.registry;
                 s.install_output(output);
-                midi::set_mappings(&s.midi, prepared.mappings);
                 let (takes, model) = prepared.takes.unwrap_or_else(|| (super::fresh_takes(), Default::default()));
                 let mut editor = edit::Editor::default();
                 editor.model = model;
