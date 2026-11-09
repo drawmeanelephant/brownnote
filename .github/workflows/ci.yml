@@ -138,3 +138,6 @@ jobs:
         env:
           BROWNNOTE_CLAP_EFFECT: ${{ github.workspace }}/native/docs/spikes/clap/.work/plugins/Airwindows Consolidated.clap
         run: make native-clap-effect-test
+
+      - name: Required LADSPA helper and pinned Plate tests
+        run: make native-ladspa-plate-test

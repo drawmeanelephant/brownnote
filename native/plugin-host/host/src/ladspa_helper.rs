@@ -134,7 +134,7 @@ fn open(
         ));
     }
     let (unique_id, label) = parse_id(&open.plugin_id)?;
-    if !allowed.iter().any(|id| *id == open.plugin_id) {
+    if !allowed.contains(&open.plugin_id) {
         return Err(LadspaError::Unsupported(format!(
             "{} is not on the LADSPA allow-list ({})",
             open.plugin_id,

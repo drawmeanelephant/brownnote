@@ -160,6 +160,10 @@ impl Library {
 
     /// The validated descriptor with this `UniqueID` and `Label`. Other
     /// descriptors in the library are not validated or instantiated.
+    // LADSPA_UniqueId is C unsigned long: u64 on LP64 (the supported macOS
+    // arm64 target, where clippy calls this conversion useless) but u32 on
+    // LLP64, where the widening is required. Keep it portable.
+    #[allow(clippy::useless_conversion)]
     pub fn find(self: &Arc<Self>, unique_id: u64, label: &str) -> Result<Plugin, LadspaError> {
         for index in 0..=MAX_DESCRIPTORS {
             // SAFETY: `ladspa_descriptor` accepts any index and returns null
