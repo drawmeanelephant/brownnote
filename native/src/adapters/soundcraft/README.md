@@ -128,7 +128,7 @@ uses.
 
 **Not covered:** edits were made through the public control protocol, not the
 mouse or keyboard. No audio device was opened, and nobody has listened to the
-result. The maintainer listening steps below are still required.
+result. The maintainer listening steps below are an optional quality follow-up.
 
 To repeat the check, prepare the app as described above, then also set
 `BROWNNOTE_SOUNDCRAFT_EDIT_EVIDENCE=/absolute/scratch/adapter-edit.json`.
@@ -171,5 +171,7 @@ session intentionally lacks media). Open it with normal audio, move a hit,
 delete another, edit a note, save, quit, reopen, and move the whole directory
 after removing original sources. Inspect again and listen to retained audio,
 tails, choke and overlap. Unmute editable sampler tracks only deliberately.
-Record maintainer listening separately. #110 and #111 stay open until their
-actual-app and listening gates pass.
+Record maintainer listening separately. The actual-app edit/save/reopen gate
+passed on the committed evidence and #110 closed on it; the listening pass is
+an optional quality follow-up, not a close gate. #111 stays open until its
+real-project convergence gate passes.
