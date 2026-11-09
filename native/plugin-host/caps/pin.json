@@ -11,6 +11,13 @@
   "build": ["make", "-j2", "CC=c++", "_LDFLAGS=-bundle", "caps.so"],
   "library": "caps.so",
   "library_sha256": "83b72440184988e806eb2c0d0d94ccf9fe5fa030b41fbcf16a415e017ccc4957",
+  "known_libraries": [
+    {
+      "sha256": "08ba0c39bb7b4fd17e6db222683c8af72c987cb867f077df6e5f72a234e20f8a",
+      "compiler": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+      "note": "GitHub macos-latest runner; archive bytes differ from the reference build only by toolchain, and the pinned render comparison remains the behavior gate"
+    }
+  ],
   "built_with": {
     "host": "macOS arm64",
     "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",

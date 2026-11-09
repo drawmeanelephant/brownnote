@@ -43,6 +43,25 @@ def require(what, actual, expected):
         raise SystemExit(f"{what} SHA-256 is {actual}, pin.json expects {expected}")
 
 
+def known_libraries():
+    """Every accepted build of the pinned library: the reference build plus
+    other toolchain builds observed and reviewed (the render test, not the
+    archive bytes, is the behavior gate)."""
+    entries = [{"sha256": PIN["library_sha256"], "compiler": PIN["built_with"]["compiler"]}]
+    return entries + PIN.get("known_libraries", [])
+
+
+def require_known_library(what, path, compiler):
+    actual = sha256(path)
+    known = {entry["sha256"]: entry["compiler"] for entry in known_libraries()}
+    if actual not in known:
+        accepted = ", ".join(f"{digest} ({name})" for digest, name in known.items())
+        raise SystemExit(
+            f"{what} has SHA-256 {actual}; pin.json accepts {accepted}; this "
+            f"machine has {compiler}. Re-pin deliberately; do not skip.")
+    log(f"PASS: {path} matches a pinned build ({actual})")
+
+
 def fetch(tarball):
     WORK.mkdir(exist_ok=True)
     cached = WORK / Path(PIN["source_url"]).name
@@ -111,18 +130,12 @@ def main():
     library = (src / PIN["library"]).resolve()
     compiler = subprocess.run(["c++", "--version"], capture_output=True, text=True,
                               check=True).stdout.splitlines()[0]
-    actual = sha256(library)
-    if actual != PIN["library_sha256"]:
-        raise SystemExit(
-            f"the built {PIN['library']} has SHA-256 {actual}, pin.json expects "
-            f"{PIN['library_sha256']} (built with {PIN['built_with']['compiler']}; "
-            f"this machine has {compiler}). Re-pin deliberately; do not skip.")
-    log(f"PASS: {library} matches the pin ({actual})")
+    require_known_library(f"the built {PIN['library']}", library, compiler)
     if args.install:
         args.install.mkdir(parents=True, exist_ok=True)
         target = args.install / PIN["library"]
         shutil.copyfile(library, target)
-        require(f"the installed {target}", sha256(target), PIN["library_sha256"])
+        require_known_library(f"the installed {target}", target, compiler)
         log(f"Installed {target}")
     print(library)
 
