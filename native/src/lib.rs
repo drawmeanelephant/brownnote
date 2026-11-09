@@ -6,6 +6,7 @@ pub mod export;
 pub mod import;
 pub mod instrument;
 pub mod kit;
+pub mod live_audio;
 pub mod look;
 pub mod midi;
 pub mod output;

@@ -94,6 +94,9 @@ pub enum MediaKind {
     /// One frozen instrument note (stereo float WAV). Exported as retained
     /// audio, never loaded into a pad sample slot.
     InstrumentRender,
+    /// Audio a live instrument played into a take (stereo float WAV, #112).
+    /// Project media retained for replay and export, not a pad sample.
+    LiveTakeRender,
 }
 
 impl MediaKind {

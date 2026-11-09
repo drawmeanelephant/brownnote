@@ -41,6 +41,15 @@ pub enum ScheduledAction {
     NoteOff {
         id: EventId,
     },
+    /// One retained stereo take clip (two mono slots). Not a pad hit: no pad
+    /// identity, no choke group, no meter.
+    Clip {
+        id: EventId,
+        left: usize,
+        right: usize,
+        velocity: f32,
+        gain: f32,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -294,6 +303,9 @@ impl ScheduleReceiver {
             if matches!(self.pending[i], Some(ScheduledEvent {
                 action: ScheduledAction::NoteOn { trigger: Trigger { slot: s, .. }, .. }, ..
             }) if s == slot)
+                || matches!(self.pending[i], Some(ScheduledEvent {
+                    action: ScheduledAction::Clip { left, right, .. }, ..
+                }) if left == slot || right == slot)
             {
                 self.remove(i);
                 self.shared.cancelled.fetch_add(1, Relaxed);

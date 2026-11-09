@@ -225,6 +225,9 @@ pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if instrument::on_key(s, event, tx) {
         return true;
     }
+    if live::on_key(s, event, tx) {
+        return true;
+    }
     if media::controls::on_key(s, event, tx) {
         return true;
     }
@@ -281,6 +284,9 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let midi = s.midi.clone();
     let midi_changed = midi::poll(s, &midi);
     let live_changed = live::poll(s);
+    if live::wants_wake(s) {
+        tx.wake_after(Duration::from_millis(10));
+    }
     let edit_changed = edit::poll(s, edit_access);
     s.output.advance(elapsed);
     let transport_changed = transport::poll(s);

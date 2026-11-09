@@ -63,7 +63,7 @@ fn state() -> (State, Calls) {
     s.devices.discover = Rc::new(|| Ok(discovery()));
     let calls = Rc::new(RefCell::new(Vec::new()));
     let recorded = calls.clone();
-    s.devices.open = Rc::new(move |_, selection| {
+    s.devices.open = Rc::new(move |_, selection, _| {
         recorded.borrow_mut().push(selection.clone());
         Err("Fixture output disconnected".into())
     });
@@ -225,7 +225,7 @@ fn loss_while_voices_run_stops_them_and_preserves_prune_and_master_choke_state()
 fn partial_success_never_claims_running_and_repeated_apply_is_not_queued_twice() {
     let (mut s, calls) = state();
     let recorded = calls.clone();
-    s.devices.open = Rc::new(move |slots, selection| {
+    s.devices.open = Rc::new(move |slots, selection, _| {
         recorded.borrow_mut().push(selection.clone());
         Ok(Output::silent_selected(
             slots,

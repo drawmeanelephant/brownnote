@@ -23,7 +23,8 @@ pub struct Discovery {
 }
 
 pub type DiscoverFn = Rc<dyn Fn() -> Result<Discovery, String>>;
-pub type OpenFn = Rc<dyn Fn(Slots, &OutputSelection) -> Result<Output, String>>;
+pub type OpenFn =
+    Rc<dyn Fn(Slots, &OutputSelection, &mut super::live::Live) -> Result<Output, String>>;
 
 enum Request {
     Queued(OutputSelection),
@@ -62,7 +63,7 @@ impl Devices {
             preference_error: None,
             notice: None,
             discover: Rc::new(|| Err("Audio is disabled for this session".into())),
-            open: Rc::new(|_, _| Err("Audio is disabled for this session".into())),
+            open: Rc::new(|_, _, _| Err("Audio is disabled for this session".into())),
             root: None,
             enabled: false,
             refresh: false,
@@ -88,8 +89,13 @@ impl Devices {
                 })
                 .map_err(|error| error.to_string())
         });
-        state.open = Rc::new(|slots, selection| {
-            Output::open_selected(slots, selection).map_err(|error| error.to_string())
+        state.open = Rc::new(|slots, selection, live| {
+            Output::open_selected_with_live(slots, selection, |rate, buffer| {
+                let voice = live.mount_current(rate, buffer);
+                let note = live.status_note();
+                (voice, note)
+            })
+            .map_err(|error| error.to_string())
         });
         match root {
             Ok(root) => {
@@ -117,6 +123,11 @@ impl Devices {
 
     pub fn busy(&self) -> bool {
         self.request.is_some()
+    }
+
+    /// Whether this session owns a real audio device seam (interactive only).
+    pub fn enabled(&self) -> bool {
+        self.enabled
     }
 
     pub fn set_draft(&mut self, selection: OutputSelection) {
@@ -209,6 +220,15 @@ pub fn apply(s: &mut State) {
 
 pub fn retry(s: &mut State) {
     if !s.devices.busy() {
+        s.devices.error = None;
+        s.devices.request = Some(Request::Queued(s.output.selection().clone()));
+    }
+}
+
+/// Reopen the remembered output after a live-instrument change (D16). The
+/// voice and helper are rebuilt at the new stream's real rate and buffer.
+pub fn reopen(s: &mut State) {
+    if s.devices.enabled() && !s.devices.busy() {
         s.devices.error = None;
         s.devices.request = Some(Request::Queued(s.output.selection().clone()));
     }
@@ -315,7 +335,7 @@ pub fn scene(s: &mut State, kind: SceneKind) {
         }],
     });
     s.devices.discover = Rc::new(|| Err("Scene discovery is disabled".into()));
-    s.devices.open = Rc::new(|_, _| Err("Scene output is silent".into()));
+    s.devices.open = Rc::new(|_, _, _| Err("Scene output is silent".into()));
     match kind {
         SceneKind::Selection => s.devices.select_device(Some(id)),
         SceneKind::Missing => {

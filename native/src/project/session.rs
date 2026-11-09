@@ -1,9 +1,10 @@
 //! Application transactions. The worker owns I/O/decode; callers own the final swap.
 use super::{
-    Asset, AssetId, AssetRef, Document, MediaKind, PAD_COUNT, Pad, PadId,
+    Asset, AssetId, AssetRef, Document, LiveInstrumentDocument, MediaKind, PAD_COUNT, Pad, PadId,
     recovery::{OpenChoice, PreparedProject, RecoveryOptions},
     store::{GenerationId, SaveFailure, SaveReceipt, Store, StoreError},
 };
+use crate::performance::TakeId;
 use crate::{
     assets::{AssetRegistry, ChokeIdentity},
     edit::{EditModel, EditsDocument},
@@ -11,6 +12,7 @@ use crate::{
     import::{Imported, MediaPublisher, ProjectMedia, SessionMedia},
     instrument::{Font, InstrumentDocument, InstrumentError, RenderDocument, RenderKey},
     kit::{KIT_SECONDS, decode_wav_max, waveform},
+    live_audio,
     midi::{input::MappingsDocument, mapping::Mappings},
     output::Output,
     pedals::render::Chain,
@@ -33,7 +35,7 @@ pub enum Error {
     Busy,
     WorkerStopped,
     Store(StoreError),
-    Save(SaveFailure),
+    Save(Box<SaveFailure>),
     Media,
     Decode(AssetId, String),
     Registry,
@@ -93,6 +95,18 @@ pub struct Freeze {
 
 /// More distinct notes than this are saved without renders for the rest.
 pub const MAX_RENDERS: usize = 1024;
+
+/// The two mono mixer slots holding one retained live take's stereo audio.
+/// The slots are owned project media, not pad assignments; replay plays them
+/// as one clip so the take still sounds after the plugin is gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LiveTakeSlots {
+    pub asset: AssetId,
+    pub left: usize,
+    pub right: usize,
+    pub rate: u32,
+    pub frames: u64,
+}
 
 impl Snapshot {
     pub fn capture(
@@ -168,6 +182,19 @@ impl Snapshot {
         }
         self.document.instrument = Some(document);
         self.freeze = Some(Freeze { font, keys, cache });
+        self.document
+            .validate()
+            .map_err(|error| Error::Store(StoreError::Document(error)))?;
+        Ok(self)
+    }
+
+    /// Add the live instrument, its stable identity and every retained take
+    /// clip it played into. A disabled record still keeps both.
+    pub fn with_live_instrument(mut self, document: LiveInstrumentDocument) -> Result<Self, Error> {
+        for take in &document.takes {
+            self.add_asset(take.asset, MediaKind::LiveTakeRender)?;
+        }
+        self.document.live_instrument = Some(document);
         self.document
             .validate()
             .map_err(|error| Error::Store(StoreError::Document(error)))?;
@@ -264,6 +291,10 @@ pub struct Prepared {
     pub media: Arc<SessionMedia>,
     /// The saved instrument and whether this build could prepare its source.
     pub instrument: Option<(InstrumentDocument, Result<Font, InstrumentError>)>,
+    /// The saved live instrument, whether or not this machine can load it.
+    pub live: Option<LiveInstrumentDocument>,
+    /// Retained live take audio, already decoded into unassigned mixer slots.
+    pub live_takes: BTreeMap<TakeId, LiveTakeSlots>,
 }
 
 impl Prepared {
@@ -277,13 +308,16 @@ impl Prepared {
         let takes = document
             .takes()
             .map_err(|error| Error::Store(StoreError::Document(error)))?;
-        if document
+        let pad_assets = document
             .assets
             .iter()
             .filter(|asset| asset.kind.is_pad_audio())
-            .count()
-            > SLOTS
-        {
+            .count();
+        let live_takes_saved = document
+            .live_instrument
+            .as_ref()
+            .map_or(0, |live| live.takes.len());
+        if pad_assets > SLOTS || pad_assets + live_takes_saved * 2 > SLOTS {
             return Err(Error::Registry);
         }
         let media = Arc::new(SessionMedia::default());
@@ -322,6 +356,56 @@ impl Prepared {
                 label,
             });
         }
+        // Retained live takes decode to two mono channels per take. Their
+        // slots stay unassigned (External), so no pad or import can take them.
+        let mut live_takes = BTreeMap::new();
+        if let Some(live) = &document.live_instrument {
+            for (index, take) in live.takes.iter().enumerate() {
+                let encoded = bytes.get(&take.asset).ok_or(Error::Media)?;
+                let clip = live_audio::decode(encoded, encoded.len() as u64 / 8 + 1)
+                    .map_err(|reason| Error::Decode(take.asset, reason))?;
+                if clip.rate != take.rate || clip.frames != take.frames {
+                    return Err(Error::Decode(
+                        take.asset,
+                        format!(
+                            "retained take is {} frames at {} Hz but the document says {} at {} Hz",
+                            clip.frames, clip.rate, take.frames, take.rate
+                        ),
+                    ));
+                }
+                media
+                    .publish(&AssetRef::of(encoded), encoded)
+                    .map_err(|_| Error::Media)?;
+                let left = pad_assets + index * 2;
+                let right = left + 1;
+                slots.set(
+                    left,
+                    Some(crate::engine::Sample {
+                        data: clip.left.clone(),
+                        rate: clip.rate,
+                    }),
+                );
+                slots.set(
+                    right,
+                    Some(crate::engine::Sample {
+                        data: clip.right.clone(),
+                        rate: clip.rate,
+                    }),
+                );
+                if let Some(id) = take.id() {
+                    live_takes.insert(
+                        id,
+                        LiveTakeSlots {
+                            asset: take.asset,
+                            left,
+                            right,
+                            rate: clip.rate,
+                            frames: clip.frames,
+                        },
+                    );
+                }
+            }
+        }
         let mut registry = AssetRegistry::new(slots);
         for (slot, asset) in imported.into_iter().enumerate() {
             registry
@@ -348,6 +432,7 @@ impl Prepared {
                 .and_then(|source| Font::prepare(source.as_ref(), Some(instrument.preset())));
             (instrument, font)
         });
+        let live = document.live_instrument.clone();
         Ok(Self {
             document,
             mappings,
@@ -356,6 +441,8 @@ impl Prepared {
             registry,
             media,
             instrument,
+            live,
+            live_takes,
         })
     }
 
@@ -472,7 +559,7 @@ fn execute(request: Request) -> Result<Completion, Error> {
             store
                 .save(&snapshot.document, &[])
                 .map(Completion::Saved)
-                .map_err(Error::Save)
+                .map_err(|error| Error::Save(Box::new(error)))
         }
         Request::Open { root, choice } => {
             let project = Store::new(root).open(choice).map_err(Error::Store)?;

@@ -2,6 +2,7 @@
 //!
 //! D3/D4/D8: project.json + media/<sha256>.wav; required renders are retained.
 //! The v1 kit boundary remains provisional until the #104 contract lands.
+pub mod live;
 pub mod media;
 pub mod plugin;
 pub mod recovery;
@@ -18,6 +19,7 @@ use crate::{
     pedals::render::{Chain, MAX_STAGES, Stage},
     takes::{Takes, TakesDocument, TakesDocumentError},
 };
+pub use live::{LiveInstrumentDocument, LiveTakeDocument};
 pub use media::{Asset, AssetId, AssetRef, MediaKind};
 pub use plugin::PluginChain;
 use serde::{Deserialize, Serialize};
@@ -118,6 +120,11 @@ pub struct Document {
     /// retained per-note renders; absent means none was loaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instrument: Option<InstrumentDocument>,
+    /// The one live CLAP instrument (#112): stable identity, opaque state, its
+    /// machine location as a hint, and the retained audio of takes it played
+    /// into; absent means this project has no live instrument.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_instrument: Option<LiveInstrumentDocument>,
 }
 
 impl Default for Document {
@@ -132,6 +139,7 @@ impl Default for Document {
             takes: None,
             edits: None,
             instrument: None,
+            live_instrument: None,
         }
     }
 }
@@ -158,6 +166,7 @@ pub enum DocumentError {
     Takes(Box<TakesDocumentError>),
     Edits(Box<EditsDocumentError>),
     Instrument(instrument::DocumentError),
+    LiveInstrument(live::LiveDocumentError),
 }
 
 impl fmt::Display for DocumentError {
@@ -252,6 +261,12 @@ impl Document {
             self.require_asset(instrument.source, MediaKind::InstrumentSource)?;
             for render in &instrument.renders {
                 self.require_asset(render.asset, MediaKind::InstrumentRender)?;
+            }
+        }
+        if let Some(live) = &self.live_instrument {
+            live.validate().map_err(DocumentError::LiveInstrument)?;
+            for take in &live.takes {
+                self.require_asset(take.asset, MediaKind::LiveTakeRender)?;
             }
         }
         for (index, pad) in self.pads.iter().enumerate() {
