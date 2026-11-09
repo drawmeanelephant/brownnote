@@ -2,6 +2,11 @@
 //!
 //! Wire channels are zero-based 0..15, preserved without reserving channel 10
 //! or remapping pads to drums. Only InstrumentNotes parts enter the SMF.
+//! LiveInstrumentNotes parts stay out on purpose: a plain SMF track cannot
+//! carry the plugin identity, so writing one would tell a destination to sound
+//! those notes with whatever instrument it has, which is a claim the bundle
+//! cannot make. Their notes live in the manifest; their take's retained audio
+//! is the audible fallback.
 //! Onsets and absolute ends round independently to nearest tick, ties later.
 //! Thus onset/end error is <= half a tick and duration error <= one tick.
 //! Gates rounding to zero get one tick (also <= one tick duration error).

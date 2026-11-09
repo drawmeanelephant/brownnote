@@ -10,12 +10,14 @@ use brownnote_native::{
             PartEntry, PartId, PartKind, TimeOrigin, Timing,
         },
     },
+    pedals::offline::{Backend, Hash256, Plugin, Stage},
     performance::{
         Channel, InstrumentId, LoopBars, NoteKey, OriginalTime, Pitch, SourceId, TakeId, Target,
         Tempo, Velocity,
     },
     project::{
         self, Asset, AssetRef, Document, MediaKind, PadId, SampleAssignment,
+        live::{LiveInstrumentDocument, LiveTakeDocument},
         store::{MediaSource, Store},
     },
     takes::{PassOptions, Takes},
@@ -624,6 +626,111 @@ fn writer_bundle(root: &std::path::Path) -> Result<PathBuf, Box<dyn Error>> {
     Ok(bundle)
 }
 
+/// A bundle written by the real export path for a project whose take was
+/// played through a live CLAP instrument: the retained take audio plus that
+/// take's notes, pinned to the plugin identity.
+fn live_take_bundle(root: &std::path::Path) -> Result<(PathBuf, Plugin), Box<dyn Error>> {
+    let take: Vec<f32> = (0..2_400)
+        .flat_map(|frame| {
+            let value = 0.3 * (frame as f32 / 48_000.0 * 300.0 * std::f32::consts::TAU).sin();
+            [value, -value]
+        })
+        .collect();
+    let audio = float_wav(2, &take)?;
+    let id = project::AssetId::of(&audio);
+    let plugin = Plugin {
+        backend: Backend::Clap,
+        id: "org.brownnote.fixture.live".into(),
+        artifact: Hash256::of(b"fixture live bundle"),
+        abi: "clap-1.2".into(),
+        version: "0.4.0".into(),
+    };
+    let stage = Stage {
+        plugin: plugin.clone(),
+        location: PathBuf::from("/machine/never-installed.clap"),
+        params: Vec::new(),
+        state: Some(vec![1, 2, 3].into()),
+    };
+    let mut live = LiveInstrumentDocument::from_stage(&stage, "Fixture Live".into(), true);
+    live.takes.push(LiveTakeDocument {
+        take: "12".into(),
+        asset: id,
+        rate: 48_000,
+        frames: 2_400,
+    });
+    let document = Document {
+        assets: vec![Asset {
+            reference: AssetRef::of(&audio),
+            kind: MediaKind::LiveTakeRender,
+        }],
+        live_instrument: Some(live),
+        ..Document::default()
+    };
+    let project_dir = root.join("live project");
+    let originals = root.join("live original media");
+    fs::create_dir_all(&originals)?;
+    let path = originals.join("take.wav");
+    fs::write(&path, &audio)?;
+    Store::new(project_dir.clone())
+        .save(&document, &[MediaSource { id, path }])
+        .map_err(debug)?;
+    fs::remove_dir_all(&originals)?;
+
+    let key = |channel, pitch| -> Result<NoteKey, Box<dyn Error>> {
+        Ok(NoteKey {
+            source: SourceId(11),
+            channel: Channel::try_from(channel).map_err(debug)?,
+            pitch: Pitch::try_from(pitch).map_err(debug)?,
+        })
+    };
+    let mut takes = Takes::new(LoopBars::try_from(4).map_err(debug)?, TakeId(12));
+    takes
+        .set_tempo(Tempo::try_from(60_000).map_err(debug)?)
+        .map_err(debug)?;
+    let pass = takes.arm(PassOptions::default()).map_err(debug)?;
+    takes.start(pass).map_err(debug)?;
+    let ms = 1_000_000;
+    for (channel, pitch, velocity, on, off) in [
+        (0, 60, 100, 200 * ms, 300 * ms),
+        (0, 64, 90, 500 * ms, 800 * ms),
+    ] {
+        takes
+            .note_on(
+                pass,
+                Target::Instrument(InstrumentId(1)),
+                key(channel, pitch)?,
+                Velocity::try_from(velocity).map_err(debug)?,
+                OriginalTime::from_nanos(on),
+            )
+            .map_err(debug)?;
+        takes
+            .note_off(pass, key(channel, pitch)?, OriginalTime::from_nanos(off))
+            .map_err(debug)?;
+    }
+    takes.finish(pass).map_err(debug)?;
+    takes
+        .set_tempo(Tempo::try_from(120_000).map_err(debug)?)
+        .map_err(debug)?;
+    let bundle = root.join("live writer bundle");
+    adapter::write_saved_project_bundle(
+        &mut SystemWriter,
+        &BundleRequest {
+            source_root: project_dir,
+            destination: bundle.clone(),
+            origin: TimeOrigin { nanos: 0 },
+            timing: Timing {
+                tempo_milli_bpm: 120_000,
+                sample_rate_hz: 48_000,
+            },
+        },
+        &takes,
+        &EditModel::default(),
+        &BTreeMap::new(),
+    )
+    .map_err(debug)?;
+    Ok((bundle, plugin))
+}
+
 /// Independent expectations at 48 kHz / 120 BPM / 960 PPQ (1 s = 1,920 ticks).
 fn assert_writer_bundle_report(report: &Report) {
     let mut audio: Vec<_> = report.audio.iter().map(|c| (c.start, c.length)).collect();
@@ -694,6 +801,55 @@ fn real_writer_bundle_imports_every_effective_hit_and_note() -> TestResult {
         fs::read(bundle.join(&midi.path))?
     );
     assert_eq!(report.bundle_losses, manifest.losses);
+    Ok(())
+}
+
+#[test]
+fn unavailable_live_plugin_is_reported_and_the_retained_take_still_converts() -> TestResult {
+    let fixture = Fixture::new()?;
+    let (bundle, plugin) = live_take_bundle(&fixture.root)?;
+    let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
+    let mut request = fixture.request.clone();
+    request.bundle = bundle.clone();
+    let report = convert(&request)?;
+    let part = manifest
+        .parts
+        .iter()
+        .find(|part| matches!(part.kind, PartKind::LiveInstrumentNotes { .. }))
+        .ok_or("bundle without the live take's notes")?;
+    let PartKind::LiveInstrumentNotes { plugin: identity } = &part.kind else {
+        unreachable!()
+    };
+    assert_eq!(
+        (identity.id.as_str(), identity.version.as_str()),
+        (plugin.id.as_str(), plugin.version.as_str())
+    );
+    // A destination that cannot load the plugin names it instead of dropping
+    // the notes or pretending the sampled instrument played them.
+    let record = report
+        .records
+        .iter()
+        .find(|record| record.part == Some(part.id) && record.kind == "unsupported")
+        .ok_or("unavailable plugin mapping was not reported")?;
+    assert!(record.detail.contains(&plugin.id), "{}", record.detail);
+    assert!(record.detail.contains(&plugin.version), "{}", record.detail);
+    assert!(record.detail.contains(&identity.artifact[..12]));
+    assert!(record.detail.contains("2 live instrument note(s)"));
+    assert!(record.detail.contains("retained audio is the fallback"));
+    // Never a sampler/MIDI guess: no instrument track claims those notes.
+    assert!(report.midi.is_empty());
+    // The retained take audio still exports and is imported as its own clip.
+    assert_eq!(report.audio.len(), 1);
+    assert_eq!((report.audio[0].start, report.audio[0].length), (0, 2_400));
+    assert!(report.records.iter().any(|record| {
+        record
+            .detail
+            .contains("Independent full-length audio clip retained")
+    }));
+    // Identity, not a machine path, even though the plugin is not installed.
+    let text = serde_json::to_string(&report)?;
+    assert!(!text.contains("/machine/"), "{text}");
+    assert!(!text.contains(&*fixture.root.to_string_lossy()));
     Ok(())
 }
 

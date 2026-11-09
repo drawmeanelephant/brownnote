@@ -15,7 +15,7 @@ use super::{
     },
     manifest::{
         AssetEntry, AssetId, AssetKind, EventEntry, EventId, LossRecord, MANIFEST_NAME, MEDIA_DIR,
-        Manifest, ManifestError, PartEntry, PartKind, TimeOrigin, Timing,
+        Manifest, ManifestError, PartEntry, PartKind, PluginIdentity, TimeOrigin, Timing,
     },
     midi::{self, MidiError},
 };
@@ -212,6 +212,15 @@ fn part_kind(kind: &FixturePartKind) -> PartKind {
             instrument: *instrument,
         },
         FixturePartKind::SampleClips { source } => PartKind::SampleClips { source: *source },
+        FixturePartKind::LiveInstrumentNotes { plugin, .. } => PartKind::LiveInstrumentNotes {
+            plugin: PluginIdentity {
+                backend: plugin.backend.clone(),
+                id: plugin.id.clone(),
+                artifact: plugin.artifact.clone(),
+                abi: plugin.abi.clone(),
+                version: plugin.version.clone(),
+            },
+        },
     }
 }
 
@@ -274,6 +283,13 @@ pub fn build_manifest(
                     FixturePartKind::InstrumentNotes { instrument },
                     FixtureTarget::Instrument(target),
                 ) => *instrument == target,
+                // A live take's notes are not the sampled instrument: they join
+                // their part by the take identity every event already carries,
+                // and only if they target an instrument at all.
+                (
+                    FixturePartKind::LiveInstrumentNotes { take, .. },
+                    FixtureTarget::Instrument(_),
+                ) => event.id.take == *take,
                 _ => false,
             };
             if !matches_part {

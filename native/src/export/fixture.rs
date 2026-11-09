@@ -43,6 +43,18 @@ pub enum FixtureTarget {
     Instrument(u128),
 }
 
+/// The external plugin a live take was recorded through: identity only. The
+/// artifact is the SHA-256 of the loaded binary as lowercase hex, never a
+/// machine path, so a bundle can name a plugin without claiming to load it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FixturePluginIdentity {
+    pub backend: String,
+    pub id: String,
+    pub artifact: String,
+    pub abi: String,
+    pub version: String,
+}
+
 /// Mirror of the #107 effective edit view: the exported onset may differ from
 /// the captured original; the difference is recorded as a conversion loss.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,11 +92,24 @@ pub struct FixtureTake {
 }
 
 /// Mirror of the #107 part grouping: what a bundle part (track) carries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FixturePartKind {
-    PadClips { pad: u8 },
-    InstrumentNotes { instrument: u128 },
-    SampleClips { source: AssetId },
+    PadClips {
+        pad: u8,
+    },
+    InstrumentNotes {
+        instrument: u128,
+    },
+    SampleClips {
+        source: AssetId,
+    },
+    /// One live take's editable notes, pinned to the external plugin that
+    /// played them instead of to the sampled-instrument ID. The take ID joins
+    /// these events to their retained audio part.
+    LiveInstrumentNotes {
+        take: u128,
+        plugin: FixturePluginIdentity,
+    },
 }
 
 /// A bundle part and the stable event IDs it renders.

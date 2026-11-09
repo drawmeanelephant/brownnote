@@ -13,7 +13,7 @@ use brownnote_native::export::{
     },
     manifest::{
         AssetId, AudioRole, EventId, LossRecord, MANIFEST_FORMAT_VERSION, MANIFEST_NAME, MEDIA_DIR,
-        Manifest, ManifestError, PartId, TimeOrigin, Timing,
+        Manifest, ManifestError, PartEntry, PartId, PartKind, PluginIdentity, TimeOrigin, Timing,
     },
     midi,
 };
@@ -665,6 +665,89 @@ fn manifest_version_round_trip_rejects_unknown_and_newer_versions() {
         Manifest::decode(&serde_json::to_vec(&value).unwrap()),
         Err(ManifestError::MalformedJson)
     ));
+}
+
+#[test]
+fn live_part_identity_is_a_versioned_checked_record() {
+    let fixture = two_part_fixture();
+    let manifest = bundle::build_manifest(
+        &request(Path::new(SOURCE_ROOT), Path::new("/out/identity")),
+        &fixture.export,
+    )
+    .unwrap();
+    // The part kinds written before this slice still read at their version.
+    let mut previous: serde_json::Value =
+        serde_json::from_slice(&manifest.encode().unwrap()).unwrap();
+    previous["version"] = serde_json::json!(2);
+    assert_eq!(
+        Manifest::decode(&serde_json::to_vec(&previous).unwrap())
+            .unwrap()
+            .version,
+        2
+    );
+
+    let identity = PluginIdentity {
+        backend: "clap".into(),
+        id: "org.brownnote.fixture.instrument".into(),
+        artifact: AssetId::of(b"fixture identity").to_string(),
+        abi: "clap-1.2".into(),
+        version: "0.4.0".into(),
+    };
+    let mut live = Manifest::new(
+        TimeOrigin { nanos: 0 },
+        Timing {
+            tempo_milli_bpm: 116_000,
+            sample_rate_hz: 48_000,
+        },
+    );
+    live.parts.push(PartEntry {
+        id: PartId(9),
+        kind: PartKind::LiveInstrumentNotes {
+            plugin: identity.clone(),
+        },
+    });
+    assert_eq!(live.encode(), Ok(serde_json::to_vec_pretty(&live).unwrap()));
+    assert!(
+        identity
+            .describe()
+            .contains("org.brownnote.fixture.instrument")
+    );
+    assert!(identity.describe().contains(&identity.artifact[..12]));
+
+    // An identity a destination could not act on is refused, never written.
+    for broken in [
+        PluginIdentity {
+            artifact: "not-a-hash".into(),
+            ..identity.clone()
+        },
+        PluginIdentity {
+            artifact: identity.artifact.to_uppercase(),
+            ..identity.clone()
+        },
+        PluginIdentity {
+            id: String::new(),
+            ..identity.clone()
+        },
+        PluginIdentity {
+            version: "0.4.0\npath".into(),
+            ..identity.clone()
+        },
+        PluginIdentity {
+            abi: "x".repeat(513),
+            ..identity.clone()
+        },
+    ] {
+        let mut bad = live.clone();
+        bad.parts[0].kind = PartKind::LiveInstrumentNotes { plugin: broken };
+        assert_eq!(
+            bad.validate(),
+            Err(ManifestError::InvalidPluginIdentity(PartId(9)))
+        );
+        assert_eq!(
+            bad.encode(),
+            Err(ManifestError::InvalidPluginIdentity(PartId(9)))
+        );
+    }
 }
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1871,5 +1954,265 @@ fn live_instrument_take_exports_its_recorded_audio_and_honest_identity() {
     assert!(detail.contains(&plugin.version));
     assert!(!detail.contains("/machine/fixture.clap"));
     assert!(detail.contains("not editable plugin state"));
+    fs::remove_dir_all(base).unwrap();
+}
+
+/// The take was played at 60 BPM and the project now runs at 120 BPM, so the
+/// project's tempo is twice the recording tempo and every wall-clock position
+/// and duration below is halved by hand from the take fixture instead of being
+/// read back from the exporter's own output.
+const LIVE_RECORDING_MILLI_BPM: u32 = 60_000;
+const LIVE_PROJECT_MILLI_BPM: u32 = 120_000;
+
+#[test]
+fn live_take_notes_export_with_the_plugin_identity_and_retained_audio() {
+    let base = temporary("live-notes");
+    fs::create_dir_all(&base).unwrap();
+    let cache = base.join("cache");
+    fs::create_dir_all(&cache).unwrap();
+    let project = base.join("project");
+    let samples: Vec<f32> = (0..4_800)
+        .flat_map(|frame| {
+            let value = (frame as f32 / 48_000.0 * 220.0 * std::f32::consts::TAU).sin() * 0.25;
+            [value, -value]
+        })
+        .collect();
+    let audio = encode_fixture(48_000, 2, &samples);
+    let asset = AssetId::of(&audio);
+    let project_asset = project::AssetId::of(&audio);
+    let path = cache.join("live-notes.wav");
+    fs::write(&path, &audio).unwrap();
+    let plugin = Plugin {
+        backend: Backend::Clap,
+        id: "org.brownnote.fixture.instrument".into(),
+        artifact: brownnote_native::pedals::offline::Hash256::of(b"fixture notes bundle"),
+        abi: "clap-1.2".into(),
+        version: "0.4.0".into(),
+    };
+    let stage = Stage {
+        plugin: plugin.clone(),
+        location: PathBuf::from("/machine/fixture-notes.clap"),
+        params: Vec::new(),
+        state: Some(vec![7, 7].into()),
+    };
+    let mut live = LiveInstrumentDocument::from_stage(&stage, "Fixture Instrument".into(), true);
+    live.takes.push(LiveTakeDocument {
+        take: "12".into(),
+        asset: project_asset,
+        rate: 48_000,
+        frames: 2_400,
+    });
+    let document = Document {
+        assets: vec![Asset {
+            reference: AssetRef::of(&audio),
+            kind: MediaKind::LiveTakeRender,
+        }],
+        live_instrument: Some(live),
+        ..Document::default()
+    };
+    document.validate().unwrap();
+    Store::new(project.clone())
+        .save(
+            &document,
+            &[MediaSource {
+                id: project_asset,
+                path: path.clone(),
+            }],
+        )
+        .unwrap();
+    fs::remove_dir_all(&cache).unwrap();
+
+    // The take the live instrument played into: two held notes, recorded at
+    // 60 BPM into take 12.
+    let mut takes = Takes::new(LoopBars::try_from(4).unwrap(), TakeId(12));
+    takes
+        .set_tempo(Tempo::try_from(LIVE_RECORDING_MILLI_BPM).unwrap())
+        .unwrap();
+    let take = takes.arm(PassOptions::default()).unwrap();
+    assert_eq!(take, TakeId(12));
+    takes.start(take).unwrap();
+    let key = |channel, pitch| NoteKey {
+        source: SourceId(31),
+        channel: Channel::try_from(channel).unwrap(),
+        pitch: Pitch::try_from(pitch).unwrap(),
+    };
+    let played = [
+        (0, 60, 100, 200_000_000_u64, 300_000_000_u64),
+        (1, 64, 90, 500_000_000, 800_000_000),
+    ];
+    for (channel, pitch, velocity, on, off) in played {
+        takes
+            .note_on(
+                take,
+                Target::Instrument(InstrumentId(1)),
+                key(channel, pitch),
+                Velocity::try_from(velocity).unwrap(),
+                OriginalTime::from_nanos(on),
+            )
+            .unwrap();
+        takes
+            .note_off(take, key(channel, pitch), OriginalTime::from_nanos(off))
+            .unwrap();
+    }
+    takes.finish(take).unwrap();
+    // The project moved on to 120 BPM after the take was recorded.
+    takes
+        .set_tempo(Tempo::try_from(LIVE_PROJECT_MILLI_BPM).unwrap())
+        .unwrap();
+
+    let destination = base.join("bundle");
+    let request = BundleRequest {
+        source_root: project.clone(),
+        destination: destination.clone(),
+        origin: TimeOrigin { nanos: ORIGIN },
+        timing: Timing {
+            tempo_milli_bpm: LIVE_PROJECT_MILLI_BPM,
+            sample_rate_hz: 48_000,
+        },
+    };
+    let edits = EditModel::default();
+    let receipt = adapter::write_saved_project_bundle(
+        &mut SystemWriter,
+        &request,
+        &takes,
+        &edits,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let bytes = fs::read(destination.join(MANIFEST_NAME)).unwrap();
+    let manifest = Manifest::decode(&bytes).unwrap();
+    assert_eq!(manifest, receipt.manifest);
+    assert_eq!(manifest.timing.tempo_milli_bpm, LIVE_PROJECT_MILLI_BPM);
+    // Two parts: the retained take audio, then that take's notes.
+    assert_eq!(receipt.manifest.parts.len(), 2);
+    assert_eq!(receipt.event_count, 3);
+
+    // The retained audio part is unchanged: same kind, one synthetic clip
+    // event, and the exact source WAV bytes.
+    let audio_part = manifest
+        .parts
+        .iter()
+        .find(|part| matches!(part.kind, PartKind::SampleClips { .. }))
+        .unwrap();
+    assert_eq!(audio_part.kind, PartKind::SampleClips { source: asset });
+    let audio_events: Vec<_> = manifest
+        .events
+        .iter()
+        .filter(|event| event.part == audio_part.id)
+        .collect();
+    assert_eq!(audio_events.len(), 1);
+    assert_eq!(
+        audio_events[0].id,
+        EventId {
+            take: 12,
+            sequence: u64::MAX
+        }
+    );
+    assert_eq!(audio_events[0].asset, Some(asset));
+    assert_eq!(audio_events[0].duration_nanos, 50_000_000);
+    let bundled = fs::read(destination.join(&manifest.asset(asset).unwrap().path)).unwrap();
+    assert_eq!(bundled, audio);
+
+    // The notes part names the external plugin identity, never the sampled
+    // instrument the note target happens to share.
+    assert!(
+        !manifest
+            .parts
+            .iter()
+            .any(|part| matches!(part.kind, PartKind::InstrumentNotes { .. })),
+        "live take notes must not become sampled-instrument notes"
+    );
+    let notes_part = manifest
+        .parts
+        .iter()
+        .find(|part| matches!(part.kind, PartKind::LiveInstrumentNotes { .. }))
+        .unwrap();
+    let PartKind::LiveInstrumentNotes { plugin: identity } = &notes_part.kind else {
+        unreachable!()
+    };
+    assert_eq!(identity.backend, "clap");
+    assert_eq!(identity.id, plugin.id);
+    assert_eq!(identity.artifact, plugin.artifact.to_string());
+    assert_eq!(identity.abi, plugin.abi);
+    assert_eq!(identity.version, plugin.version);
+
+    // Counts, positions, durations and controls, halved from the fixture because
+    // the take's 60 BPM recording tempo plays at the project's 120 BPM.
+    let mut notes: Vec<_> = manifest
+        .events
+        .iter()
+        .filter(|event| event.part == notes_part.id)
+        .map(|event| {
+            (
+                event.id,
+                event.start_nanos,
+                event.duration_nanos,
+                event.pitch,
+                event.channel,
+                event.velocity,
+                event.asset,
+            )
+        })
+        .collect();
+    notes.sort();
+    let take_events = |sequence| EventId { take: 12, sequence };
+    assert_eq!(
+        notes,
+        [
+            (
+                take_events(0),
+                100_000_000,
+                50_000_000,
+                Some(60),
+                Some(0),
+                Some(100),
+                None
+            ),
+            (
+                take_events(1),
+                250_000_000,
+                150_000_000,
+                Some(64),
+                Some(1),
+                Some(90),
+                None
+            ),
+        ]
+    );
+    // The take's own recording tempo, not the project's, timed those notes.
+    assert!(manifest.losses.iter().any(|loss| matches!(
+        loss,
+        LossRecord::ConversionLoss { event, detail }
+            if *event == take_events(0)
+                && detail.contains("original 200000000 ns at 60000 milli-BPM")
+    )));
+
+    // A destination with a plain SMF is not told these notes are the sampled
+    // instrument: the manifest carries them, notes.mid stays note-free.
+    let midi = manifest.midi.as_ref().unwrap();
+    assert!(midi.tracks.is_empty());
+    let (_, _, smf_notes) = read_smf(&fs::read(destination.join(&midi.path)).unwrap());
+    assert!(smf_notes.is_empty());
+
+    // Identity, never a machine path: the recall hint and the project root
+    // stay out of the manifest entirely.
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(!text.contains("/machine/fixture-notes.clap"));
+    assert!(!text.contains(project.to_str().unwrap()));
+    // The retained take is still the statement about the audio, now naming
+    // where the notes went and what a target that cannot load the plugin gets.
+    let loss = manifest
+        .losses
+        .iter()
+        .find(|loss| matches!(loss, LossRecord::BakedProcessing { asset: a, .. } if *a == asset))
+        .unwrap();
+    let LossRecord::BakedProcessing { detail, .. } = loss else {
+        unreachable!()
+    };
+    assert!(detail.contains(&plugin.id));
+    assert!(detail.contains("their own part"));
+    assert!(detail.contains("unsupported mapping"));
+    assert!(detail.contains("not editable plugin state"));
+    assert!(!detail.contains("/machine/fixture-notes.clap"));
     fs::remove_dir_all(base).unwrap();
 }
