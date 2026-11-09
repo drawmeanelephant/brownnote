@@ -6,10 +6,9 @@ export, or sound acknowledgement. Refs #106; the issue stays open.
 
 ## Public boundary
 
-The integrator must add exactly **`pub mod takes;`** to `native/src/lib.rs`.
-No dependency, State field, main module, UI, or engine wiring is needed for
-this pure slice. Until that export lands, the module is not part of the
-published library. The source-only check below does not prove otherwise.
+The library exports this model as **`brownnote_native::takes`**. No dependency,
+State field, main module, UI, or engine wiring is needed for this pure slice.
+The public integration test imports the real library, not a path bootstrap.
 
 - `Takes::new(loop_bars, first_take)` chooses a D11 loop before capture.
   `LoopBars` accepts only 1/2/4/8 bars in 4/4. The tempo starts at 116 BPM.
@@ -59,15 +58,13 @@ published library. The source-only check below does not prove otherwise.
 ## Verification
 
 Always use the swarm's shared whole-check lock, Cargo target and two jobs.
-Before export, run `python3 native/tests/check_takes_source.py`. It builds the
-real current performance library and checks this source module with its
-colocated behavioral tests and Clippy. It is deliberately labeled source-only,
-not public-library or application coverage.
-
-After adding the export, run:
+Run `python3 native/tests/check_takes.py`. It checks the actual exported
+library's fixture names, its public-caller test, and the full native gate.
+The former source-only harness has been removed. The equivalent commands are:
 
 ```sh
 cargo test --manifest-path native/Cargo.toml --lib takes::tests
+cargo test --manifest-path native/Cargo.toml --test takes
 make native-test
 ```
 
