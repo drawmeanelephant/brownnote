@@ -186,12 +186,16 @@ def list_tracks():
             if fn.startswith("."):
                 continue
             if fn.endswith(".wav"):
-                p = os.path.join(USER_DIR, fn)
+                try:
+                    p = _workspace_path(os.path.join(USER_DIR, fn))
+                except ValueError:
+                    continue
                 if not os.path.isfile(p):
                     continue
                 label = fn
                 try:
-                    with open(os.path.join(USER_DIR, fn[:-4] + ".json"),
+                    with open(_workspace_path(os.path.join(
+                            USER_DIR, fn[:-4] + ".json")),
                               "r", encoding="utf-8") as f:
                         label = json.load(f).get("name") or fn
                 except Exception:
@@ -216,14 +220,31 @@ PATCH_KEYS = {"v", "name", "seq", "desk", "pads", "key", "seed"}
 PAD_LABEL_RE = re.compile(r"[^<>]{0,64}")
 
 
+def _workspace_path(path):
+    """Reject paths outside ROOT and symlinks below the trusted workspace root."""
+    root = os.path.abspath(ROOT)
+    relative = os.path.relpath(os.path.abspath(path), root)
+    if relative == os.curdir:
+        return root
+    prefix = os.path.join(root, "")
+    current = root
+    for part in relative.split(os.sep):
+        current = os.path.abspath(os.path.join(current, part))
+        if not current.startswith(prefix):
+            raise ValueError("path outside studio workspace")
+        if os.path.islink(current):
+            raise ValueError("symlinked studio path")
+    return current
+
+
 def patch_path(name):
     """Validated patch name -> path inside build/patches/, else None."""
-    if not isinstance(name, str) or not PATCH_NAME_RE.match(name):
+    if not isinstance(name, str) or not PATCH_NAME_RE.fullmatch(name):
         return None
-    path = os.path.join(PATCHES_DIR, name + ".json")
-    if os.path.dirname(os.path.abspath(path)) != os.path.abspath(PATCHES_DIR):
+    try:
+        return _workspace_path(os.path.join(PATCHES_DIR, name + ".json"))
+    except ValueError:
         return None
-    return path
 
 
 def list_patches():
@@ -232,8 +253,8 @@ def list_patches():
         for fn in sorted(os.listdir(PATCHES_DIR)):
             if not fn.endswith(".json"):
                 continue
-            p = os.path.join(PATCHES_DIR, fn)
-            if os.path.isfile(p):
+            p = patch_path(fn[:-5])
+            if p is not None and os.path.isfile(p):
                 out.append({"name": fn[:-5], "mtime": os.path.getmtime(p)})
     return out
 
@@ -245,18 +266,7 @@ def save_patch(name, patch):
     patch = dict(patch)
     patch["v"] = 1
     patch["name"] = name
-    os.makedirs(PATCHES_DIR, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=PATCHES_DIR, prefix=".tmp-", suffix=".json")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps(patch, indent=2) + "\n")
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    _atomic_write(path, (json.dumps(patch, indent=2) + "\n").encode("utf-8"))
 
 
 def validate_patch_pads(pads):
@@ -304,35 +314,42 @@ def user_slug(name):
 
 def user_paths(name):
     """Validated sample name -> (wav, json) paths inside build/user/, else None."""
-    if not isinstance(name, str) or not SAMPLE_NAME_RE.match(name):
+    if not isinstance(name, str) or not SAMPLE_NAME_RE.fullmatch(name):
         return None
     slug = user_slug(name)
     if not slug:
         return None
-    wav = os.path.join(USER_DIR, slug + ".wav")
-    js = os.path.join(USER_DIR, slug + ".json")
-    if os.path.dirname(os.path.abspath(wav)) != os.path.abspath(USER_DIR):
+    try:
+        return (_workspace_path(os.path.join(USER_DIR, slug + ".wav")),
+                _workspace_path(os.path.join(USER_DIR, slug + ".json")))
+    except ValueError:
         return None
-    return wav, js
 
 
 def _stem_defs_in(path, flag):
     """Every <dir>/*.json stem def whose audio file still exists."""
     defs = []
+    try:
+        path = _workspace_path(path)
+    except ValueError:
+        return defs
     if os.path.isdir(path):
         for fn in sorted(os.listdir(path)):
             if not fn.endswith(".json"):
                 continue
             try:
-                with open(os.path.join(path, fn), "r",
+                with open(_workspace_path(os.path.join(path, fn)), "r",
                           encoding="utf-8") as f:
                     d = json.load(f)
             except Exception:
                 continue   # a corrupt def file shouldn't break /api/state
             if not (isinstance(d, dict) and d.get("id") and d.get("url")):
                 continue
-            if not os.path.isfile(
-                    os.path.join(ROOT, d["url"].lstrip("/"))):
+            try:
+                audio = _workspace_path(os.path.join(ROOT, d["url"].lstrip("/")))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if not os.path.isfile(audio):
                 continue   # the audio is gone — don't offer a dead stem
             d[flag] = True
             defs.append(d)
@@ -351,6 +368,7 @@ def stem_defs():
 
 
 def _atomic_write(path, data):
+    path = _workspace_path(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
     try:
@@ -367,6 +385,7 @@ def _atomic_write(path, data):
 
 def _atomic_copy(src, dst):
     """Same mkstemp+os.replace pattern as _atomic_write, for file data."""
+    dst = _workspace_path(dst)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dst), prefix=".tmp-")
     try:
@@ -532,6 +551,7 @@ def _decode_wav(path):
 def normalize_wav(src, dst):
     """Any readable PCM wav -> 44.1 kHz mono s16 at dst (linear interp).
     Raises ValueError for a 400 reply."""
+    src, dst = _workspace_path(src), _workspace_path(dst)
     rate, vals = _decode_wav(src)
     if not vals:
         raise ValueError("empty clip")
@@ -560,7 +580,7 @@ def normalize_wav(src, dst):
 
 def load_manifest():
     try:
-        with open(LIB_MANIFEST, "r", encoding="utf-8") as f:
+        with open(_workspace_path(LIB_MANIFEST), "r", encoding="utf-8") as f:
             m = json.load(f)
         if isinstance(m, dict) and isinstance(m.get("entries"), list):
             return m
@@ -618,10 +638,10 @@ def _scan_library():
 
     def probe(rel):
         """-> (stat, durationSec, loudness, conform) or None."""
-        p = os.path.join(ROOT, rel)
         try:
+            p = _workspace_path(os.path.join(ROOT, rel))
             st = os.stat(p)
-        except OSError:
+        except (OSError, ValueError):
             return None
         e = prev.get(rel)
         if e and e.get("mtime") == st.st_mtime \
@@ -653,7 +673,10 @@ def _scan_library():
                 continue
             if not fn.lower().endswith(".wav") or rel in claimed:
                 continue
-            p = os.path.join(ROOT, rel)
+            try:
+                p = _workspace_path(os.path.join(ROOT, rel))
+            except ValueError:
+                continue
             if not os.path.isfile(p):
                 continue   # a dir merely named like a WAV can't intake
             fmt = _wav_format(p)
@@ -706,7 +729,10 @@ def _scan_library():
         used_ids.add(sd["id"])
 
     for bucket, rel_dir, kind in LIB_BUCKETS:
-        d = os.path.join(ROOT, rel_dir)
+        try:
+            d = _workspace_path(os.path.join(ROOT, rel_dir))
+        except ValueError:
+            continue
         if not os.path.isdir(d):
             continue
         for fn in sorted(os.listdir(d)):
@@ -800,15 +826,15 @@ def _promote_entry(entry_id, name=None):
     rel = entry["file"]
     if not rel.lower().endswith(".wav"):
         raise ValueError("only WAV material promotes — transcode MP3s first")
-    src = os.path.join(ROOT, rel)
+    src = _workspace_path(os.path.join(ROOT, rel))
     if name is None:
         base = os.path.basename(rel).rsplit(".", 1)[0]
-        name = base if SAMPLE_NAME_RE.match(base) else lib_slug(base)
-    if not isinstance(name, str) or not SAMPLE_NAME_RE.match(name):
+        name = base if SAMPLE_NAME_RE.fullmatch(base) else lib_slug(base)
+    if not isinstance(name, str) or not SAMPLE_NAME_RE.fullmatch(name):
         raise ValueError("bad stem name (want [A-Za-z0-9 _-], 1-48 chars)")
 
     sid = f"lib-{lib_slug(name)}"
-    def_path = os.path.join(LIB_DIR, sid + ".json")
+    def_path = _workspace_path(os.path.join(LIB_DIR, sid + ".json"))
     if os.path.isfile(def_path):
         try:
             with open(def_path, "r", encoding="utf-8") as f:
@@ -862,13 +888,18 @@ def delete_stem(stem_id):
         return False
     with LIB_LOCK:
         for d in (USER_DIR, LIB_DIR):
+            try:
+                d = _workspace_path(d)
+            except ValueError:
+                continue
             if not os.path.isdir(d):
                 continue
             for fn in sorted(os.listdir(d)):
                 if not fn.endswith(".json"):
                     continue
-                p = os.path.join(d, fn)
                 try:
+                    p = _workspace_path(os.path.join(d, fn))
+                    wav = _workspace_path(os.path.join(d, fn[:-5] + ".wav"))
                     with open(p, "r", encoding="utf-8") as f:
                         doc = json.load(f)
                 except Exception:
@@ -882,7 +913,6 @@ def delete_stem(stem_id):
                     set(m.get("retired") or []) | {stem_id})
                 save_manifest(m)
                 os.unlink(p)
-                wav = os.path.join(os.path.dirname(p), fn[:-5] + ".wav")
                 if os.path.isfile(wav):
                     os.unlink(wav)
                 scan_library()   # drop the stale stem pointer from its entry
@@ -894,13 +924,15 @@ def intake_sample(name, body):
     """HTTP intake: a conforming WAV -> build/library/<slug>.wav, which
     the rescan below turns into a lib-* stem.  Raises ValueError for a
     400 reply, LibraryConflict for a 409."""
-    if not isinstance(name, str) or not SAMPLE_NAME_RE.match(name):
+    if not isinstance(name, str) or not SAMPLE_NAME_RE.fullmatch(name):
         raise ValueError("bad sample name (want [A-Za-z0-9 _-], 1-48 chars)")
     check_sample_wav(body)
     slug = lib_slug(user_slug(name))
     sid = f"lib-{slug}"
     wav_rel = f"build/library/{slug}.wav"
     with LIB_LOCK:
+        wav_path = _workspace_path(os.path.join(LIB_DIR, slug + ".wav"))
+        def_path = _workspace_path(os.path.join(LIB_DIR, sid + ".json"))
         # never let an intake overwrite the wav another stem owns — a
         # claimed <slug>.wav under a different id is a name collision
         for sd in stem_defs():
@@ -911,8 +943,7 @@ def intake_sample(name, body):
                     raise LibraryConflict(
                         f"{wav_rel} already backs stem '{sd['id']}' — "
                         "pick another name")
-        _atomic_write(os.path.join(LIB_DIR, slug + ".wav"), body)
-        def_path = os.path.join(LIB_DIR, sid + ".json")
+        _atomic_write(wav_path, body)
         if os.path.isfile(def_path):
             os.unlink(def_path)   # rewrite so trimSec tracks the new take
         m = load_manifest()
@@ -1646,7 +1677,13 @@ POST_CAPS = {
     "/api/library/promote": PATCH_MAX_BYTES,
     "/api/library/default": PATCH_MAX_BYTES,
 }
-PRESET_NAME_RE = re.compile(r"^[a-z0-9-]{1,32}$")
+# Values, not request strings, become positional arguments to presets.sh.
+RENDER_NAMES = {
+    "fx": {name: name for name in (
+        "doom", "cathedral", "machinegun", "swamp", "klon-crunch",
+        "cyber-laser", "dry")},
+    "song": {name: name for name in ("funk", "metal", "doom", "techno")},
+}
 # A Host :port must be ASCII digits — str.isdigit() also accepts
 # Unicode digits like '²' (#65)
 _PORT_RE = re.compile(r"[0-9]+")
@@ -2029,19 +2066,14 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
             if parsed.path == "/api/render-preset":
                 mode = payload.get("mode", "fx")
                 name = payload.get("name", "doom")
-                # #73: the --out path is built from `name` here, so the
-                # name is validated here too — presets.sh's picky case
-                # statement isn't the load wall anymore.
-                if not isinstance(name, str) \
-                        or not PRESET_NAME_RE.match(name):
-                    return self._send_json(400, {
-                        "ok": False,
-                        "error": "bad preset/genre name "
-                                 "(want [a-z0-9-], 1-32 chars)"})
                 if mode not in ("fx", "song"):
                     return self._send_json(400, {
                         "ok": False,
                         "error": "bad mode (want 'fx' or 'song')"})
+                if not isinstance(name, str) or name not in RENDER_NAMES[mode]:
+                    return self._send_json(400, {
+                        "ok": False, "error": "unknown preset/genre name"})
+                name = RENDER_NAMES[mode][name]
                 phrase = payload.get("phrase", "")
                 phrase = phrase.strip() if isinstance(phrase, str) else ""
                 bpm = str(int(max(40, min(240,
@@ -2056,11 +2088,11 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                     out_rel = f"build/presets/song_{name}.mp3"
                     cmd = [presets_sh, "song", name, "--bpm", bpm,
                            "--bars", bars, "--seed", seed,
-                           "--out", os.path.join(ROOT, out_rel)]
+                           "--out", _workspace_path(os.path.join(ROOT, out_rel))]
                 else:
                     out_rel = f"build/presets/fx_{name}.mp3"
                     cmd = [presets_sh, "fx", name, "--seed", seed,
-                           "--out", os.path.join(ROOT, out_rel)]
+                           "--out", _workspace_path(os.path.join(ROOT, out_rel))]
                     if phrase:
                         cmd += ["--phrase", phrase]
 
