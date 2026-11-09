@@ -1,0 +1,2711 @@
+[
+  {
+    "adapter_report": {
+      "soundcraft_commit": "04878f8fda885c95f8be5893bbfe4ea4e062a814",
+      "audio_clips": 4,
+      "midi_notes": 3,
+      "record_kinds": [
+        "boundary",
+        "fallback",
+        "unsupported"
+      ]
+    }
+  },
+  {
+    "launch": [
+      "SoundCraft",
+      "--no-audio",
+      "--control",
+      "0"
+    ],
+    "environment": {
+      "SOUNDCRAFT_NO_PREFS": "1",
+      "SOUNDCRAFT_CONFIG_DIR": "<RUN>/profile"
+    }
+  },
+  {
+    "method": "ui.key",
+    "params": {
+      "key": "Escape"
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {}
+  },
+  {
+    "method": "ui.inspect",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "audio_device": null,
+      "dialog": null,
+      "edit_layout": {
+        "content_h": 0.0,
+        "follow_hold": false,
+        "last_follow_to": null,
+        "last_scroll": 0,
+        "rows": [],
+        "scroll_y": 0.0,
+        "timeline": [
+          308.0,
+          169.0,
+          1354.0,
+          942.0
+        ],
+        "zoom_back": null
+      },
+      "frame_ms": 1.666666865348816,
+      "playing": false,
+      "position": 0,
+      "status": "",
+      "ui": {
+        "audio": {
+          "buffer_size": null,
+          "input": null,
+          "output": null,
+          "sample_rate": null,
+          "system": null
+        },
+        "audiosuite": null,
+        "configurations": [],
+        "docking": {
+          "hidden": [
+            [
+              "memory",
+              {
+                "anchor": null,
+                "floating": [
+                  160.0,
+                  120.0,
+                  480.0,
+                  280.0
+                ],
+                "group": null,
+                "placement": {
+                  "Tab": {
+                    "before": null
+                  }
+                },
+                "sibling": [],
+                "size": null,
+                "stack": null
+              }
+            ],
+            [
+              "history",
+              {
+                "anchor": null,
+                "floating": [
+                  680.0,
+                  120.0,
+                  260.0,
+                  300.0
+                ],
+                "group": null,
+                "placement": {
+                  "Tab": {
+                    "before": null
+                  }
+                },
+                "sibling": [],
+                "size": null,
+                "stack": null
+              }
+            ],
+            [
+              "midi",
+              {
+                "anchor": "canvas",
+                "floating": null,
+                "group": null,
+                "placement": {
+                  "Split": "Bottom"
+                },
+                "sibling": [
+                  "canvas"
+                ],
+                "size": {
+                  "FixedSecond": 346.0
+                },
+                "stack": null
+              }
+            ]
+          ],
+          "layout": {
+            "floating": [],
+            "root": {
+              "Split": {
+                "axis": "Horizontal",
+                "first": {
+                  "Dock": {
+                    "columns": [
+                      {
+                        "groups": [
+                          {
+                            "active": 0,
+                            "height": null,
+                            "minimized": false,
+                            "panels": [
+                              "tracks"
+                            ]
+                          }
+                        ],
+                        "iconic": false,
+                        "iconic_width": null,
+                        "width": 168.0
+                      }
+                    ],
+                    "side": "Start"
+                  }
+                },
+                "second": {
+                  "Split": {
+                    "axis": "Horizontal",
+                    "first": {
+                      "Tabs": {
+                        "active": 0,
+                        "panels": [
+                          "canvas"
+                        ]
+                      }
+                    },
+                    "second": {
+                      "Dock": {
+                        "columns": [
+                          {
+                            "groups": [
+                              {
+                                "active": 0,
+                                "height": null,
+                                "minimized": false,
+                                "panels": [
+                                  "clips"
+                                ]
+                              }
+                            ],
+                            "iconic": false,
+                            "iconic_width": null,
+                            "width": 230.0
+                          }
+                        ],
+                        "side": "End"
+                      }
+                    },
+                    "size": {
+                      "FixedSecond": 230.0
+                    }
+                  }
+                },
+                "size": {
+                  "FixedFirst": 168.0
+                }
+              }
+            }
+          },
+          "locked": false,
+          "saved": null,
+          "version": 2
+        },
+        "docking_version": 1,
+        "edit_views": [
+          "color"
+        ],
+        "mix_docking": {
+          "hidden": [],
+          "layout": {
+            "floating": [
+              {
+                "active": 0,
+                "id": 1,
+                "panels": [
+                  "memory"
+                ],
+                "rect": [
+                  160.0,
+                  120.0,
+                  480.0,
+                  280.0
+                ]
+              },
+              {
+                "active": 0,
+                "id": 2,
+                "panels": [
+                  "history"
+                ],
+                "rect": [
+                  680.0,
+                  120.0,
+                  260.0,
+                  300.0
+                ]
+              }
+            ],
+            "root": {
+              "Split": {
+                "axis": "Horizontal",
+                "first": {
+                  "Dock": {
+                    "columns": [
+                      {
+                        "groups": [
+                          {
+                            "active": 0,
+                            "height": null,
+                            "minimized": false,
+                            "panels": [
+                              "tracks"
+                            ]
+                          }
+                        ],
+                        "iconic": false,
+                        "iconic_width": null,
+                        "width": 168.0
+                      }
+                    ],
+                    "side": "Start"
+                  }
+                },
+                "second": {
+                  "Tabs": {
+                    "active": 0,
+                    "panels": [
+                      "canvas"
+                    ]
+                  }
+                },
+                "size": {
+                  "FixedFirst": 168.0
+                }
+              }
+            }
+          },
+          "locked": false,
+          "saved": null,
+          "version": 2
+        },
+        "mix_separate": false,
+        "mix_views": [
+          "inserts_ae",
+          "sends_ae",
+          "io",
+          "color"
+        ],
+        "narrow_mix": false,
+        "plugin_windows": [],
+        "preferences_page": "display",
+        "preferences_window_pos": null,
+        "recent_sessions": [],
+        "reduce_visual_effects": "never",
+        "show_about": false,
+        "show_audio_health": false,
+        "show_automation": false,
+        "show_beat_detective": false,
+        "show_big_counter": false,
+        "show_clip_effects": false,
+        "show_clip_list": true,
+        "show_color_palette": false,
+        "show_configurations": false,
+        "show_disk_usage": false,
+        "show_event_list": false,
+        "show_io_setup": false,
+        "show_memory_locations": false,
+        "show_metadata": false,
+        "show_midi_editor": false,
+        "show_midi_keyboard": false,
+        "show_midi_ops": false,
+        "show_playback_engine": false,
+        "show_preferences": false,
+        "show_rtp": false,
+        "show_score": false,
+        "show_search": false,
+        "show_session_info": false,
+        "show_shortcuts": false,
+        "show_system_usage": false,
+        "show_task_manager": false,
+        "show_tempo_ops": false,
+        "show_time_ops": false,
+        "show_tracks_list": true,
+        "show_transport": false,
+        "show_undo_history": false,
+        "show_universe": false,
+        "show_video": false,
+        "show_video_universe": false,
+        "show_workspace": false,
+        "status": "",
+        "theme": "dark",
+        "track_tint": 0.5,
+        "ui_scale": 1.0,
+        "undo_levels": 64,
+        "video_burn_in": false,
+        "window": "Edit",
+        "window_maximized": false,
+        "window_size": [
+          1600.0,
+          1000.0
+        ],
+        "workspace_dir": ""
+      },
+      "window_size": [
+        1600.0,
+        1000.0
+      ]
+    }
+  },
+  {
+    "method": "session.open",
+    "params": {
+      "path": "<RUN>/writer output/session.scraft"
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "missing": [],
+      "name": "session",
+      "tracks": 5
+    }
+  },
+  {
+    "method": "edit.move_clips",
+    "params": {
+      "clips": [
+        3
+      ],
+      "to": 7200
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "by": 2400,
+      "moved": 1
+    }
+  },
+  {
+    "method": "edit.select",
+    "params": {
+      "clips": [
+        6
+      ]
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "clips": [
+        6
+      ],
+      "selection": {
+        "end": 19440,
+        "start": 7440
+      },
+      "sources": [],
+      "tracks": [
+        5
+      ]
+    }
+  },
+  {
+    "method": "edit.clear",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "removed": 1
+    }
+  },
+  {
+    "method": "midi.notes",
+    "params": {
+      "clip": 14
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "notes": [
+        {
+          "channel": 0,
+          "length": 960,
+          "pitch": 60,
+          "release_velocity": 64,
+          "start": 960,
+          "velocity": 91
+        },
+        {
+          "channel": 0,
+          "length": 1200,
+          "pitch": 60,
+          "release_velocity": 64,
+          "start": 1200,
+          "velocity": 72
+        },
+        {
+          "channel": 0,
+          "length": 360,
+          "pitch": 64,
+          "release_velocity": 64,
+          "start": 1440,
+          "velocity": 88
+        }
+      ]
+    }
+  },
+  {
+    "method": "midi.note_edit",
+    "params": {
+      "clip": 14,
+      "index": 0,
+      "pitch": 62,
+      "start_ticks": 1080,
+      "length_ticks": 1200,
+      "velocity": 101
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "index": 0,
+      "note": {
+        "channel": 0,
+        "length": 1200,
+        "pitch": 62,
+        "release_velocity": 64,
+        "start": 1080,
+        "velocity": 101
+      }
+    }
+  },
+  {
+    "method": "session.inspect",
+    "params": {
+      "detail": "full"
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "bit_depth": "Int24",
+      "busses": [],
+      "dirty": true,
+      "edit_mode": "Slip",
+      "frame_rate": "30",
+      "grid": "1/16 note",
+      "groups": [],
+      "length_samples": 60001,
+      "main_format": "Stereo",
+      "markers": [],
+      "meter": [
+        {
+          "denominator": 4,
+          "numerator": 4,
+          "tick": 0
+        }
+      ],
+      "name": "session",
+      "nudge": "1 second",
+      "path": "<RUN>/writer output/session.scraft",
+      "redo": null,
+      "sample_rate": 48000,
+      "selection": {
+        "clips": [
+          6
+        ],
+        "end": 19440,
+        "start": 7440,
+        "tracks": [
+          5
+        ]
+      },
+      "sources": [
+        {
+          "channels": 2,
+          "frames": 12000,
+          "id": 1,
+          "loaded": true,
+          "name": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+          "path": "Audio Files/f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18.wav"
+        },
+        {
+          "channels": 2,
+          "frames": 12000,
+          "id": 4,
+          "loaded": true,
+          "name": "7b6b1a639e712b6b2411c5fca8423d7972381502d555ea45aa8a7aaf4ab836b0",
+          "path": "Audio Files/7b6b1a639e712b6b2411c5fca8423d7972381502d555ea45aa8a7aaf4ab836b0.wav"
+        },
+        {
+          "channels": 2,
+          "frames": 24000,
+          "id": 7,
+          "loaded": true,
+          "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+          "path": "Audio Files/f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824.wav"
+        },
+        {
+          "channels": 2,
+          "frames": 24000,
+          "id": 10,
+          "loaded": true,
+          "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+          "path": "Audio Files/f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824.wav"
+        }
+      ],
+      "tempo": [
+        {
+          "bpm": 120.0,
+          "tick": 0
+        }
+      ],
+      "tool": "Smart",
+      "tracks": [
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [
+            {
+              "end": 19200,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": 3,
+              "length": 12000,
+              "locked": false,
+              "muted": false,
+              "name": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+              "offset": 0,
+              "source": 1,
+              "start": 7200,
+              "start_time": "0:00.150"
+            }
+          ],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 2,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "kind": "audio",
+          "mute": false,
+          "name": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "waveform",
+          "volume_db": 0.0
+        },
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 5,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "kind": "audio",
+          "mute": false,
+          "name": "7b6b1a639e712b6b2411c5fca8423d7972381502d555ea45aa8a7aaf4ab836b0",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "7b6b1a639e712b6b2411c5fca8423d7972381502d555ea45aa8a7aaf4ab836b0",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "waveform",
+          "volume_db": 0.0
+        },
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [
+            {
+              "end": 48000,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": 9,
+              "length": 24000,
+              "locked": false,
+              "muted": false,
+              "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+              "offset": 0,
+              "source": 7,
+              "start": 24000,
+              "start_time": "0:00.500"
+            }
+          ],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 8,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "kind": "audio",
+          "mute": false,
+          "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "waveform",
+          "volume_db": 0.0
+        },
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [
+            {
+              "end": 54000,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": 12,
+              "length": 24000,
+              "locked": false,
+              "muted": false,
+              "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+              "offset": 0,
+              "source": 10,
+              "start": 30000,
+              "start_time": "0:00.625"
+            }
+          ],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 11,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "kind": "audio",
+          "mute": false,
+          "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824 1",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824 1",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "waveform",
+          "volume_db": 0.0
+        },
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [
+            {
+              "end": 60001,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": 14,
+              "length": 60001,
+              "locked": false,
+              "muted": false,
+              "name": "Part 17397810722847942691 (editable, muted)",
+              "notes": 3,
+              "start": 0,
+              "start_time": "0:00.000"
+            }
+          ],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 13,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "instrument": "subtractive_synth",
+          "kind": "instrument",
+          "mute": true,
+          "name": "Part 17397810722847942691 (editable, muted)",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "Part 17397810722847942691 (editable, muted)",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "notes",
+          "volume_db": 0.0
+        }
+      ],
+      "transport": {
+        "playing": false,
+        "position": 0,
+        "recording": false
+      },
+      "undo": "Edit Note",
+      "zoom": {
+        "samples_per_px": 1024.0,
+        "scroll": 0
+      }
+    }
+  },
+  {
+    "method": "midi.notes",
+    "params": {
+      "clip": 14
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "notes": [
+        {
+          "channel": 0,
+          "length": 1200,
+          "pitch": 62,
+          "release_velocity": 64,
+          "start": 1080,
+          "velocity": 101
+        },
+        {
+          "channel": 0,
+          "length": 1200,
+          "pitch": 60,
+          "release_velocity": 64,
+          "start": 1200,
+          "velocity": 72
+        },
+        {
+          "channel": 0,
+          "length": 360,
+          "pitch": 64,
+          "release_velocity": 64,
+          "start": 1440,
+          "velocity": 88
+        }
+      ]
+    }
+  },
+  {
+    "method": "session.save_as",
+    "params": {
+      "path": "<RUN>/writer output/session.scraft"
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "audio_files_written": 0,
+      "path": "<RUN>/writer output/session.scraft"
+    }
+  },
+  {
+    "assertion": "Moved one hit, deleted another and edited one note in the actual GUI, then saved"
+  },
+  {
+    "method": "app.quit",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {}
+  },
+  {
+    "app_log": [
+      "2026-11-09T14:37:19.015Z INFO  [main] soundcraft: SoundCraft 0.19.0 (macos aarch64)",
+      "2026-11-09T14:37:19.148Z INFO  [main] soundcraft::control_server: control server listening on 127.0.0.1:<PORT>",
+      "SOUNDCRAFT_CONTROL_PORT=<PORT>"
+    ],
+    "app_exit": 0
+  },
+  {
+    "launch": [
+      "SoundCraft",
+      "--no-audio",
+      "--control",
+      "0"
+    ],
+    "environment": {
+      "SOUNDCRAFT_NO_PREFS": "1",
+      "SOUNDCRAFT_CONFIG_DIR": "<RUN>/profile"
+    }
+  },
+  {
+    "method": "ui.key",
+    "params": {
+      "key": "Escape"
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {}
+  },
+  {
+    "method": "ui.inspect",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "audio_device": null,
+      "dialog": null,
+      "edit_layout": {
+        "content_h": 0.0,
+        "follow_hold": false,
+        "last_follow_to": null,
+        "last_scroll": 0,
+        "rows": [],
+        "scroll_y": 0.0,
+        "timeline": [
+          308.0,
+          169.0,
+          1354.0,
+          942.0
+        ],
+        "zoom_back": null
+      },
+      "frame_ms": 1.666666865348816,
+      "playing": false,
+      "position": 0,
+      "status": "",
+      "ui": {
+        "audio": {
+          "buffer_size": null,
+          "input": null,
+          "output": null,
+          "sample_rate": null,
+          "system": null
+        },
+        "audiosuite": null,
+        "configurations": [],
+        "docking": {
+          "hidden": [
+            [
+              "memory",
+              {
+                "anchor": null,
+                "floating": [
+                  160.0,
+                  120.0,
+                  480.0,
+                  280.0
+                ],
+                "group": null,
+                "placement": {
+                  "Tab": {
+                    "before": null
+                  }
+                },
+                "sibling": [],
+                "size": null,
+                "stack": null
+              }
+            ],
+            [
+              "history",
+              {
+                "anchor": null,
+                "floating": [
+                  680.0,
+                  120.0,
+                  260.0,
+                  300.0
+                ],
+                "group": null,
+                "placement": {
+                  "Tab": {
+                    "before": null
+                  }
+                },
+                "sibling": [],
+                "size": null,
+                "stack": null
+              }
+            ],
+            [
+              "midi",
+              {
+                "anchor": "canvas",
+                "floating": null,
+                "group": null,
+                "placement": {
+                  "Split": "Bottom"
+                },
+                "sibling": [
+                  "canvas"
+                ],
+                "size": {
+                  "FixedSecond": 346.0
+                },
+                "stack": null
+              }
+            ]
+          ],
+          "layout": {
+            "floating": [],
+            "root": {
+              "Split": {
+                "axis": "Horizontal",
+                "first": {
+                  "Dock": {
+                    "columns": [
+                      {
+                        "groups": [
+                          {
+                            "active": 0,
+                            "height": null,
+                            "minimized": false,
+                            "panels": [
+                              "tracks"
+                            ]
+                          }
+                        ],
+                        "iconic": false,
+                        "iconic_width": null,
+                        "width": 168.0
+                      }
+                    ],
+                    "side": "Start"
+                  }
+                },
+                "second": {
+                  "Split": {
+                    "axis": "Horizontal",
+                    "first": {
+                      "Tabs": {
+                        "active": 0,
+                        "panels": [
+                          "canvas"
+                        ]
+                      }
+                    },
+                    "second": {
+                      "Dock": {
+                        "columns": [
+                          {
+                            "groups": [
+                              {
+                                "active": 0,
+                                "height": null,
+                                "minimized": false,
+                                "panels": [
+                                  "clips"
+                                ]
+                              }
+                            ],
+                            "iconic": false,
+                            "iconic_width": null,
+                            "width": 230.0
+                          }
+                        ],
+                        "side": "End"
+                      }
+                    },
+                    "size": {
+                      "FixedSecond": 230.0
+                    }
+                  }
+                },
+                "size": {
+                  "FixedFirst": 168.0
+                }
+              }
+            }
+          },
+          "locked": false,
+          "saved": null,
+          "version": 2
+        },
+        "docking_version": 1,
+        "edit_views": [
+          "color"
+        ],
+        "mix_docking": {
+          "hidden": [],
+          "layout": {
+            "floating": [
+              {
+                "active": 0,
+                "id": 1,
+                "panels": [
+                  "memory"
+                ],
+                "rect": [
+                  160.0,
+                  120.0,
+                  480.0,
+                  280.0
+                ]
+              },
+              {
+                "active": 0,
+                "id": 2,
+                "panels": [
+                  "history"
+                ],
+                "rect": [
+                  680.0,
+                  120.0,
+                  260.0,
+                  300.0
+                ]
+              }
+            ],
+            "root": {
+              "Split": {
+                "axis": "Horizontal",
+                "first": {
+                  "Dock": {
+                    "columns": [
+                      {
+                        "groups": [
+                          {
+                            "active": 0,
+                            "height": null,
+                            "minimized": false,
+                            "panels": [
+                              "tracks"
+                            ]
+                          }
+                        ],
+                        "iconic": false,
+                        "iconic_width": null,
+                        "width": 168.0
+                      }
+                    ],
+                    "side": "Start"
+                  }
+                },
+                "second": {
+                  "Tabs": {
+                    "active": 0,
+                    "panels": [
+                      "canvas"
+                    ]
+                  }
+                },
+                "size": {
+                  "FixedFirst": 168.0
+                }
+              }
+            }
+          },
+          "locked": false,
+          "saved": null,
+          "version": 2
+        },
+        "mix_separate": false,
+        "mix_views": [
+          "inserts_ae",
+          "sends_ae",
+          "io",
+          "color"
+        ],
+        "narrow_mix": false,
+        "plugin_windows": [],
+        "preferences_page": "display",
+        "preferences_window_pos": null,
+        "recent_sessions": [],
+        "reduce_visual_effects": "never",
+        "show_about": false,
+        "show_audio_health": false,
+        "show_automation": false,
+        "show_beat_detective": false,
+        "show_big_counter": false,
+        "show_clip_effects": false,
+        "show_clip_list": true,
+        "show_color_palette": false,
+        "show_configurations": false,
+        "show_disk_usage": false,
+        "show_event_list": false,
+        "show_io_setup": false,
+        "show_memory_locations": false,
+        "show_metadata": false,
+        "show_midi_editor": false,
+        "show_midi_keyboard": false,
+        "show_midi_ops": false,
+        "show_playback_engine": false,
+        "show_preferences": false,
+        "show_rtp": false,
+        "show_score": false,
+        "show_search": false,
+        "show_session_info": false,
+        "show_shortcuts": false,
+        "show_system_usage": false,
+        "show_task_manager": false,
+        "show_tempo_ops": false,
+        "show_time_ops": false,
+        "show_tracks_list": true,
+        "show_transport": false,
+        "show_undo_history": false,
+        "show_universe": false,
+        "show_video": false,
+        "show_video_universe": false,
+        "show_workspace": false,
+        "status": "",
+        "theme": "dark",
+        "track_tint": 0.5,
+        "ui_scale": 1.0,
+        "undo_levels": 64,
+        "video_burn_in": false,
+        "window": "Edit",
+        "window_maximized": false,
+        "window_size": [
+          1600.0,
+          1000.0
+        ],
+        "workspace_dir": ""
+      },
+      "window_size": [
+        1600.0,
+        1000.0
+      ]
+    }
+  },
+  {
+    "method": "session.open",
+    "params": {
+      "path": "<RUN>/writer output/session.scraft"
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "missing": [],
+      "name": "session",
+      "tracks": 5
+    }
+  },
+  {
+    "method": "session.inspect",
+    "params": {
+      "detail": "full"
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "bit_depth": "Int24",
+      "busses": [],
+      "dirty": false,
+      "edit_mode": "Slip",
+      "frame_rate": "30",
+      "grid": "1/16 note",
+      "groups": [],
+      "length_samples": 60001,
+      "main_format": "Stereo",
+      "markers": [],
+      "meter": [
+        {
+          "denominator": 4,
+          "numerator": 4,
+          "tick": 0
+        }
+      ],
+      "name": "session",
+      "nudge": "1 second",
+      "path": "<RUN>/writer output/session.scraft",
+      "redo": null,
+      "sample_rate": 48000,
+      "selection": {
+        "clips": [
+          6
+        ],
+        "end": 19440,
+        "start": 7440,
+        "tracks": [
+          5
+        ]
+      },
+      "sources": [
+        {
+          "channels": 2,
+          "frames": 12000,
+          "id": 1,
+          "loaded": true,
+          "name": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+          "path": "Audio Files/f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18.wav"
+        },
+        {
+          "channels": 2,
+          "frames": 12000,
+          "id": 4,
+          "loaded": true,
+          "name": "7b6b1a639e712b6b2411c5fca8423d7972381502d555ea45aa8a7aaf4ab836b0",
+          "path": "Audio Files/7b6b1a639e712b6b2411c5fca8423d7972381502d555ea45aa8a7aaf4ab836b0.wav"
+        },
+        {
+          "channels": 2,
+          "frames": 24000,
+          "id": 7,
+          "loaded": true,
+          "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+          "path": "Audio Files/f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824.wav"
+        },
+        {
+          "channels": 2,
+          "frames": 24000,
+          "id": 10,
+          "loaded": true,
+          "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+          "path": "Audio Files/f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824.wav"
+        }
+      ],
+      "tempo": [
+        {
+          "bpm": 120.0,
+          "tick": 0
+        }
+      ],
+      "tool": "Smart",
+      "tracks": [
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [
+            {
+              "end": 19200,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": 3,
+              "length": 12000,
+              "locked": false,
+              "muted": false,
+              "name": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+              "offset": 0,
+              "source": 1,
+              "start": 7200,
+              "start_time": "0:00.150"
+            }
+          ],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 2,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "kind": "audio",
+          "mute": false,
+          "name": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "waveform",
+          "volume_db": 0.0
+        },
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 5,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "kind": "audio",
+          "mute": false,
+          "name": "7b6b1a639e712b6b2411c5fca8423d7972381502d555ea45aa8a7aaf4ab836b0",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "7b6b1a639e712b6b2411c5fca8423d7972381502d555ea45aa8a7aaf4ab836b0",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "waveform",
+          "volume_db": 0.0
+        },
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [
+            {
+              "end": 48000,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": 9,
+              "length": 24000,
+              "locked": false,
+              "muted": false,
+              "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+              "offset": 0,
+              "source": 7,
+              "start": 24000,
+              "start_time": "0:00.500"
+            }
+          ],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 8,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "kind": "audio",
+          "mute": false,
+          "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "waveform",
+          "volume_db": 0.0
+        },
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [
+            {
+              "end": 54000,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": 12,
+              "length": 24000,
+              "locked": false,
+              "muted": false,
+              "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+              "offset": 0,
+              "source": 10,
+              "start": 30000,
+              "start_time": "0:00.625"
+            }
+          ],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 11,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "kind": "audio",
+          "mute": false,
+          "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824 1",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824 1",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "waveform",
+          "volume_db": 0.0
+        },
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [
+            {
+              "end": 60001,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": 14,
+              "length": 60001,
+              "locked": false,
+              "muted": false,
+              "name": "Part 17397810722847942691 (editable, muted)",
+              "notes": 3,
+              "start": 0,
+              "start_time": "0:00.000"
+            }
+          ],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 13,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "instrument": "subtractive_synth",
+          "kind": "instrument",
+          "mute": true,
+          "name": "Part 17397810722847942691 (editable, muted)",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "Part 17397810722847942691 (editable, muted)",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "notes",
+          "volume_db": 0.0
+        }
+      ],
+      "transport": {
+        "playing": false,
+        "position": 7440,
+        "recording": false
+      },
+      "undo": null,
+      "zoom": {
+        "samples_per_px": 1024.0,
+        "scroll": 0
+      }
+    }
+  },
+  {
+    "method": "midi.notes",
+    "params": {
+      "clip": 14
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "notes": [
+        {
+          "channel": 0,
+          "length": 1200,
+          "pitch": 62,
+          "release_velocity": 64,
+          "start": 1080,
+          "velocity": 101
+        },
+        {
+          "channel": 0,
+          "length": 1200,
+          "pitch": 60,
+          "release_velocity": 64,
+          "start": 1200,
+          "velocity": 72
+        },
+        {
+          "channel": 0,
+          "length": 360,
+          "pitch": 64,
+          "release_velocity": 64,
+          "start": 1440,
+          "velocity": 88
+        }
+      ]
+    }
+  },
+  {
+    "method": "session.audio_health",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "active_audio_end_samples": 54000,
+      "active_audio_end_seconds": 1.125,
+      "audio_clips": 3,
+      "healthy": true,
+      "issue_count": 0,
+      "issues": [],
+      "scope": "All playlists; loaded audio availability and clip bounds only. Does not check files on disk, signal levels, plugins or routing."
+    }
+  },
+  {
+    "assertion": "PASS: edits survived quit/reopen"
+  },
+  {
+    "method": "session.close",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {}
+  },
+  {
+    "filesystem": "Copied the entire adapter output; removed the original output and the source bundle"
+  },
+  {
+    "method": "app.quit",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {}
+  },
+  {
+    "app_log": [
+      "2026-11-09T14:37:19.522Z INFO  [main] soundcraft: SoundCraft 0.19.0 (macos aarch64)",
+      "2026-11-09T14:37:19.700Z INFO  [main] soundcraft::control_server: control server listening on 127.0.0.1:<PORT>",
+      "SOUNDCRAFT_CONTROL_PORT=<PORT>"
+    ],
+    "app_exit": 0
+  },
+  {
+    "launch": [
+      "SoundCraft",
+      "--no-audio",
+      "--control",
+      "0"
+    ],
+    "environment": {
+      "SOUNDCRAFT_NO_PREFS": "1",
+      "SOUNDCRAFT_CONFIG_DIR": "<RUN>/profile"
+    }
+  },
+  {
+    "method": "ui.key",
+    "params": {
+      "key": "Escape"
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {}
+  },
+  {
+    "method": "ui.inspect",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "audio_device": null,
+      "dialog": null,
+      "edit_layout": {
+        "content_h": 0.0,
+        "follow_hold": false,
+        "last_follow_to": null,
+        "last_scroll": 0,
+        "rows": [],
+        "scroll_y": 0.0,
+        "timeline": [
+          308.0,
+          169.0,
+          1354.0,
+          942.0
+        ],
+        "zoom_back": null
+      },
+      "frame_ms": 1.666666865348816,
+      "playing": false,
+      "position": 0,
+      "status": "",
+      "ui": {
+        "audio": {
+          "buffer_size": null,
+          "input": null,
+          "output": null,
+          "sample_rate": null,
+          "system": null
+        },
+        "audiosuite": null,
+        "configurations": [],
+        "docking": {
+          "hidden": [
+            [
+              "memory",
+              {
+                "anchor": null,
+                "floating": [
+                  160.0,
+                  120.0,
+                  480.0,
+                  280.0
+                ],
+                "group": null,
+                "placement": {
+                  "Tab": {
+                    "before": null
+                  }
+                },
+                "sibling": [],
+                "size": null,
+                "stack": null
+              }
+            ],
+            [
+              "history",
+              {
+                "anchor": null,
+                "floating": [
+                  680.0,
+                  120.0,
+                  260.0,
+                  300.0
+                ],
+                "group": null,
+                "placement": {
+                  "Tab": {
+                    "before": null
+                  }
+                },
+                "sibling": [],
+                "size": null,
+                "stack": null
+              }
+            ],
+            [
+              "midi",
+              {
+                "anchor": "canvas",
+                "floating": null,
+                "group": null,
+                "placement": {
+                  "Split": "Bottom"
+                },
+                "sibling": [
+                  "canvas"
+                ],
+                "size": {
+                  "FixedSecond": 346.0
+                },
+                "stack": null
+              }
+            ]
+          ],
+          "layout": {
+            "floating": [],
+            "root": {
+              "Split": {
+                "axis": "Horizontal",
+                "first": {
+                  "Dock": {
+                    "columns": [
+                      {
+                        "groups": [
+                          {
+                            "active": 0,
+                            "height": null,
+                            "minimized": false,
+                            "panels": [
+                              "tracks"
+                            ]
+                          }
+                        ],
+                        "iconic": false,
+                        "iconic_width": null,
+                        "width": 168.0
+                      }
+                    ],
+                    "side": "Start"
+                  }
+                },
+                "second": {
+                  "Split": {
+                    "axis": "Horizontal",
+                    "first": {
+                      "Tabs": {
+                        "active": 0,
+                        "panels": [
+                          "canvas"
+                        ]
+                      }
+                    },
+                    "second": {
+                      "Dock": {
+                        "columns": [
+                          {
+                            "groups": [
+                              {
+                                "active": 0,
+                                "height": null,
+                                "minimized": false,
+                                "panels": [
+                                  "clips"
+                                ]
+                              }
+                            ],
+                            "iconic": false,
+                            "iconic_width": null,
+                            "width": 230.0
+                          }
+                        ],
+                        "side": "End"
+                      }
+                    },
+                    "size": {
+                      "FixedSecond": 230.0
+                    }
+                  }
+                },
+                "size": {
+                  "FixedFirst": 168.0
+                }
+              }
+            }
+          },
+          "locked": false,
+          "saved": null,
+          "version": 2
+        },
+        "docking_version": 1,
+        "edit_views": [
+          "color"
+        ],
+        "mix_docking": {
+          "hidden": [],
+          "layout": {
+            "floating": [
+              {
+                "active": 0,
+                "id": 1,
+                "panels": [
+                  "memory"
+                ],
+                "rect": [
+                  160.0,
+                  120.0,
+                  480.0,
+                  280.0
+                ]
+              },
+              {
+                "active": 0,
+                "id": 2,
+                "panels": [
+                  "history"
+                ],
+                "rect": [
+                  680.0,
+                  120.0,
+                  260.0,
+                  300.0
+                ]
+              }
+            ],
+            "root": {
+              "Split": {
+                "axis": "Horizontal",
+                "first": {
+                  "Dock": {
+                    "columns": [
+                      {
+                        "groups": [
+                          {
+                            "active": 0,
+                            "height": null,
+                            "minimized": false,
+                            "panels": [
+                              "tracks"
+                            ]
+                          }
+                        ],
+                        "iconic": false,
+                        "iconic_width": null,
+                        "width": 168.0
+                      }
+                    ],
+                    "side": "Start"
+                  }
+                },
+                "second": {
+                  "Tabs": {
+                    "active": 0,
+                    "panels": [
+                      "canvas"
+                    ]
+                  }
+                },
+                "size": {
+                  "FixedFirst": 168.0
+                }
+              }
+            }
+          },
+          "locked": false,
+          "saved": null,
+          "version": 2
+        },
+        "mix_separate": false,
+        "mix_views": [
+          "inserts_ae",
+          "sends_ae",
+          "io",
+          "color"
+        ],
+        "narrow_mix": false,
+        "plugin_windows": [],
+        "preferences_page": "display",
+        "preferences_window_pos": null,
+        "recent_sessions": [],
+        "reduce_visual_effects": "never",
+        "show_about": false,
+        "show_audio_health": false,
+        "show_automation": false,
+        "show_beat_detective": false,
+        "show_big_counter": false,
+        "show_clip_effects": false,
+        "show_clip_list": true,
+        "show_color_palette": false,
+        "show_configurations": false,
+        "show_disk_usage": false,
+        "show_event_list": false,
+        "show_io_setup": false,
+        "show_memory_locations": false,
+        "show_metadata": false,
+        "show_midi_editor": false,
+        "show_midi_keyboard": false,
+        "show_midi_ops": false,
+        "show_playback_engine": false,
+        "show_preferences": false,
+        "show_rtp": false,
+        "show_score": false,
+        "show_search": false,
+        "show_session_info": false,
+        "show_shortcuts": false,
+        "show_system_usage": false,
+        "show_task_manager": false,
+        "show_tempo_ops": false,
+        "show_time_ops": false,
+        "show_tracks_list": true,
+        "show_transport": false,
+        "show_undo_history": false,
+        "show_universe": false,
+        "show_video": false,
+        "show_video_universe": false,
+        "show_workspace": false,
+        "status": "",
+        "theme": "dark",
+        "track_tint": 0.5,
+        "ui_scale": 1.0,
+        "undo_levels": 64,
+        "video_burn_in": false,
+        "window": "Edit",
+        "window_maximized": false,
+        "window_size": [
+          1600.0,
+          1000.0
+        ],
+        "workspace_dir": ""
+      },
+      "window_size": [
+        1600.0,
+        1000.0
+      ]
+    }
+  },
+  {
+    "method": "session.open",
+    "params": {
+      "path": "<RUN>/relocated adapter output/session.scraft"
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "missing": [],
+      "name": "session",
+      "tracks": 5
+    }
+  },
+  {
+    "method": "session.inspect",
+    "params": {
+      "detail": "full"
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "bit_depth": "Int24",
+      "busses": [],
+      "dirty": false,
+      "edit_mode": "Slip",
+      "frame_rate": "30",
+      "grid": "1/16 note",
+      "groups": [],
+      "length_samples": 60001,
+      "main_format": "Stereo",
+      "markers": [],
+      "meter": [
+        {
+          "denominator": 4,
+          "numerator": 4,
+          "tick": 0
+        }
+      ],
+      "name": "session",
+      "nudge": "1 second",
+      "path": "<RUN>/relocated adapter output/session.scraft",
+      "redo": null,
+      "sample_rate": 48000,
+      "selection": {
+        "clips": [
+          6
+        ],
+        "end": 19440,
+        "start": 7440,
+        "tracks": [
+          5
+        ]
+      },
+      "sources": [
+        {
+          "channels": 2,
+          "frames": 12000,
+          "id": 1,
+          "loaded": true,
+          "name": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+          "path": "Audio Files/f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18.wav"
+        },
+        {
+          "channels": 2,
+          "frames": 12000,
+          "id": 4,
+          "loaded": true,
+          "name": "7b6b1a639e712b6b2411c5fca8423d7972381502d555ea45aa8a7aaf4ab836b0",
+          "path": "Audio Files/7b6b1a639e712b6b2411c5fca8423d7972381502d555ea45aa8a7aaf4ab836b0.wav"
+        },
+        {
+          "channels": 2,
+          "frames": 24000,
+          "id": 7,
+          "loaded": true,
+          "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+          "path": "Audio Files/f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824.wav"
+        },
+        {
+          "channels": 2,
+          "frames": 24000,
+          "id": 10,
+          "loaded": true,
+          "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+          "path": "Audio Files/f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824.wav"
+        }
+      ],
+      "tempo": [
+        {
+          "bpm": 120.0,
+          "tick": 0
+        }
+      ],
+      "tool": "Smart",
+      "tracks": [
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [
+            {
+              "end": 19200,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": 3,
+              "length": 12000,
+              "locked": false,
+              "muted": false,
+              "name": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+              "offset": 0,
+              "source": 1,
+              "start": 7200,
+              "start_time": "0:00.150"
+            }
+          ],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 2,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "kind": "audio",
+          "mute": false,
+          "name": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "waveform",
+          "volume_db": 0.0
+        },
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 5,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "kind": "audio",
+          "mute": false,
+          "name": "7b6b1a639e712b6b2411c5fca8423d7972381502d555ea45aa8a7aaf4ab836b0",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "7b6b1a639e712b6b2411c5fca8423d7972381502d555ea45aa8a7aaf4ab836b0",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "waveform",
+          "volume_db": 0.0
+        },
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [
+            {
+              "end": 48000,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": 9,
+              "length": 24000,
+              "locked": false,
+              "muted": false,
+              "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+              "offset": 0,
+              "source": 7,
+              "start": 24000,
+              "start_time": "0:00.500"
+            }
+          ],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 8,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "kind": "audio",
+          "mute": false,
+          "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "waveform",
+          "volume_db": 0.0
+        },
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [
+            {
+              "end": 54000,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": 12,
+              "length": 24000,
+              "locked": false,
+              "muted": false,
+              "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824",
+              "offset": 0,
+              "source": 10,
+              "start": 30000,
+              "start_time": "0:00.625"
+            }
+          ],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 11,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "kind": "audio",
+          "mute": false,
+          "name": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824 1",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "f96955139d1f23c730a840723e85ab3fffc3dbf57295161339a5a0fbb156f824 1",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "waveform",
+          "volume_db": 0.0
+        },
+        {
+          "automation": [],
+          "automation_mode": "read",
+          "clips": [
+            {
+              "end": 60001,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": 14,
+              "length": 60001,
+              "locked": false,
+              "muted": false,
+              "name": "Part 17397810722847942691 (editable, muted)",
+              "notes": 3,
+              "start": 0,
+              "start_time": "0:00.000"
+            }
+          ],
+          "format": "Stereo",
+          "height": "medium",
+          "hidden": false,
+          "id": 13,
+          "inactive": false,
+          "input": "None",
+          "inserts": [],
+          "instrument": "subtractive_synth",
+          "kind": "instrument",
+          "mute": true,
+          "name": "Part 17397810722847942691 (editable, muted)",
+          "output": "Main",
+          "pan": [
+            -1.0,
+            1.0
+          ],
+          "playlist": "Part 17397810722847942691 (editable, muted)",
+          "playlists": 1,
+          "record_arm": false,
+          "sends": [],
+          "solo": false,
+          "surround": null,
+          "view": "notes",
+          "volume_db": 0.0
+        }
+      ],
+      "transport": {
+        "playing": false,
+        "position": 7440,
+        "recording": false
+      },
+      "undo": null,
+      "zoom": {
+        "samples_per_px": 1024.0,
+        "scroll": 0
+      }
+    }
+  },
+  {
+    "method": "midi.notes",
+    "params": {
+      "clip": 14
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "notes": [
+        {
+          "channel": 0,
+          "length": 1200,
+          "pitch": 62,
+          "release_velocity": 64,
+          "start": 1080,
+          "velocity": 101
+        },
+        {
+          "channel": 0,
+          "length": 1200,
+          "pitch": 60,
+          "release_velocity": 64,
+          "start": 1200,
+          "velocity": 72
+        },
+        {
+          "channel": 0,
+          "length": 360,
+          "pitch": 64,
+          "release_velocity": 64,
+          "start": 1440,
+          "velocity": 88
+        }
+      ]
+    }
+  },
+  {
+    "method": "session.audio_health",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "active_audio_end_samples": 54000,
+      "active_audio_end_seconds": 1.125,
+      "audio_clips": 3,
+      "healthy": true,
+      "issue_count": 0,
+      "issues": [],
+      "scope": "All playlists; loaded audio availability and clip bounds only. Does not check files on disk, signal levels, plugins or routing."
+    }
+  },
+  {
+    "assertion": "PASS: edited adapter session reopened after source-free relocation"
+  },
+  {
+    "method": "session.close",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {}
+  },
+  {
+    "filesystem": "Removed the relocated WAV used by the moved clip for the negative control"
+  },
+  {
+    "method": "app.quit",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {}
+  },
+  {
+    "app_log": [
+      "2026-11-09T14:37:20.007Z INFO  [main] soundcraft: SoundCraft 0.19.0 (macos aarch64)",
+      "2026-11-09T14:37:20.161Z INFO  [main] soundcraft::control_server: control server listening on 127.0.0.1:<PORT>",
+      "SOUNDCRAFT_CONTROL_PORT=<PORT>"
+    ],
+    "app_exit": 0
+  },
+  {
+    "launch": [
+      "SoundCraft",
+      "--no-audio",
+      "--control",
+      "0"
+    ],
+    "environment": {
+      "SOUNDCRAFT_NO_PREFS": "1",
+      "SOUNDCRAFT_CONFIG_DIR": "<RUN>/profile"
+    }
+  },
+  {
+    "method": "ui.key",
+    "params": {
+      "key": "Escape"
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {}
+  },
+  {
+    "method": "ui.inspect",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "audio_device": null,
+      "dialog": null,
+      "edit_layout": {
+        "content_h": 0.0,
+        "follow_hold": false,
+        "last_follow_to": null,
+        "last_scroll": 0,
+        "rows": [],
+        "scroll_y": 0.0,
+        "timeline": [
+          308.0,
+          169.0,
+          1354.0,
+          942.0
+        ],
+        "zoom_back": null
+      },
+      "frame_ms": 1.666666865348816,
+      "playing": false,
+      "position": 0,
+      "status": "",
+      "ui": {
+        "audio": {
+          "buffer_size": null,
+          "input": null,
+          "output": null,
+          "sample_rate": null,
+          "system": null
+        },
+        "audiosuite": null,
+        "configurations": [],
+        "docking": {
+          "hidden": [
+            [
+              "memory",
+              {
+                "anchor": null,
+                "floating": [
+                  160.0,
+                  120.0,
+                  480.0,
+                  280.0
+                ],
+                "group": null,
+                "placement": {
+                  "Tab": {
+                    "before": null
+                  }
+                },
+                "sibling": [],
+                "size": null,
+                "stack": null
+              }
+            ],
+            [
+              "history",
+              {
+                "anchor": null,
+                "floating": [
+                  680.0,
+                  120.0,
+                  260.0,
+                  300.0
+                ],
+                "group": null,
+                "placement": {
+                  "Tab": {
+                    "before": null
+                  }
+                },
+                "sibling": [],
+                "size": null,
+                "stack": null
+              }
+            ],
+            [
+              "midi",
+              {
+                "anchor": "canvas",
+                "floating": null,
+                "group": null,
+                "placement": {
+                  "Split": "Bottom"
+                },
+                "sibling": [
+                  "canvas"
+                ],
+                "size": {
+                  "FixedSecond": 346.0
+                },
+                "stack": null
+              }
+            ]
+          ],
+          "layout": {
+            "floating": [],
+            "root": {
+              "Split": {
+                "axis": "Horizontal",
+                "first": {
+                  "Dock": {
+                    "columns": [
+                      {
+                        "groups": [
+                          {
+                            "active": 0,
+                            "height": null,
+                            "minimized": false,
+                            "panels": [
+                              "tracks"
+                            ]
+                          }
+                        ],
+                        "iconic": false,
+                        "iconic_width": null,
+                        "width": 168.0
+                      }
+                    ],
+                    "side": "Start"
+                  }
+                },
+                "second": {
+                  "Split": {
+                    "axis": "Horizontal",
+                    "first": {
+                      "Tabs": {
+                        "active": 0,
+                        "panels": [
+                          "canvas"
+                        ]
+                      }
+                    },
+                    "second": {
+                      "Dock": {
+                        "columns": [
+                          {
+                            "groups": [
+                              {
+                                "active": 0,
+                                "height": null,
+                                "minimized": false,
+                                "panels": [
+                                  "clips"
+                                ]
+                              }
+                            ],
+                            "iconic": false,
+                            "iconic_width": null,
+                            "width": 230.0
+                          }
+                        ],
+                        "side": "End"
+                      }
+                    },
+                    "size": {
+                      "FixedSecond": 230.0
+                    }
+                  }
+                },
+                "size": {
+                  "FixedFirst": 168.0
+                }
+              }
+            }
+          },
+          "locked": false,
+          "saved": null,
+          "version": 2
+        },
+        "docking_version": 1,
+        "edit_views": [
+          "color"
+        ],
+        "mix_docking": {
+          "hidden": [],
+          "layout": {
+            "floating": [
+              {
+                "active": 0,
+                "id": 1,
+                "panels": [
+                  "memory"
+                ],
+                "rect": [
+                  160.0,
+                  120.0,
+                  480.0,
+                  280.0
+                ]
+              },
+              {
+                "active": 0,
+                "id": 2,
+                "panels": [
+                  "history"
+                ],
+                "rect": [
+                  680.0,
+                  120.0,
+                  260.0,
+                  300.0
+                ]
+              }
+            ],
+            "root": {
+              "Split": {
+                "axis": "Horizontal",
+                "first": {
+                  "Dock": {
+                    "columns": [
+                      {
+                        "groups": [
+                          {
+                            "active": 0,
+                            "height": null,
+                            "minimized": false,
+                            "panels": [
+                              "tracks"
+                            ]
+                          }
+                        ],
+                        "iconic": false,
+                        "iconic_width": null,
+                        "width": 168.0
+                      }
+                    ],
+                    "side": "Start"
+                  }
+                },
+                "second": {
+                  "Tabs": {
+                    "active": 0,
+                    "panels": [
+                      "canvas"
+                    ]
+                  }
+                },
+                "size": {
+                  "FixedFirst": 168.0
+                }
+              }
+            }
+          },
+          "locked": false,
+          "saved": null,
+          "version": 2
+        },
+        "mix_separate": false,
+        "mix_views": [
+          "inserts_ae",
+          "sends_ae",
+          "io",
+          "color"
+        ],
+        "narrow_mix": false,
+        "plugin_windows": [],
+        "preferences_page": "display",
+        "preferences_window_pos": null,
+        "recent_sessions": [],
+        "reduce_visual_effects": "never",
+        "show_about": false,
+        "show_audio_health": false,
+        "show_automation": false,
+        "show_beat_detective": false,
+        "show_big_counter": false,
+        "show_clip_effects": false,
+        "show_clip_list": true,
+        "show_color_palette": false,
+        "show_configurations": false,
+        "show_disk_usage": false,
+        "show_event_list": false,
+        "show_io_setup": false,
+        "show_memory_locations": false,
+        "show_metadata": false,
+        "show_midi_editor": false,
+        "show_midi_keyboard": false,
+        "show_midi_ops": false,
+        "show_playback_engine": false,
+        "show_preferences": false,
+        "show_rtp": false,
+        "show_score": false,
+        "show_search": false,
+        "show_session_info": false,
+        "show_shortcuts": false,
+        "show_system_usage": false,
+        "show_task_manager": false,
+        "show_tempo_ops": false,
+        "show_time_ops": false,
+        "show_tracks_list": true,
+        "show_transport": false,
+        "show_undo_history": false,
+        "show_universe": false,
+        "show_video": false,
+        "show_video_universe": false,
+        "show_workspace": false,
+        "status": "",
+        "theme": "dark",
+        "track_tint": 0.5,
+        "ui_scale": 1.0,
+        "undo_levels": 64,
+        "video_burn_in": false,
+        "window": "Edit",
+        "window_maximized": false,
+        "window_size": [
+          1600.0,
+          1000.0
+        ],
+        "workspace_dir": ""
+      },
+      "window_size": [
+        1600.0,
+        1000.0
+      ]
+    }
+  },
+  {
+    "method": "session.open",
+    "params": {
+      "path": "<RUN>/relocated adapter output/session.scraft"
+    },
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "missing": [
+        "<RUN>/relocated adapter output/Audio Files/f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18.wav"
+      ],
+      "name": "session",
+      "tracks": 5
+    }
+  },
+  {
+    "method": "session.audio_health",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {
+      "active_audio_end_samples": 54000,
+      "active_audio_end_seconds": 1.125,
+      "audio_clips": 3,
+      "healthy": false,
+      "issue_count": 1,
+      "issues": [
+        {
+          "active": true,
+          "clip": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+          "clip_id": 3,
+          "code": "unavailable_audio",
+          "message": "Audio is not loaded; this clip will be silent. Restore the media and reopen the session, or reimport it.",
+          "path": "Audio Files/f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18.wav",
+          "playlist": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+          "source_id": 1,
+          "track": "f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18",
+          "track_id": 2
+        }
+      ],
+      "scope": "All playlists; loaded audio availability and clip bounds only. Does not check files on disk, signal levels, plugins or routing."
+    }
+  },
+  {
+    "assertion": "PASS: missing-media negative control detected"
+  },
+  {
+    "method": "app.quit",
+    "params": {},
+    "exit": 0,
+    "stderr": "",
+    "reply": {}
+  },
+  {
+    "app_log": [
+      "2026-11-09T14:37:20.436Z INFO  [main] soundcraft: SoundCraft 0.19.0 (macos aarch64)",
+      "2026-11-09T14:37:20.602Z INFO  [main] soundcraft::control_server: control server listening on 127.0.0.1:<PORT>",
+      "SOUNDCRAFT_CONTROL_PORT=<PORT>",
+      "2026-11-09T14:37:20.749Z INFO  [main] soundcraft_engine: missing media: <RUN>/relocated adapter output/Audio Files/f7a1ef435794625a0cdd24386b35bf2ec662c0f8bea81b2c62428b62b7e3ae18.wav"
+    ],
+    "app_exit": 0
+  }
+]

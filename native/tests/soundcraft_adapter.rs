@@ -1,13 +1,28 @@
 //! Public bundle/CLI boundaries. All default tests execute only the strict fake.
 use brownnote_native::{
     adapters::soundcraft::{COMMIT, Report, Request, SamplerMapping, convert},
-    export::manifest::{
-        AssetEntry, AssetId, AssetKind, EventEntry, EventId, LossRecord, Manifest, PartEntry,
-        PartId, PartKind, TimeOrigin, Timing,
+    edit::EditModel,
+    export::{
+        adapter::{self, ProjectFrozenHit},
+        bundle::{BundleRequest, SystemWriter},
+        manifest::{
+            AssetEntry, AssetId, AssetKind, AudioRole, EventEntry, EventId, LossRecord, Manifest,
+            PartEntry, PartId, PartKind, TimeOrigin, Timing,
+        },
     },
+    performance::{
+        Channel, InstrumentId, LoopBars, NoteKey, OriginalTime, Pitch, SourceId, TakeId, Target,
+        Tempo, Velocity,
+    },
+    project::{
+        self, Asset, AssetRef, Document, MediaKind, PadId, SampleAssignment,
+        store::{MediaSource, Store},
+    },
+    takes::{PassOptions, Takes},
 };
 use serde_json::{Value, json};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fs,
     io::Cursor,
@@ -444,6 +459,264 @@ fn rounded_timing_and_full_asset_duration_are_reported_not_hidden() -> TestResul
     Ok(())
 }
 
+fn debug(error: impl std::fmt::Debug) -> Box<dyn Error> {
+    format!("{error:?}").into()
+}
+
+fn float_wav(channels: u16, values: &[f32]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut wav = hound::WavWriter::new(
+            &mut cursor,
+            hound::WavSpec {
+                channels,
+                sample_rate: 48_000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )?;
+        for value in values {
+            wav.write_sample(*value)?;
+        }
+        wav.finalize()?;
+    }
+    Ok(cursor.into_inner())
+}
+
+/// A bundle written by the real #109 project/takes/edit path, not a hand-built
+/// manifest: two overlapping hits on one pad (a third deleted, one nudged) and
+/// three overlapping instrument notes, two with frozen project renders.
+fn writer_bundle(root: &std::path::Path) -> Result<PathBuf, Box<dyn Error>> {
+    let decay: Vec<f32> = (0..12_000)
+        .map(|i| 0.6 * (1.0 - i as f32 / 12_000.0))
+        .collect();
+    let source = float_wav(1, &decay)?;
+    let frozen = float_wav(2, &[0.2, -0.1].repeat(24_000))?;
+    let media: BTreeMap<_, _> = [source.clone(), frozen.clone()]
+        .into_iter()
+        .map(|bytes| (project::AssetId::of(&bytes), bytes))
+        .collect();
+    let source_id = project::AssetId::of(&source);
+    let frozen_id = project::AssetId::of(&frozen);
+    let mut document = Document {
+        assets: media
+            .iter()
+            .map(|(id, bytes)| Asset {
+                reference: AssetRef {
+                    id: *id,
+                    bytes: bytes.len() as u64,
+                },
+                kind: if *id == source_id {
+                    MediaKind::Source
+                } else {
+                    MediaKind::RetainedRender
+                },
+            })
+            .collect(),
+        ..Document::default()
+    };
+    document.pads[3].sample = Some(SampleAssignment {
+        source: source_id,
+        retained: None,
+    });
+    // Without choke both full hits overlap; choke baking is covered by #109.
+    document.choke = false;
+    let project_dir = root.join("project");
+    let originals = root.join("original media");
+    fs::create_dir_all(&originals)?;
+    let mut sources = Vec::new();
+    for (id, bytes) in &media {
+        let path = originals.join(format!("{id}.wav"));
+        fs::write(&path, bytes)?;
+        sources.push(MediaSource { id: *id, path });
+    }
+    Store::new(project_dir.clone())
+        .save(&document, &sources)
+        .map_err(debug)?;
+    fs::remove_dir_all(&originals)?;
+
+    let mut takes = Takes::new(
+        LoopBars::try_from(1).map_err(debug)?,
+        TakeId(u128::from(u64::MAX) + 9),
+    );
+    takes
+        .set_tempo(Tempo::try_from(120_000).map_err(debug)?)
+        .map_err(debug)?;
+    let take = takes.arm(PassOptions::default()).map_err(debug)?;
+    takes.start(take).map_err(debug)?;
+    let pad = Target::Pad(PadId::try_from(3).map_err(debug)?);
+    let instrument = Target::Instrument(InstrumentId(77));
+    let ms = 1_000_000;
+    let specs = [
+        (pad, 36, 127, 100 * ms, 130 * ms),
+        (pad, 36, 90, 150 * ms, 180 * ms),
+        (pad, 36, 80, 300 * ms, 330 * ms), // deleted
+        (instrument, 60, 91, 500 * ms, 1_000 * ms),
+        (instrument, 60, 72, 625 * ms, 1_250 * ms),
+        (instrument, 64, 88, 750 * ms, 937_500_000), // no frozen render
+    ];
+    let key = |pitch| -> Result<NoteKey, Box<dyn Error>> {
+        Ok(NoteKey {
+            source: SourceId(5),
+            channel: Channel::try_from(0).map_err(debug)?,
+            pitch: Pitch::try_from(pitch).map_err(debug)?,
+        })
+    };
+    let mut actions: Vec<(u64, bool, usize)> = Vec::new();
+    for (index, spec) in specs.iter().enumerate() {
+        actions.push((spec.3, false, index));
+        actions.push((spec.4, true, index));
+    }
+    actions.sort();
+    let mut ids = vec![None; specs.len()];
+    for (time, off, index) in actions {
+        let (target, pitch, velocity, _, _) = specs[index];
+        let time = OriginalTime::from_nanos(time);
+        if off {
+            takes.note_off(take, key(pitch)?, time).map_err(debug)?;
+        } else {
+            let velocity = Velocity::try_from(velocity).map_err(debug)?;
+            ids[index] = Some(
+                takes
+                    .note_on(take, target, key(pitch)?, velocity, time)
+                    .map_err(debug)?,
+            );
+        }
+    }
+    takes.finish(take).map_err(debug)?;
+    let ids = ids
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or("missing note id")?;
+    let mut edits = EditModel::new();
+    edits.nudge(&takes, ids[1], 5_000_000).map_err(debug)?;
+    edits.delete(&takes, ids[2]).map_err(debug)?;
+    let frozen_hits = ids[3..5]
+        .iter()
+        .map(|id| {
+            (
+                *id,
+                ProjectFrozenHit {
+                    wet: frozen_id,
+                    dry: None,
+                    detail: "frozen instrument render".into(),
+                },
+            )
+        })
+        .collect();
+    let bundle = root.join("writer bundle");
+    adapter::write_saved_project_bundle(
+        &mut SystemWriter,
+        &BundleRequest {
+            source_root: project_dir,
+            destination: bundle.clone(),
+            origin: TimeOrigin { nanos: 0 },
+            timing: Timing {
+                tempo_milli_bpm: 120_000,
+                sample_rate_hz: 48_000,
+            },
+        },
+        &takes,
+        &edits,
+        &frozen_hits,
+    )
+    .map_err(debug)?;
+    Ok(bundle)
+}
+
+/// Independent expectations at 48 kHz / 120 BPM / 960 PPQ (1 s = 1,920 ticks).
+fn assert_writer_bundle_report(report: &Report) {
+    let mut audio: Vec<_> = report.audio.iter().map(|c| (c.start, c.length)).collect();
+    audio.sort();
+    // 100 ms, 155 ms (nudged) pad hits of 12,000 frames; 500/625 ms frozen renders.
+    assert_eq!(
+        audio,
+        [
+            (4_800, 12_000),
+            (7_440, 12_000),
+            (24_000, 24_000),
+            (30_000, 24_000)
+        ]
+    );
+    let tracks: BTreeSet<_> = report.audio.iter().map(|c| c.track).collect();
+    assert_eq!(tracks.len(), 4);
+    assert_eq!(report.midi.len(), 1);
+    let notes: Vec<_> = report.midi[0]
+        .notes
+        .iter()
+        .map(|n| (n.start, n.length, n.pitch, n.velocity))
+        .collect();
+    assert_eq!(
+        notes,
+        [
+            (960, 960, 60, 91),
+            (1_200, 1_200, 60, 72),
+            (1_440, 360, 64, 88)
+        ]
+    );
+    assert_eq!(
+        report
+            .records
+            .iter()
+            .filter(|r| r.detail.contains("No retained audio"))
+            .count(),
+        1
+    );
+    assert!(report.records.iter().any(|r| {
+        r.detail
+            .contains("reference mix stay in the retained bundle")
+    }));
+}
+
+#[test]
+fn real_writer_bundle_imports_every_effective_hit_and_note() -> TestResult {
+    let fixture = Fixture::new()?;
+    let bundle = writer_bundle(&fixture.root)?;
+    let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
+    let mut request = fixture.request.clone();
+    request.bundle = bundle.clone();
+    let report = convert(&request)?;
+    assert_writer_bundle_report(&report);
+    for clip in &report.audio {
+        let hit = manifest
+            .audio
+            .iter()
+            .find(|a| a.role == AudioRole::HitWet && a.event == Some(clip.event))
+            .ok_or("hit without writer entry")?;
+        assert_eq!(
+            (hit.start_frame as i64, hit.frames as i64),
+            (clip.start, clip.length)
+        );
+    }
+    let midi = manifest.midi.as_ref().ok_or("writer bundle without MIDI")?;
+    assert_eq!(
+        fs::read(request.output.join(&midi.path))?,
+        fs::read(bundle.join(&midi.path))?
+    );
+    assert_eq!(report.bundle_losses, manifest.losses);
+    Ok(())
+}
+
+#[test]
+fn disagreeing_writer_hit_alignment_is_rejected_before_publication() -> TestResult {
+    let fixture = Fixture::new()?;
+    let bundle = writer_bundle(&fixture.root)?;
+    let path = bundle.join("manifest.json");
+    let mut manifest = Manifest::decode(&fs::read(&path)?)?;
+    let hit = manifest
+        .audio
+        .iter_mut()
+        .find(|a| a.role == AudioRole::HitWet)
+        .ok_or("no hit")?;
+    hit.start_frame += 48;
+    fs::write(&path, manifest.encode()?)?;
+    let mut request = fixture.request.clone();
+    request.bundle = bundle;
+    let error = convert(&request).err().ok_or("accepted moved hit")?;
+    assert!(error.to_string().contains("disagrees"), "{error}");
+    fixture.no_output();
+    Ok(())
+}
 #[test]
 #[ignore = "requires explicit BROWNNOTE_SOUNDCRAFT_APP/CLI/PYTHON; launches the actual pinned GUI"]
 fn pinned_app_recipe_and_adapter() -> TestResult {
@@ -457,7 +730,7 @@ fn pinned_app_recipe_and_adapter() -> TestResult {
     let python =
         std::env::var_os("BROWNNOTE_SOUNDCRAFT_PYTHON").ok_or("set BROWNNOTE_SOUNDCRAFT_PYTHON")?;
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let status = Command::new(python)
+    let status = Command::new(&python)
         .arg(root.join("tests/fixtures/soundcraft_adapter/pinned_recipe.py"))
         .arg(&app)
         .arg(&cli)
@@ -470,5 +743,28 @@ fn pinned_app_recipe_and_adapter() -> TestResult {
     fixture.request.mappings.push(fixture.mapping());
     let report = convert(&fixture.request)?;
     assert_eq!((report.audio.len(), report.midi[0].notes.len()), (2, 2));
+
+    // A real #109 writer bundle, converted, then edited in the actual GUI.
+    let bundle = writer_bundle(&fixture.root)?;
+    let mut request = fixture.request.clone();
+    request.bundle = bundle.clone();
+    request.mappings.clear();
+    request.output = fixture.root.join("writer output");
+    let report = convert(&request)?;
+    assert_writer_bundle_report(&report);
+    let evidence = std::env::var_os("BROWNNOTE_SOUNDCRAFT_EDIT_EVIDENCE")
+        .map_or_else(|| fixture.root.join("adapter-edit.json"), PathBuf::from);
+    let status = Command::new(&python)
+        .arg(root.join("tests/fixtures/soundcraft_adapter/edit_output.py"))
+        .arg(&request.app)
+        .arg(&request.cli)
+        .arg(&request.output)
+        .arg(&bundle)
+        .arg(&evidence)
+        .status()?;
+    assert!(
+        status.success(),
+        "actual-app edit/save/reopen of adapter output failed"
+    );
     Ok(())
 }
