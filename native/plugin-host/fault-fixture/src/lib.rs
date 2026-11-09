@@ -28,6 +28,14 @@ use clap_sys::version::CLAP_VERSION;
 /// Blocks processed normally before a fault fires.
 const FAULT_BLOCK: u32 = 8;
 
+unsafe extern "C" {
+    fn signal(
+        signal: std::ffi::c_int,
+        handler: Option<unsafe extern "C" fn(std::ffi::c_int)>,
+    ) -> Option<unsafe extern "C" fn(std::ffi::c_int)>;
+    fn raise(signal: std::ffi::c_int) -> std::ffi::c_int;
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Fault {
     None,
@@ -156,8 +164,14 @@ unsafe extern "C" fn process(
     if fire {
         match me.fault {
             Fault::Crash => {
-                // SAFETY: intentionally invalid; this is the fault under test.
-                unsafe { ptr::write_volatile(ptr::null_mut::<u32>(), 0xdead) };
+                // SAFETY: SIGSEGV is 11 on the tested macOS/Unix platform.
+                // Restore its default disposition so Rust's stack-overflow
+                // handler cannot return from this explicitly raised signal.
+                unsafe {
+                    signal(11, None);
+                    raise(11);
+                };
+                return CLAP_PROCESS_ERROR;
             }
             Fault::Hang => loop {
                 std::thread::sleep(std::time::Duration::from_secs(1));

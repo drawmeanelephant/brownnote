@@ -127,3 +127,11 @@ jobs:
       # locally
       - name: Test
         run: cargo test --manifest-path native/Cargo.toml
+
+      - name: Prepare checksum-pinned CLAP effect
+        run: python3 -c 'import runpy; runpy.run_path("native/docs/spikes/clap/prepare.py")["prepare_effect"]()'
+
+      - name: Required CLAP helper and real-effect tests
+        env:
+          BROWNNOTE_CLAP_EFFECT: ${{ github.workspace }}/native/docs/spikes/clap/.work/plugins/Airwindows Consolidated.clap
+        run: make native-clap-effect-test
