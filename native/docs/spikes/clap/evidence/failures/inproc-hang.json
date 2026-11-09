@@ -1,0 +1,1 @@
+{"plugin_id":"org.brownnote.fault.hang","boundary":"in-process","outcome":"hang-detected","blocks_completed":8,"detect_ms":201.056208,"audio_thread_reclaimed":false,"plugin_destroyed":false}

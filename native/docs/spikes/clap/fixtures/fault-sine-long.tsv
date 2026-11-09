@@ -1,0 +1,5 @@
+# 4 s of 440 Hz for in-process versus helper-process cost.
+sample_rate	48000
+frames	192000
+block	256
+input	sine	440	0.5	0	192000

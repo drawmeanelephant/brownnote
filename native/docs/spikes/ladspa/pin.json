@@ -1,0 +1,18 @@
+{
+  "plugin": "C* Audio Plugin Suite (CAPS)",
+  "version": "0.9.26",
+  "author": "Tim Goetze",
+  "homepage": "http://quitte.de/dsp/caps.html",
+  "license": "GPL-3.0-or-later",
+  "source_url": "http://quitte.de/dsp/caps_0.9.26.tar.bz2",
+  "source_sha256": "e7496c5bce05abebe3dcb635926153bbb58a9337a6e423f048d3b61d8a4f98c9",
+  "cross_check": {
+    "url": "https://deb.debian.org/debian/pool/main/c/caps/caps_0.9.26.orig.tar.bz2",
+    "sha256": "e7496c5bce05abebe3dcb635926153bbb58a9337a6e423f048d3b61d8a4f98c9",
+    "note": "Debian's orig tarball is byte-identical; Debian carries no source patches and ships arm64 Linux builds."
+  },
+  "patch": "caps-clang-arm64.patch",
+  "build": ["make", "-j2", "CC=c++", "_LDFLAGS=-bundle", "caps.so"],
+  "library": "caps.so",
+  "target": {"label": "Plate", "unique_id": 1779}
+}

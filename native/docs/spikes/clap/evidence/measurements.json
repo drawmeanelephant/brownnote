@@ -1,0 +1,534 @@
+{
+  "checks": [
+    {
+      "name": "synth: silence before the first note-on frame",
+      "pass": true
+    },
+    {
+      "name": "synth: first note sounds at its exact fixture frame",
+      "pass": true,
+      "first_nonzero": 1000
+    },
+    {
+      "name": "synth: stereo channels identical (plugin is mono-summed)",
+      "pass": true
+    },
+    {
+      "name": "synth: note id 2 changes the output first at its fixture frame 5003",
+      "pass": true,
+      "first_difference": 5003
+    },
+    {
+      "name": "synth: block sizes 256, 128 and 37 render identical PCM",
+      "pass": true
+    },
+    {
+      "name": "synth: paced realtime-mode thread renders the same PCM as offline",
+      "pass": true
+    },
+    {
+      "name": "synth: exactly one note-end per note id, with the note's key",
+      "pass": true
+    },
+    {
+      "name": "synth: 100 ms release ends 4800..4928 frames after note-off",
+      "pass": true,
+      "release": {
+        "1": 4816,
+        "2": 4831,
+        "3": 4848
+      }
+    },
+    {
+      "name": "synth: exact silence from the last note-end onward",
+      "pass": true,
+      "last_nonzero": 30798,
+      "last_note_end": 30848
+    },
+    {
+      "name": "synth: note-off by note id releases only that voice (same-key id 3 keeps sounding)",
+      "pass": true,
+      "a3_by_id": 0.04431,
+      "a3_wildcard": 0.00485
+    },
+    {
+      "name": "synth: wildcard note-off (id -1) releases both same-key voices together",
+      "pass": true
+    },
+    {
+      "name": "synth: velocity 1.0 vs 0.25 scales RMS by sqrt ratio 2.0 (+/-5%)",
+      "pass": true,
+      "ratio": 1.9961
+    },
+    {
+      "name": "synth: 500 ms release ends 24000..24128 frames after note-off",
+      "pass": true,
+      "frames": 24047
+    },
+    {
+      "name": "characterize: same-key note-off during another voice's release leaves id 3 stuck",
+      "pass": true,
+      "note_ends": [
+        1
+      ],
+      "final_rms": 0.0725
+    },
+    {
+      "name": "characterize: with 0 ms attack, note-off cuts the voice within 64 frames (no release)",
+      "pass": true,
+      "last_nonzero": 9999,
+      "note_end": 10064
+    },
+    {
+      "name": "synth state: restored blob equals the saved blob; mutated blob differs",
+      "pass": true
+    },
+    {
+      "name": "synth state: parameter value restored",
+      "pass": true
+    },
+    {
+      "name": "synth state: mutation changes the render; in-place restore reproduces it exactly",
+      "pass": true
+    },
+    {
+      "name": "synth state: a fresh process loading s0 / s1 reproduces reference / mutated exactly",
+      "pass": true
+    },
+    {
+      "name": "synth state: Gain mutation scales RMS as its plain values predict (+/-3%)",
+      "pass": true,
+      "ratio": 2.0221,
+      "expected": 2.0221
+    },
+    {
+      "name": "effect: render extension present, no hard realtime requirement, both modes accepted",
+      "pass": true
+    },
+    {
+      "name": "effect: reports zero latency",
+      "pass": true
+    },
+    {
+      "name": "effect: offline and realtime render modes produce identical PCM",
+      "pass": true
+    },
+    {
+      "name": "effect: paced realtime thread at 256 equals offline at 256",
+      "pass": true
+    },
+    {
+      "name": "effect: burst-512 has no non-finite samples",
+      "pass": true
+    },
+    {
+      "name": "effect: burst-rt-512 has no non-finite samples",
+      "pass": true
+    },
+    {
+      "name": "effect: burst-256 has no non-finite samples",
+      "pass": true
+    },
+    {
+      "name": "effect: burst-live-256 has no non-finite samples",
+      "pass": true
+    },
+    {
+      "name": "effect: wet output continues after the 12000-frame input burst ends",
+      "pass": true,
+      "rms": 0.07661
+    },
+    {
+      "name": "characterize: reported tail (2 s) is shorter than the measured -60 dBFS decay",
+      "pass": true,
+      "reported": 96000,
+      "measured": 325329
+    },
+    {
+      "name": "characterize: output never reaches exact zero; floor stays below -120 dBFS",
+      "pass": true,
+      "floor_dbfs": -154.2
+    },
+    {
+      "name": "characterize: process never returns TAIL or SLEEP; the host must detect silence",
+      "pass": true
+    },
+    {
+      "name": "effect: Bypass=1 passes the known input through (max error < 1e-6)",
+      "pass": true,
+      "max_error": 1.480191186287172e-08
+    },
+    {
+      "name": "effect state: restored blob equals the saved blob; mutated blob differs",
+      "pass": true
+    },
+    {
+      "name": "effect state: parameter value restored",
+      "pass": true
+    },
+    {
+      "name": "effect state: mutation changes the render",
+      "pass": true
+    },
+    {
+      "name": "effect state: first in-instance render equals a fresh default render",
+      "pass": true
+    },
+    {
+      "name": "characterize: restoring the same state does not reproduce the reference audio",
+      "pass": true,
+      "in_place": 0.08563,
+      "fresh": 0.08563
+    },
+    {
+      "name": "effect state: loading s0 in two fresh processes renders identical audio",
+      "pass": true
+    },
+    {
+      "name": "load failure missing-bundle: typed error bundle-missing, exit 3, no output, state file untouched",
+      "pass": true,
+      "got": "bundle-missing",
+      "exit_code": 3
+    },
+    {
+      "name": "load failure garbage-binary: typed error dlopen-failed, exit 3, no output, state file untouched",
+      "pass": true,
+      "got": "dlopen-failed",
+      "exit_code": 3
+    },
+    {
+      "name": "load failure not-a-clap: typed error no-clap-entry, exit 3, no output, state file untouched",
+      "pass": true,
+      "got": "no-clap-entry",
+      "exit_code": 3
+    },
+    {
+      "name": "load failure unknown-id: typed error unknown-plugin-id, exit 3, no output, state file untouched",
+      "pass": true,
+      "got": "unknown-plugin-id",
+      "exit_code": 3
+    },
+    {
+      "name": "load failure init-fails: typed error init-failed, exit 3, no output, state file untouched",
+      "pass": true,
+      "got": "init-failed",
+      "exit_code": 3
+    },
+    {
+      "name": "load failure activate-fails: typed error activate-failed, exit 3, no output, state file untouched",
+      "pass": true,
+      "got": "activate-failed",
+      "exit_code": 3
+    },
+    {
+      "name": "in-process passthrough completes all 94 blocks",
+      "pass": true
+    },
+    {
+      "name": "in-process crash: the whole host process dies with SIGSEGV after 8 blocks",
+      "pass": true,
+      "exit": -11,
+      "blocks": 8
+    },
+    {
+      "name": "in-process hang: watchdog detects it, but the audio thread and plugin are lost",
+      "pass": true,
+      "detect_ms": 201.1
+    },
+    {
+      "name": "in-process non-finite: completes and returns poisoned samples to the host",
+      "pass": true,
+      "nonfinite": 43904
+    },
+    {
+      "name": "helper passthrough: no failures, output equals the input",
+      "pass": true
+    },
+    {
+      "name": "helper crash: host survives three SIGSEGVs at blocks 8, 17, 26; restarts twice, restores state each time, then disables the plugin",
+      "pass": true,
+      "restart_ms": [
+        1.8,
+        2.4
+      ]
+    },
+    {
+      "name": "helper crash: full-length output; every lost block is replaced by dry input",
+      "pass": true
+    },
+    {
+      "name": "helper hang: each hang is cut off at the 200 ms deadline, helper killed and restarted",
+      "pass": true,
+      "detect_ms": [
+        210.3,
+        211.2,
+        210.4
+      ]
+    },
+    {
+      "name": "helper non-finite: detected on block 8, plugin disabled, no NaN reaches the output",
+      "pass": true
+    },
+    {
+      "name": "helper init failure: plugin disabled from the start, dry render completes",
+      "pass": true
+    },
+    {
+      "name": "helper transport is lossless for the real effect: identical PCM to in-process",
+      "pass": true
+    },
+    {
+      "name": "repeat: fresh process reproduces effect/burst-512.wav byte for byte",
+      "pass": true
+    },
+    {
+      "name": "repeat: fresh process reproduces effect/tail-30s.wav byte for byte",
+      "pass": true
+    },
+    {
+      "name": "repeat: fresh process reproduces synth/life-256.wav byte for byte",
+      "pass": true
+    }
+  ],
+  "passed": 59,
+  "failed": 0,
+  "measurements": {
+    "synth_live_128": {
+      "block_budget_ns": 2666666,
+      "process_ns_p50": 6834,
+      "process_ns_p99": 23250,
+      "process_ns_max": 46291,
+      "blocks_over_budget": 0,
+      "late_blocks": 0,
+      "max_lateness_ns": 2419685
+    },
+    "synth_note_end_minus_note_off_frames": {
+      "1": 4816,
+      "2": 4831,
+      "3": 4848
+    },
+    "synth_note_end_frames_life-37": {
+      "1": 18832,
+      "2": 24826,
+      "3": 30820
+    },
+    "synth_note_end_frames_life-128": {
+      "1": 18815,
+      "2": 24831,
+      "3": 30847
+    },
+    "synth_d14_window_19000_19960": {
+      "a3_by_id": 0.04431489102029591,
+      "a3_wildcard": 0.0048509517789439675,
+      "e4_by_id": 0.05848103370376909,
+      "e4_wildcard": 0.05585810503785032
+    },
+    "synth_velocity_rms_ratio_1_0_over_0_25": 1.9961128795129752,
+    "synth_release_long_frames": 24047,
+    "synth_state": {
+      "param": "Gain",
+      "param_id": 3165055,
+      "value_before": 0.23912964761257172,
+      "value_after_mutation": 0.4999999701976776,
+      "value_after_restore": 0.23912964761257172,
+      "s0_bytes": 124,
+      "s1_bytes": 122,
+      "s2_bytes": 124,
+      "s2_equals_s0": true,
+      "s1_equals_s0": false
+    },
+    "effect_contract": {
+      "extensions": [
+        "audio-ports",
+        "note-ports",
+        "params",
+        "state",
+        "render",
+        "tail",
+        "latency"
+      ],
+      "render_has_hard_realtime_requirement": false,
+      "offline_mode_accepted": true,
+      "realtime_mode_accepted": true,
+      "latency_frames": 0,
+      "reported_tail_frames": 96000,
+      "tail_changes": 0,
+      "process_status_counts": {
+        "error": 0,
+        "continue": 375,
+        "continue_if_not_quiet": 0,
+        "tail": 0,
+        "sleep": 0
+      },
+      "audio_ports": [
+        [
+          {
+            "name": "Input",
+            "channels": 2,
+            "flags": 15
+          }
+        ],
+        [
+          {
+            "name": "Output",
+            "channels": 2,
+            "flags": 15
+          }
+        ]
+      ]
+    },
+    "effect_block_256_equals_512": true,
+    "effect_live_256": {
+      "block_budget_ns": 5333333,
+      "process_ns_p50": 55709,
+      "process_ns_p99": 106875,
+      "process_ns_max": 122083,
+      "blocks_over_budget": 0,
+      "late_blocks": 0,
+      "max_lateness_ns": 84
+    },
+    "effect_tail": {
+      "reported_frames": 96000,
+      "measured_frames_after_input_end": {
+        "-60": 325329,
+        "-80": 469792,
+        "-100": 616312
+      },
+      "last_second_peak_dbfs": -154.2,
+      "status_counts_30s": {
+        "error": 0,
+        "continue": 2813,
+        "continue_if_not_quiet": 0,
+        "tail": 0,
+        "sleep": 0
+      }
+    },
+    "effect_bypass_max_abs_error_vs_input": 1.480191186287172e-08,
+    "effect_state": {
+      "param": "Bigness",
+      "param_id": 2944917343,
+      "value_before": 1.0,
+      "value_after_mutation": 0.25,
+      "value_after_restore": 1.0,
+      "s0_bytes": 314,
+      "s1_bytes": 315,
+      "s2_bytes": 314,
+      "s2_equals_s0": true,
+      "s1_equals_s0": false
+    },
+    "effect_state_audio": {
+      "in_place_restore_max_abs_diff": 0.08562605455517769,
+      "fresh_load_s0_vs_default_max_abs_diff": 0.08562605455517769,
+      "fresh_load_s0_repeatable": true
+    },
+    "isolation_cost": {
+      "passthrough_in_process_ns": {
+        "64": [
+          167,
+          250
+        ],
+        "256": [
+          291,
+          417
+        ]
+      },
+      "passthrough_helper_roundtrip_ns": {
+        "64": [
+          6875,
+          10083
+        ],
+        "256": [
+          7750,
+          24333
+        ]
+      },
+      "effect_256_helper_roundtrip_ns": [
+        14500,
+        21958,
+        33084
+      ],
+      "effect_256_in_process_ns": [
+        5000,
+        5417
+      ],
+      "helper_first_start_ms": {
+        "fixture": 2.1905829999999997,
+        "effect": 9.199542
+      },
+      "helper_restart_ms": [
+        1.849542,
+        2.404167,
+        2.049917,
+        6.341375
+      ],
+      "block_budget_ns": {
+        "64": 1333333,
+        "256": 5333333
+      }
+    },
+    "failure_detection_ms": {
+      "in_process_hang": 201.056208,
+      "helper_crash": [
+        0.09075,
+        0.076208,
+        0.06966699999999999
+      ],
+      "helper_hang": [
+        210.319375,
+        211.18070799999998,
+        210.41725
+      ]
+    }
+  },
+  "host": "arm64-Darwin 27.3",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "plugin_executables_sha256": {
+    "synth_executable_sha256": "33cd372998c4d0db72eccc0e4ea2c8ee2f711549975d3323d8ae822453bf973b",
+    "effect_executable_sha256": "92152f95a7053ecd65c4e5f356e719c6b82a7dfe4083bc12848f5c755077ad4d"
+  },
+  "loadavg_1_5_15_at_end": [
+    2.18,
+    5.71,
+    7.1
+  ],
+  "wav_sha256": {
+    "effect/burst-256.wav": "fe3099e1731b4455c80584aa5b89dbbac2348a00f1e42d661df5657a96b15692",
+    "effect/burst-512.wav": "fe3099e1731b4455c80584aa5b89dbbac2348a00f1e42d661df5657a96b15692",
+    "effect/burst-live-256.wav": "fe3099e1731b4455c80584aa5b89dbbac2348a00f1e42d661df5657a96b15692",
+    "effect/burst-rt-512.wav": "fe3099e1731b4455c80584aa5b89dbbac2348a00f1e42d661df5657a96b15692",
+    "effect/bypass.wav": "63079158ce72c02300437b790ab2206895b0fa14eebdb7c3ee2e7089c4ef9490",
+    "effect/tail-30s.wav": "8afa819b62a2a420e16fb502007605ffcea0a2dea47e3a834be1b0ff2141fa2d",
+    "effect-state/fresh-s0-again.wav": "6ef35c39de5afd32a5f675b6009deb0914f7a8ea32b1dbdb00be641cfca483f4",
+    "effect-state/fresh-s0.wav": "6ef35c39de5afd32a5f675b6009deb0914f7a8ea32b1dbdb00be641cfca483f4",
+    "effect-state/fresh-s1.wav": "08bf1bbc087a0a1431c05b186cb52574904d164af4e4fa32f8c0f3f6a6a1e810",
+    "effect-state/state-mutated.wav": "d34d556c78502166a22e76b897e7b797a858938f5664782b1e6905ca69b88020",
+    "effect-state/state-reference.wav": "fe3099e1731b4455c80584aa5b89dbbac2348a00f1e42d661df5657a96b15692",
+    "effect-state/state-restored.wav": "6ef35c39de5afd32a5f675b6009deb0914f7a8ea32b1dbdb00be641cfca483f4",
+    "failures/helper-crash.wav": "ff4f3d165300dcc5e386bc5985eaf3551e40cd0f3e3ca236f706947c76d9b138",
+    "failures/helper-effect-256.wav": "fe3099e1731b4455c80584aa5b89dbbac2348a00f1e42d661df5657a96b15692",
+    "failures/helper-hang.wav": "ff4f3d165300dcc5e386bc5985eaf3551e40cd0f3e3ca236f706947c76d9b138",
+    "failures/helper-init-fails.wav": "ff4f3d165300dcc5e386bc5985eaf3551e40cd0f3e3ca236f706947c76d9b138",
+    "failures/helper-nonfinite.wav": "ff4f3d165300dcc5e386bc5985eaf3551e40cd0f3e3ca236f706947c76d9b138",
+    "failures/helper-passthrough-256.wav": "8b6263e0430cca5321bbf00ea98d1f2ccee3f4bd80cc9e32e3dc1cc85ca67640",
+    "failures/helper-passthrough-64.wav": "8b6263e0430cca5321bbf00ea98d1f2ccee3f4bd80cc9e32e3dc1cc85ca67640",
+    "failures/helper-passthrough.wav": "ff4f3d165300dcc5e386bc5985eaf3551e40cd0f3e3ca236f706947c76d9b138",
+    "failures/inproc-passthrough-256.wav": "8b6263e0430cca5321bbf00ea98d1f2ccee3f4bd80cc9e32e3dc1cc85ca67640",
+    "failures/inproc-passthrough-64.wav": "8b6263e0430cca5321bbf00ea98d1f2ccee3f4bd80cc9e32e3dc1cc85ca67640",
+    "synth/life-128.wav": "4285ab7a5f671903ff0be7769635ea7d0e1df88b88fd9d34362409182cd45e25",
+    "synth/life-256.wav": "4285ab7a5f671903ff0be7769635ea7d0e1df88b88fd9d34362409182cd45e25",
+    "synth/life-37.wav": "4285ab7a5f671903ff0be7769635ea7d0e1df88b88fd9d34362409182cd45e25",
+    "synth/life-live-128.wav": "4285ab7a5f671903ff0be7769635ea7d0e1df88b88fd9d34362409182cd45e25",
+    "synth/release-long.wav": "e6e2717af3827caa881b8c2cf028f28bee185788b53e97adc7f4bdfd419bf795",
+    "synth/same-key-during-release.wav": "33961a98fbbe7e868a213e7fc76d97b13f4f5db17bded8dc453e228fa410e869",
+    "synth/velocity.wav": "2aea7dbeef468f5bedc8d6620cc67b67dd9b1a4278566a86a83f1c5525217bae",
+    "synth/wildcard-off.wav": "c55b984aecb2660c9109c19fd48b5f2c5a51e0006bb981096985dc0fd5474b3e",
+    "synth/without-2.wav": "86ecf517ccdcc423a8e59e9405495e311fd69c5a2fd9ebd8a9c5283ff6640fd9",
+    "synth/zero-attack.wav": "f41990bd78bef365190b3765642cc0d9c824ea041dcf3639aa262bf9a658569d",
+    "synth-state/fresh-s0-again.wav": "4285ab7a5f671903ff0be7769635ea7d0e1df88b88fd9d34362409182cd45e25",
+    "synth-state/fresh-s0.wav": "4285ab7a5f671903ff0be7769635ea7d0e1df88b88fd9d34362409182cd45e25",
+    "synth-state/fresh-s1.wav": "e645f10570a9010534245e96caf6f1b4c6c4728b236c8c0b9acf70bbed809a9f",
+    "synth-state/state-mutated.wav": "e645f10570a9010534245e96caf6f1b4c6c4728b236c8c0b9acf70bbed809a9f",
+    "synth-state/state-reference.wav": "4285ab7a5f671903ff0be7769635ea7d0e1df88b88fd9d34362409182cd45e25",
+    "synth-state/state-restored.wav": "4285ab7a5f671903ff0be7769635ea7d0e1df88b88fd9d34362409182cd45e25"
+  }
+}
