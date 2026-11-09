@@ -13,6 +13,7 @@ use std::{
 pub const DEFAULT_SAMPLES: &str = "brownnote:bundled-samples";
 pub const DEFAULT_BIN: &str = "brownnote:bundled-cli";
 pub const DEFAULT_CACHE: &str = "brownnote:user-pedal-cache";
+pub const DEFAULT_CLAP_LIVE: &str = "brownnote:bundled-clap-live";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Resource {
@@ -22,6 +23,8 @@ pub enum Resource {
     Cache,
     Recovery,
     Preferences,
+    /// The `brownnote-clap-live` helper process (D8, machine-local).
+    ClapLive,
 }
 
 impl Resource {
@@ -35,6 +38,7 @@ impl Resource {
             Self::Cache => "--pedal-cache DIR or BROWNNOTE_CACHE",
             Self::Recovery => "BROWNNOTE_RECOVERY",
             Self::Preferences => "BROWNNOTE_PREFERENCES",
+            Self::ClapLive => "BROWNNOTE_CLAP_LIVE_HELPER (or install the bundled helper)",
         }
     }
 
@@ -43,6 +47,7 @@ impl Resource {
             Self::Samples => Some(DEFAULT_SAMPLES),
             Self::Brownnote => Some(DEFAULT_BIN),
             Self::Cache => Some(DEFAULT_CACHE),
+            Self::ClapLive => Some(DEFAULT_CLAP_LIVE),
             _ => None,
         }
     }
@@ -105,6 +110,7 @@ pub struct Environment {
     pub cache: Option<PathBuf>,
     pub recovery: Option<PathBuf>,
     pub preferences: Option<PathBuf>,
+    pub clap_live: Option<PathBuf>,
 }
 
 pub struct Resolver {
@@ -143,6 +149,7 @@ impl Resolver {
                 cache: get("BROWNNOTE_CACHE"),
                 recovery: get("BROWNNOTE_RECOVERY"),
                 preferences: get("BROWNNOTE_PREFERENCES"),
+                clap_live: get("BROWNNOTE_CLAP_LIVE_HELPER"),
             },
         ))
     }
@@ -216,6 +223,7 @@ impl Resolver {
             Resource::Cache => &self.environment.cache,
             Resource::Recovery => &self.environment.recovery,
             Resource::Preferences => &self.environment.preferences,
+            Resource::ClapLive => &self.environment.clap_live,
         };
         if let Some(path) = explicit.or(environment.as_deref()) {
             return self.absolute(resource, path);
@@ -270,9 +278,13 @@ impl Resolver {
             (Resource::Samples, Some(repo)) => repo.join("recordings"),
             (Resource::Brownnote, Some(repo)) => repo.join("build/brownnote"),
             (Resource::Bench, Some(repo)) => repo.join("vendor/GuitarPedal/Validation/bench/bench"),
+            (Resource::ClapLive, Some(repo)) => {
+                repo.join("native/plugin-host/target/debug/brownnote-clap-live")
+            }
             (Resource::Samples, None) => root.join("resources/recordings"),
             (Resource::Brownnote, None) => root.join("tools/brownnote"),
             (Resource::Bench, None) => root.join("tools/bench"),
+            (Resource::ClapLive, None) => root.join("tools/brownnote-clap-live"),
             _ => unreachable!(),
         })
     }

@@ -4,9 +4,11 @@ use crate::performance::{
     rounded_stream_frame,
     scheduler::{ScheduleCounters, ScheduleResult, ScheduleSender, ScheduledEvent},
 };
+use crate::plugins::live::LiveVoice;
 use cpal::{
-    BufferSize, DeviceId, OutputStreamTimestamp, SampleFormat, Stream, StreamConfig, StreamInstant,
-    SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange,
+    BufferSize, DeviceId, OutputStreamTimestamp, Sample as CpalSample, SampleFormat, Stream,
+    StreamConfig, StreamInstant, SupportedBufferSize, SupportedStreamConfig,
+    SupportedStreamConfigRange,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use std::{
@@ -347,6 +349,82 @@ impl PlaybackTimestamps {
     }
 }
 
+/// Frames mixed from the live instrument per scratch pass, so a helper block is
+/// never larger than this preallocated buffer.
+const LIVE_CHUNK_FRAMES: usize = 1024;
+
+/// Everything one output stream's data callback owns. Construct it (and attach
+/// a live voice with [`Callback::set_live`]) off the callback thread; `process`
+/// then allocates, frees, locks, and waits for nothing.
+pub struct Callback {
+    clock: PlaybackClock,
+    mixer: Mixer,
+    commands: rtrb::Consumer<Command>,
+    channels: usize,
+    live: Option<LiveVoice>,
+    live_scratch: Vec<f32>,
+}
+
+impl Callback {
+    pub fn new(
+        clock: PlaybackClock,
+        mixer: Mixer,
+        commands: rtrb::Consumer<Command>,
+        channels: usize,
+    ) -> Self {
+        Self {
+            clock,
+            mixer,
+            commands,
+            channels,
+            live: None,
+            live_scratch: vec![0.0; LIVE_CHUNK_FRAMES * channels.max(1)],
+        }
+    }
+
+    /// Replace the live voice. Call only while the stream is not running: this
+    /// is the off-callback open/close handoff, never a callback operation.
+    pub fn set_live(&mut self, live: Option<LiveVoice>) {
+        self.live = live;
+    }
+
+    pub fn live_frame(&self) -> Option<u64> {
+        self.live.as_ref().map(LiveVoice::frame)
+    }
+
+    /// The real output callback body: publish timing, drain commands, render
+    /// the sample mixer, then add the already-rendered live instrument block.
+    /// The live voice contributes silence when its worker has not produced
+    /// audio, so a failed or starved helper never silences the mixer.
+    pub fn process<T: cpal::SizedSample + cpal::FromSample<f32>>(
+        &mut self,
+        data: &mut [T],
+        timestamp: OutputStreamTimestamp,
+    ) where
+        f32: cpal::FromSample<T>,
+    {
+        let channels = self.channels;
+        if channels == 0 {
+            self.clock.publish(0, timestamp);
+            return;
+        }
+        self.clock.publish(data.len() / channels, timestamp);
+        self.mixer.drain(&mut self.commands);
+        self.mixer.render_into(data, channels, T::from_sample);
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        for chunk in data.chunks_mut(self.live_scratch.len()) {
+            let count = chunk.len();
+            self.live_scratch[..count].fill(0.0);
+            live.render_add(&mut self.live_scratch[..count], channels);
+            for (sample, extra) in chunk.iter_mut().zip(&self.live_scratch[..count]) {
+                *sample = T::from_sample(f32::from_sample(*sample) + *extra);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct OpenedOutput {
     pub device_id: DeviceId,
@@ -422,6 +500,20 @@ impl Output {
         slots: impl Into<Slots>,
         selection: &OutputSelection,
     ) -> Result<Self, AudioError> {
+        Self::open_selected_with_live(slots, selection, |_, _| (None, None))
+    }
+
+    /// Opens the stream exactly like [`Output::open_selected`], with one
+    /// optional live instrument voice. `live` runs after the device
+    /// configuration is known but before the stream starts, so the voice can
+    /// be created at the stream's rate and buffer size and moved in without the
+    /// callback ever opening or closing a helper. The string is a status note
+    /// for a voice that could not start; the sample mixer still plays.
+    pub fn open_selected_with_live(
+        slots: impl Into<Slots>,
+        selection: &OutputSelection,
+        live: impl FnOnce(u32, u32) -> (Option<LiveVoice>, Option<String>),
+    ) -> Result<Self, AudioError> {
         let host = cpal::default_host();
         let device = match &selection.device_id {
             Some(id) => host
@@ -444,10 +536,19 @@ impl Output {
             configuration,
             stream_id: timestamps.stream_id,
         };
-        let status = format!(
+        let buffer_frames = match config.buffer_size {
+            BufferSize::Fixed(frames) => frames,
+            BufferSize::Default => 512,
+        };
+        let (live, live_status) = live(config.sample_rate, buffer_frames);
+        let mut status = format!(
             "Output: {} · {} Hz · {format:?} · {} ch",
             opened.name, config.sample_rate, config.channels
         );
+        if let Some(note) = live_status {
+            status.push_str(" · ");
+            status.push_str(&note);
+        }
         let (commands, consumer) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
         let (retired_commands, retired) = rtrb::RingBuffer::new(SLOTS);
         let meters = Arc::new(Meters::default());
@@ -461,6 +562,8 @@ impl Output {
         let Some(schedule) = mixer.take_scheduler() else {
             unreachable!("new mixer has its unique producer");
         };
+        let mut callback = Callback::new(clock, mixer, consumer, usize::from(config.channels));
+        callback.set_live(live);
         let (send_error, errors) = mpsc::channel();
         let wake = Arc::new(OnceLock::new());
         let send_error = ErrorSink {
@@ -468,10 +571,10 @@ impl Output {
             wake: wake.clone(),
         };
         let stream = match format {
-            SampleFormat::F32 => build::<f32>(&device, config, mixer, consumer, send_error, clock),
-            SampleFormat::I16 => build::<i16>(&device, config, mixer, consumer, send_error, clock),
-            SampleFormat::U16 => build::<u16>(&device, config, mixer, consumer, send_error, clock),
-            SampleFormat::I32 => build::<i32>(&device, config, mixer, consumer, send_error, clock),
+            SampleFormat::F32 => build::<f32>(&device, config, callback, send_error),
+            SampleFormat::I16 => build::<i16>(&device, config, callback, send_error),
+            SampleFormat::U16 => build::<u16>(&device, config, callback, send_error),
+            SampleFormat::I32 => build::<i32>(&device, config, callback, send_error),
             other => return Err(AudioError::UnsupportedFormat(other)),
         }?;
         stream.play().map_err(device_error)?;
@@ -630,19 +733,17 @@ impl ErrorSink {
 fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
     device: &cpal::Device,
     config: StreamConfig,
-    mut mixer: Mixer,
-    mut commands: rtrb::Consumer<Command>,
+    mut callback: Callback,
     errors: ErrorSink,
-    mut clock: PlaybackClock,
-) -> Result<Stream, AudioError> {
-    let channels = usize::from(config.channels);
+) -> Result<Stream, AudioError>
+where
+    f32: cpal::FromSample<T>,
+{
     device
         .build_output_stream(
             config,
             move |data: &mut [T], info| {
-                clock.publish(data.len() / channels, info.timestamp());
-                mixer.drain(&mut commands);
-                mixer.render_into(data, channels, T::from_sample);
+                callback.process(data, info.timestamp());
             },
             move |error| {
                 errors.report(error.to_string());

@@ -1,23 +1,12 @@
 //! Live CLAP instrument backend (#112) through real helper processes.
 //!
-//! The live modules are compiled here by path until the integrator declares
-//! `plugins` in `lib.rs`; they use only the crate's public API, so they build
-//! unchanged in either place.
+//! The modules are the shipped `brownnote_native::plugins` backend, declared
+//! in `lib.rs`; this target only drives them through the public API.
 //!
 //! The fixture instrument (`native/plugin-host/fault-fixture`) is exact by
 //! construction, so every expected sample below is computed from its
 //! documented formula, not from another render.
 #![allow(unsafe_code)]
-
-mod pedals {
-    pub use brownnote_native::pedals::offline;
-}
-mod performance {
-    pub use brownnote_native::performance::*;
-}
-#[path = "../src/plugins/mod.rs"]
-#[allow(dead_code)]
-mod plugins;
 
 use brownnote_native::engine::{Command, Meters, Mixer, QUEUE_CAPACITY, Sample, Slots};
 use brownnote_native::midi::parser::{Message, parse_message};
@@ -26,11 +15,11 @@ use brownnote_native::performance::{
     Channel, EventId, InstrumentId, NoteKey, NoteLifecycle, NoteOn, OriginalTime, Pitch,
     SampleRate, SourceId, TakeId, TakeTiming, Target, Velocity,
 };
-use plugins::live::{
+use brownnote_native::plugins::live::{
     LiveAction, LiveConfig, LiveError, LiveEvent, LiveHost, LiveSender, LiveState, LiveVoice,
     SendOutcome, identify,
 };
-use plugins::live_protocol::HelperFault;
+use brownnote_native::plugins::live_protocol::HelperFault;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -775,10 +764,11 @@ fn software_midi_input_records_a_take_that_replays_and_recalls_identically() {
         .capture(false)
         .unwrap_or_else(|e| panic!("{e}"))
         .unwrap_or_else(|| panic!("nothing captured"));
-    let take_audio = |captured: &plugins::live::Captured, base: u64| -> Vec<f32> {
-        let from = (base - captured.start_frame) as usize * 2;
-        captured.samples[from..from + 2 * 3500].to_vec()
-    };
+    let take_audio =
+        |captured: &brownnote_native::plugins::live::Captured, base: u64| -> Vec<f32> {
+            let from = (base - captured.start_frame) as usize * 2;
+            captured.samples[from..from + 2 * 3500].to_vec()
+        };
     assert_eq!(
         first_difference(&take_audio(&second, replay_base), &take_audio(&first, base)),
         None

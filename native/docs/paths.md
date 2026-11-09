@@ -61,6 +61,7 @@ Each resource resolves independently:
 | Pedal cache | `BROWNNOTE_CACHE` | `$HOME/Library/Caches/Brownnote/pedals` |
 | Recovery | `BROWNNOTE_RECOVERY` | `$HOME/Library/Application Support/Brownnote/recovery` |
 | Machine preferences | `BROWNNOTE_PREFERENCES` | `$HOME/Library/Application Support/Brownnote/preferences` |
+| Live CLAP helper | `BROWNNOTE_CLAP_LIVE_HELPER` | `tools/brownnote-clap-live` beside executable |
 
 Explicit relative paths are anchored to the launch directory. Empty overrides,
 missing paths, wrong path types, non-executable tools, unavailable directories
@@ -78,6 +79,12 @@ and it does not select a project directory. Project media is not cache (D4).
 Preference resolution selects a directory without creating it or probing
 write access. The output preference service reads existing settings before
 opening audio. It reports read or save failures separately from stream errors.
+
+The live CLAP helper (`brownnote-clap-live`) is also a machine setting (D8),
+never project data. Its `clap-live.json` override in the preferences directory
+wins over `BROWNNOTE_CLAP_LIVE_HELPER` and the bounded layout. A broken
+override is reported when a session is mounted; it never falls through to a
+different program.
 
 The C CLI always receives an absolute `--bench` argument for catalog and
 render calls, preventing its cwd/vendor fallback from choosing other tooling.

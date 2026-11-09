@@ -12,5 +12,6 @@ pub mod output;
 pub mod paths;
 pub mod pedals;
 pub mod performance;
+pub mod plugins;
 pub mod project;
 pub mod takes;
