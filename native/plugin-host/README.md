@@ -18,6 +18,26 @@ brownnote-plugin-host clap                              # one CLAP effect sessio
 brownnote-plugin-host ladspa [--allow UniqueID:Label]   # one LADSPA effect session
 ```
 
+## How the app uses both helpers
+
+The native app registers a helper for each backend in
+`ui::pedals::plugin::default_helpers`. For each backend its environment
+variable wins (`BROWNNOTE_CLAP_HELPER`, `BROWNNOTE_LADSPA_HELPER`);
+otherwise a `brownnote-plugin-host` next to the running executable is used.
+The helper runs with `clap` or `ladspa` as its argument.
+
+A `.clap` bundle is a CLAP plugin. A bare shared library is ambiguous, so
+when the LADSPA helper is configured the app probes it as LADSPA first. If
+that probe cannot find or load the plugin (`unknown-plugin-id`,
+`bundle-missing`, `dlopen-failed`, `no-entry`), the app probes the same
+library as CLAP, so a CLAP `.so` is not misrouted. A refused LADSPA feature,
+such as the allow-list, keeps its message.
+
+Add a LADSPA plugin by path and ID, for example the provisioned `caps.so`
+with `1779:Plate`; a CLAP plugin ID looks like
+`com.airwindows.consolidated`. The pad renders the chain offline, retains
+the result, and reopens it without the plugin.
+
 ## What the CLAP helper does
 
 Steps in order:
@@ -94,7 +114,10 @@ was provisioned. Rendered audio is program output and is retained as
 project media (D4). This is a reading of the licenses, not legal advice.
 
 `native/tests/ladspa_offline.rs` runs the fault fixture and the pinned
-Plate through the public `pedals::offline::{probe, render}`:
+Plate through the public `pedals::offline::{probe, render}`. The mounted
+app workflow is `make native-ladspa-workflow-test`, which adds `1779:Plate`
+from the provisioned `caps.so`, edits it, auditions, saves, reopens without
+the library, relinks and exports:
 
 ```sh
 BROWNNOTE_LADSPA_HELPER=.../brownnote-plugin-host \\

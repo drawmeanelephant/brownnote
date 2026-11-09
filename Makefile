@@ -117,8 +117,15 @@ native-ladspa-plate-test: native-plugin-host
 	$(LADSPA_TEST_ENV) BROWNNOTE_LADSPA_PLATE=$$(python3 native/plugin-host/caps/provision.py | tail -n 1) \
 	BROWNNOTE_REQUIRE_LADSPA_PLATE=1 $(CARGO) test --manifest-path native/Cargo.toml --test ladspa_offline -- --nocapture
 
+# Mounted app LADSPA workflow, including the pinned Plate, with no helper or
+# Plate skips.
+native-ladspa-workflow-test: native-plugin-host
+	python3 native/plugin-host/caps/provision.py
+	$(LADSPA_TEST_ENV) BROWNNOTE_LADSPA_PLATE=$$(python3 native/plugin-host/caps/provision.py | tail -n 1) \
+	BROWNNOTE_REQUIRE_LADSPA_PLATE=1 $(CARGO) test --manifest-path native/Cargo.toml --bin brownnote-native ui::pedals::plugin::tests:: -- --nocapture
+
 # Explicit opt-in: requires the pinned SoundCraft app, CLI and Python environment.
 native-soundcraft-test:
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_recipe_and_adapter -- --ignored --exact
 
-.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-soundcraft-test native-plugin-host native-clap-effect-test native-plugin-workflow-test native-clap-live-test native-ladspa-plate-test
+.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-soundcraft-test native-plugin-host native-clap-effect-test native-plugin-workflow-test native-clap-live-test native-ladspa-plate-test native-ladspa-workflow-test

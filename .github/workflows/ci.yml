@@ -149,3 +149,6 @@ jobs:
 
       - name: Required LADSPA helper and pinned Plate tests
         run: make native-ladspa-plate-test
+
+      - name: Required LADSPA plugin pad workflow tests
+        run: make native-ladspa-workflow-test
