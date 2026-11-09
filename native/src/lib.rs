@@ -1,5 +1,8 @@
+pub mod adapters;
 pub mod assets;
+pub mod edit;
 pub mod engine;
+pub mod export;
 pub mod import;
 pub mod kit;
 pub mod look;
@@ -9,3 +12,4 @@ pub mod paths;
 pub mod pedals;
 pub mod performance;
 pub mod project;
+pub mod takes;

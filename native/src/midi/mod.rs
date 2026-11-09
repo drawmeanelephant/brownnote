@@ -1,3 +1,4 @@
-//! Pure MIDI message and project-mapping boundary. No ports, clocks or queues.
+//! Pure MIDI message and project-mapping boundary, plus the selected input.
+pub mod input;
 pub mod mapping;
 pub mod parser;

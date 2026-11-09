@@ -9,6 +9,7 @@ use crate::{
     engine::{Command, SLOTS, Slots},
     import::{Imported, MediaPublisher, ProjectMedia, SessionMedia},
     kit::{KIT_SECONDS, decode_wav_max, waveform},
+    midi::{input::MappingsDocument, mapping::Mappings},
     output::Output,
     pedals::render::Chain,
 };
@@ -105,6 +106,12 @@ impl Snapshot {
             .map_err(|error| Error::Store(StoreError::Document(error)))?;
         Ok(Self { document, media })
     }
+
+    /// Freeze the controller's project mappings alongside settings and media.
+    pub fn with_midi_mappings(mut self, mappings: &Mappings) -> Self {
+        self.document.midi_mappings = Some(MappingsDocument::from_mappings(mappings));
+        self
+    }
 }
 
 pub fn pad_id(index: usize) -> PadId {
@@ -116,6 +123,7 @@ pub fn pad_id(index: usize) -> PadId {
 
 pub struct Prepared {
     pub document: Document,
+    pub mappings: Mappings,
     pub generation: GenerationId,
     pub registry: AssetRegistry,
     pub media: Arc<SessionMedia>,
@@ -126,6 +134,9 @@ impl Prepared {
     pub fn decode(project: PreparedProject) -> Result<Self, Error> {
         let (inspection, bytes) = project.into_parts();
         let document = inspection.document;
+        let mappings = document
+            .mappings()
+            .map_err(|error| Error::Store(StoreError::Document(error)))?;
         if document.assets.len() > SLOTS {
             return Err(Error::Registry);
         }
@@ -177,6 +188,7 @@ impl Prepared {
         }
         Ok(Self {
             document,
+            mappings,
             generation: inspection.generation,
             registry,
             media,

@@ -1,11 +1,13 @@
 mod audio;
 mod control;
 pub(crate) mod devices;
+mod edit;
 mod graphics;
 #[cfg(test)]
 #[path = "ui_import_tests.rs"]
 mod import_tests;
 mod media;
+mod midi;
 pub(crate) mod pedals;
 pub(crate) mod projects;
 mod view;
@@ -14,6 +16,8 @@ use brownnote_native::{
     engine::Command,
     kit::{DEFAULT_SAMPLES, Kit, PADS},
     output::Output,
+    performance::{LoopBars, TakeId},
+    takes::Takes,
 };
 use media::pad_id;
 #[allow(unused_imports)]
@@ -42,6 +46,14 @@ pub struct State {
     pub peak: f32,
     pub pedals: pedals::Pedals,
     pub devices: devices::Devices,
+    pub midi: midi::Midi,
+    /// View-side mirror of the MIDI panel visibility (the lane handle keeps its
+    /// own flag for the header label and Escape handling).
+    pub midi_panel: bool,
+    pub edit: edit::Editor,
+    pub takes: Takes,
+    /// View-side gate for the take/event edit panel.
+    pub edit_panel: bool,
     now: f64,
     flashes: [f64; 16],
     wake: Option<rune::Waker>,
@@ -85,6 +97,23 @@ impl State {
                 "Audio off (--no-audio)".into()
             },
         );
+        // Interactive startup mounts the real MIDI input (D8 machine preference
+        // under Resource::Preferences); headless/test constructors stay safe.
+        let midi = if headless {
+            midi::Midi::disabled()
+        } else {
+            let root = brownnote_native::paths::Resolver::current()
+                .and_then(|paths| {
+                    paths.resolve(brownnote_native::paths::Resource::Preferences, None)
+                })
+                .map_err(|error| error.to_string());
+            midi::Midi::load(root, !no_audio, brownnote_native::performance::TakeId(0))
+        };
+        // 8 bars is always a valid LoopBars (the accepted set is 1, 2, 4, 8);
+        // TakeId(1) keeps this registry clear of the MIDI input's TakeId(0).
+        let loop_bars =
+            LoopBars::try_from(8).unwrap_or_else(|_| unreachable!("8 bars is a valid loop length"));
+        let takes = Takes::new(loop_bars, TakeId(1));
         Self {
             output,
             assets,
@@ -102,6 +131,11 @@ impl State {
             peak: 0.0,
             pedals,
             devices,
+            midi,
+            midi_panel: false,
+            edit: edit::Editor::default(),
+            takes,
+            edit_panel: false,
             now: 0.0,
             flashes: [0.0; 16],
             wake: None,
@@ -141,6 +175,17 @@ pub fn init() -> State {
     State::new(Kit::load(Path::new(DEFAULT_SAMPLES)), true, true)
 }
 
+/// Lane accessors for the take/event edit panel (#147 wiring): the panel reads
+/// through `edit_read` and acts through `edit_access`, both bound to the single
+/// `State.takes` registry.
+pub fn edit_read(s: &State) -> (&edit::Editor, &Takes) {
+    (&s.edit, &s.takes)
+}
+
+pub fn edit_access(s: &mut State) -> (&mut edit::Editor, &mut Takes) {
+    (&mut s.edit, &mut s.takes)
+}
+
 pub fn setup(s: &mut State, wake: rune::Waker) {
     s.output.set_waker(wake.clone());
     s.pedals.set_waker(wake.clone());
@@ -153,6 +198,11 @@ pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     if media::controls::on_key(s, event, tx) {
+        return true;
+    }
+    let midi = s.midi.clone();
+    if midi::on_key(s, &midi, event, tx) {
+        s.midi_panel = false;
         return true;
     }
     if event.mods.cmd || event.mods.ctrl || event.mods.alt || event.mods.logo {
@@ -171,7 +221,11 @@ pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     if event.key == Key::Escape {
-        s.output.send(Command::Panic);
+        if s.edit_panel {
+            s.edit_panel = false;
+        } else {
+            s.output.send(Command::Panic);
+        }
     } else if let Some(pad) = pad {
         s.trigger(pad, 1.0);
     }
@@ -192,6 +246,9 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     if s.devices.busy() {
         tx.wake_after(Duration::from_millis(1));
     }
+    let midi = s.midi.clone();
+    let midi_changed = midi::poll(s, &midi);
+    let edit_changed = edit::poll(s, edit_access);
     s.output.advance(elapsed);
     let import_changed = media::controls::poll(s);
     let media_changed = media::poll(s);
@@ -206,6 +263,8 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let lit = s.flashes.map(|until| until > clock);
     let changed = projects_changed
         || devices_changed
+        || midi_changed
+        || edit_changed
         || failed
         || pedals_changed
         || import_changed
@@ -256,6 +315,31 @@ pub const SCENES: &[Scene] = &[
     }),
     ("output-invalid", |s| {
         devices::scene(s, devices::SceneKind::Invalid)
+    }),
+    ("midi", |s| {
+        s.midi_panel = true;
+        let midi = s.midi.clone();
+        midi::scene(s, &midi, midi::SceneKind::Connected);
+    }),
+    ("edit-empty", |s| {
+        s.edit_panel = true;
+        let _ = edit::scene(&mut s.edit, &mut s.takes, edit::SceneKind::Empty);
+    }),
+    ("edit-selected", |s| {
+        s.edit_panel = true;
+        let _ = edit::scene(&mut s.edit, &mut s.takes, edit::SceneKind::Selected);
+    }),
+    ("edit-muted", |s| {
+        s.edit_panel = true;
+        let _ = edit::scene(&mut s.edit, &mut s.takes, edit::SceneKind::Muted);
+    }),
+    ("edit-removed", |s| {
+        s.edit_panel = true;
+        let _ = edit::scene(&mut s.edit, &mut s.takes, edit::SceneKind::Removed);
+    }),
+    ("edit-error", |s| {
+        s.edit_panel = true;
+        let _ = edit::scene(&mut s.edit, &mut s.takes, edit::SceneKind::Error);
     }),
     ("playing", |s| {
         for pad in [0, 4, 10] {

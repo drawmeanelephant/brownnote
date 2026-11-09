@@ -1,0 +1,26 @@
+{
+  "checked_date": "2026-11-09",
+  "repository": "storytold/soundcraft",
+  "tag": "v0.19.0",
+  "version": "0.19.0",
+  "commit": "04878f8fda885c95f8be5893bbfe4ea4e062a814",
+  "published_at": "2026-11-09T11:54:20Z",
+  "binary_sha256": {
+    "SoundCraft": "9f6d84732fc70144fdacb51e65721ce69ee979b4b7e93d3d5d65f68138d6fa3c",
+    "soundcraft-cli": "c240115d0a2794688939d2f7b20f1530d4f0e523555858a830ca142550394d8f"
+  },
+  "artifacts": {
+    "soundcraft-0.19.0-macos-universal.dmg": "94b649503b68c70b048f12e578e859bee51ca7d718db0b02f955a06b28a9696f",
+    "soundcraft-cli-0.19.0-macos-universal.zip": "d0bd08082292f972e3435834df437f5d9c8b8f4913586138509d1e1c0ab7d986",
+    "SHA256SUMS.txt": "ef8f2b736eb43bfe3f631905909fd23c1426258eb3e5af8a80dbea4f572fe8e8"
+  },
+  "verification": "Tag resolved to full commit; downloaded artifacts match release API digests and SHA256SUMS.txt; DMG mounted read-only and executable bytes hashed. No release executable was run. Detached signature not verified.",
+  "status": "source-reviewed candidate, NOT real-app validated",
+  "recheck": [
+    "Run the unchanged #95 probe.py with v0.19.0 app/CLI and independent fixtures, using the opt-in test.",
+    "Recheck separate-hit overlap, destructive same-track import, same-pitch MIDI import/export, 960 PPQ and sample/tick conversion.",
+    "Recheck 44.1-to-48k conversion, sampler range/root/key tracking, gate/one-shot/octave, choke rejection and retained audio.",
+    "Recheck move/delete/note edit, save/quit/reopen, relative Audio Files/ relocation after removing originals, missing-media negative control.",
+    "Run the adapter against a real bundle and inspect all tracks/notes/media, then maintainer listening."
+  ]
+}
