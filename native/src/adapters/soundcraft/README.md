@@ -1,4 +1,4 @@
-# SoundCraft adapter, fake-executable slice
+# SoundCraft adapter
 
 This adapter consumes only #109's `manifest.json` v1 and content-hash WAV media.
 It owns a fresh GUI process through explicit `--app` and `--cli` paths. It never
@@ -13,7 +13,7 @@ cargo run --manifest-path native/Cargo.toml --bin brownnote-soundcraft -- \
 ```
 
 Move the **entire** output directory. It contains `session.scraft`, the target's
-relative `Audio Files/`, the untouched source manifest and `media/`, a pin, and
+relative `Audio Files/`, the untouched source manifest, `media/` and SMF, a pin, and
 `adapter-report.json`. Existing output or staging directories are refused.
 Failures kill the owned process and remove only this invocation's staging.
 
@@ -24,6 +24,13 @@ must bake choke/envelope/rate into per-hit media. MIDI uses public clip/note
 commands at 960 PPQ, not a new SMF codec. Onsets/durations round to the nearest
 sample/tick with explicit conversion records. The bundle origin is not added
 again to already-relative event positions.
+
+#109 writer bundles set each event's asset to its `HitWet` render, so pad hits
+arrive with gain, velocity, pan, pitch and choke already baked. Frozen
+instrument renders arrive the same way. If a `HitWet` entry disagrees with its
+event's asset, or its onset differs by more than one sample, the bundle is
+refused. Dry hits, stems and the reference mix stay in the copied `media/`
+for comparison and are not imported as tracks.
 
 ## Mapping boundary
 
@@ -64,7 +71,7 @@ Neither executable was run. The detached signing signature was not verified.
 Runtime version checks are compatibility gates, not binary authentication;
 the opt-in real-app recipe additionally checks both executable hashes.
 
-This is a **source-reviewed candidate**, not a real-app-validated release.
+The source review alone was not app evidence; see the real-app check below.
 #95's v0.18.0 app evidence is not relabeled as v0.19.0 evidence.
 
 Compared with #95's full commit, upstream reports a diverged history.
@@ -84,7 +91,49 @@ Relevant files are `docs/cli.md`, `docs/control-protocol.md`,
 `crates/engine/src/io.rs`, `crates/engine/src/io/midi.rs`, and
 `crates/dsp/src/plugins/sampler.rs`.
 
-## Maintainer real-app gate, not run in this lane
+## Real-app check, 9 November 2026
+
+Latest release was still v0.19.0 on 9 November 2026, so the pin above stands.
+The DMG and CLI zip matched `SHA256SUMS.txt`. The DMG was mounted read-only and
+the app was copied into a scratch directory. Both executables matched
+[pin.json](pin.json) before launch. Gatekeeper accepted the app as a notarized
+Developer ID build. No quarantine or security setting was bypassed. The host was
+macOS 27.3 on Apple silicon with a desktop session.
+
+The opt-in test below passed against the actual v0.19.0 GUI, started with
+`--no-audio --control 0` and an isolated profile:
+
+- #95's unchanged fixture tests (4 passed), the independent fixture checker and
+  the complete probe. This covers same-track overlap loss, same-pitch MIDI
+  import/export, 960 PPQ, 44.1 kHz conversion, sampler gate/one-shot/octave/
+  outside-map bounces, choke rejection, move/delete/note edits, quit/reopen,
+  source-free relocation and the missing-media negative control.
+  Evidence: [evidence/recipe-app.json](evidence/recipe-app.json).
+- The adapter on a minimal v1 bundle with an explicit sampler mapping.
+- The adapter on a bundle written by the real #109 project, takes and edit
+  path. The bundle has two overlapping hits on one pad (one nudged, a third
+  deleted) and three overlapping notes, two with frozen renders. Every hit and
+  frozen render becomes its own track at the writer's `HitWet` frame. In the
+  GUI, one hit is moved, another deleted and one note edited. The session is
+  saved, then reopened after quitting. The whole output directory is copied
+  and the original output and bundle are removed. The copy reopens with
+  identical tracks, notes, tempo and loaded relative `Audio Files/`. Removing
+  the WAV used by the moved clip is then reported as missing and unhealthy.
+  Evidence: [evidence/adapter-edit.json](evidence/adapter-edit.json).
+
+Observations: SoundCraft keeps the deleted clip's WAV in `Audio Files/`. When
+that unused file is removed, `session.open` lists it as missing, but
+`session.audio_health` stays healthy. Health reports only media that a clip
+uses.
+
+**Not covered:** edits were made through the public control protocol, not the
+mouse or keyboard. No audio device was opened, and nobody has listened to the
+result. The maintainer listening steps below are still required.
+
+To repeat the check, prepare the app as described above, then also set
+`BROWNNOTE_SOUNDCRAFT_EDIT_EVIDENCE=/absolute/scratch/adapter-edit.json`.
+The adapter edit check runs from the same opt-in test.
+## Maintainer real-app gate
 
 Use a desktop session and checksum-verified v0.19.0 app/CLI. Read #95's
 `REPRODUCE.md`; reuse its scripts **without editing the spike directory**.

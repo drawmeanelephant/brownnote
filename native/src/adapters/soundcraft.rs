@@ -4,7 +4,7 @@
 mod process;
 
 use crate::export::manifest::{
-    AssetId, EventId, LossRecord, MANIFEST_NAME, Manifest, PartId, PartKind,
+    AssetId, AudioRole, EventId, LossRecord, MANIFEST_NAME, Manifest, PartId, PartKind,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -149,6 +149,8 @@ struct Input {
     manifest: Manifest,
     bytes: Vec<u8>,
     media: BTreeMap<AssetId, Media>,
+    /// The bundle's own SMF, kept so the retained manifest copy stays complete.
+    midi: Option<(PathBuf, Vec<u8>)>,
 }
 
 fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
@@ -222,6 +224,24 @@ fn load(bundle: &Path) -> Result<Input> {
             },
         );
     }
+    let midi = match &manifest.midi {
+        Some(entry) => {
+            if entry.path.components().count() != 1
+                || !matches!(
+                    entry.path.components().next(),
+                    Some(std::path::Component::Normal(_))
+                )
+            {
+                return Err(invalid("bundle MIDI path must be a plain file name"));
+            }
+            let path = root.join(&entry.path);
+            if !fs::canonicalize(&path)?.starts_with(&root) {
+                return Err(invalid("MIDI escapes bundle"));
+            }
+            Some((entry.path.clone(), read_regular(&path, 16 * 1024 * 1024)?))
+        }
+        None => None,
+    };
     for event in &manifest.events {
         event
             .start_nanos
@@ -264,6 +284,7 @@ fn load(bundle: &Path) -> Result<Input> {
         manifest,
         bytes,
         media,
+        midi,
     })
 }
 
@@ -318,9 +339,12 @@ pub fn convert(request: &Request) -> Result<Report> {
     for (id, media) in &input.media {
         fs::write(stage.join(id.relative_path()), &media.bytes)?;
     }
+    if let Some((path, bytes)) = &input.midi {
+        fs::write(stage.join(path), bytes)?;
+    }
     let mut report = Report {
         soundcraft_version: VERSION.into(), soundcraft_commit: COMMIT.into(),
-        target_validation: "v0.19.0 candidate: maintainer must rerun #95 and listen; fake tests are not app evidence".into(),
+        target_validation: "v0.19.0 GUI checked through its control protocol (no audio device) on 2026-11-09: #95 recipe plus adapter edit/save/reopen/relocation. Maintainer listening and hand-driven UI edits are still outstanding.".into(),
         session: "session.scraft".into(), audio: Vec::new(), midi: Vec::new(),
         bundle_losses: input.manifest.losses.clone(), records: Vec::new(),
     };
@@ -419,6 +443,7 @@ fn build(
             if imported["frames"].as_i64() != Some(length) {
                 return Err(invalid("audio import changed expected frame count"));
             }
+            aligned_with_bundle(manifest, event.id, asset, start)?;
             report.audio.push(AudioClip {
                 event: event.id,
                 track,
@@ -440,6 +465,13 @@ fn build(
             }
             report.record(Some(event.id), Some(event.part), "fallback", "Independent full-length audio clip retained; no sampler, plugin, choke, gain, pan or pitch parity inferred.");
         }
+    }
+    if manifest
+        .audio
+        .iter()
+        .any(|entry| entry.role != AudioRole::HitWet)
+    {
+        report.record(None, None, "fallback", "Origin-aligned dry hits, stems and the reference mix stay in the retained bundle media/ for comparison; they are not imported as tracks.");
     }
     let mut seen = BTreeSet::new();
     for mapping in mappings {
@@ -543,6 +575,32 @@ fn build(
             clip,
             notes,
         });
+    }
+    Ok(())
+}
+
+/// The #109 writer already aligned this hit; disagreeing would silently move it.
+fn aligned_with_bundle(
+    manifest: &Manifest,
+    event: EventId,
+    asset: AssetId,
+    start: i64,
+) -> Result<()> {
+    let Some(hit) = manifest
+        .audio
+        .iter()
+        .find(|entry| entry.role == AudioRole::HitWet && entry.event == Some(event))
+    else {
+        return Ok(());
+    };
+    let rate = u128::from(manifest.timing.sample_rate_hz);
+    let expected = (u128::from(hit.start_frame) * u128::from(RATE) + rate / 2) / rate;
+    let expected = i64::try_from(expected).map_err(|_| invalid("bundle hit overflows"))?;
+    if hit.asset != asset || (expected - start).abs() > 1 {
+        return Err(invalid(format!(
+            "bundle HitWet entry for event {}:{} disagrees with its event asset/onset",
+            event.take, event.sequence
+        )));
     }
     Ok(())
 }

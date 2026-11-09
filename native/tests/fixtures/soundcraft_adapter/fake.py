@@ -4,9 +4,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import sys
 import time
-import wave
 
 root = Path(__file__).resolve().parent
 config = json.loads((root / "config.json").read_text())
@@ -58,6 +58,28 @@ state = json.loads((root / "state.json").read_text())
 reply = {}
 
 
+def wav_info(path):
+    """Rate and frames of PCM or float WAV; the stdlib wave module rejects float."""
+    data = Path(path).read_bytes()
+    assert data[:4] == b"RIFF" and data[8:12] == b"WAVE", path
+    position, fmt, frames = 12, None, None
+    while position + 8 <= len(data):
+        chunk = data[position:position + 4]
+        size = int.from_bytes(data[position + 4:position + 8], "little")
+        body = data[position + 8:position + 8 + size]
+        if chunk == b"fmt ":
+            tag, channels, rate = struct.unpack("<HHI", body[:8])
+            bits = struct.unpack("<H", body[14:16])[0]
+            assert tag in (1, 3, 0xFFFE), tag
+            fmt = (channels, rate, bits)
+        elif chunk == b"data":
+            assert fmt is not None
+            frames = size // (fmt[0] * fmt[2] // 8)
+        position += 8 + size + (size & 1)
+    assert fmt is not None and frames is not None, path
+    return fmt[1], frames
+
+
 def ident():
     state["next"] += 1
     return state["next"]
@@ -82,9 +104,8 @@ elif method == "event.tempo":
 elif method == "file.import_audio":
     assert set(params) == {"path", "at", "new_tracks"}
     assert params["new_tracks"] is True  # Same-track import is destructive.
-    with wave.open(params["path"]) as wav:
-        assert wav.getframerate() == 48000
-        frames = wav.getnframes()
+    rate, frames = wav_info(params["path"])
+    assert rate == 48000
     tid, cid, sid = ident(), ident(), ident()
     state["tracks"].append({"id": tid, "kind": "audio", "mute": False,
                             "clips": [{"id": cid, "start": params["at"],
