@@ -1,0 +1,5 @@
+# 0.5 s of 440 Hz into the fault fixtures; faults fire on block 8 (frame 2048).
+sample_rate	48000
+frames	24000
+block	256
+input	sine	440	0.5	0	24000

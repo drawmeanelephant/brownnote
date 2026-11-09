@@ -185,6 +185,99 @@
       "pass": true
     },
     {
+      "name": "load failure missing-bundle: typed error bundle-missing, exit 3, no output, state file untouched",
+      "pass": true,
+      "got": "bundle-missing",
+      "exit_code": 3
+    },
+    {
+      "name": "load failure garbage-binary: typed error dlopen-failed, exit 3, no output, state file untouched",
+      "pass": true,
+      "got": "dlopen-failed",
+      "exit_code": 3
+    },
+    {
+      "name": "load failure not-a-clap: typed error no-clap-entry, exit 3, no output, state file untouched",
+      "pass": true,
+      "got": "no-clap-entry",
+      "exit_code": 3
+    },
+    {
+      "name": "load failure unknown-id: typed error unknown-plugin-id, exit 3, no output, state file untouched",
+      "pass": true,
+      "got": "unknown-plugin-id",
+      "exit_code": 3
+    },
+    {
+      "name": "load failure init-fails: typed error init-failed, exit 3, no output, state file untouched",
+      "pass": true,
+      "got": "init-failed",
+      "exit_code": 3
+    },
+    {
+      "name": "load failure activate-fails: typed error activate-failed, exit 3, no output, state file untouched",
+      "pass": true,
+      "got": "activate-failed",
+      "exit_code": 3
+    },
+    {
+      "name": "in-process passthrough completes all 94 blocks",
+      "pass": true
+    },
+    {
+      "name": "in-process crash: the whole host process dies with SIGSEGV after 8 blocks",
+      "pass": true,
+      "exit": -11,
+      "blocks": 8
+    },
+    {
+      "name": "in-process hang: watchdog detects it, but the audio thread and plugin are lost",
+      "pass": true,
+      "detect_ms": 201.1
+    },
+    {
+      "name": "in-process non-finite: completes and returns poisoned samples to the host",
+      "pass": true,
+      "nonfinite": 43904
+    },
+    {
+      "name": "helper passthrough: no failures, output equals the input",
+      "pass": true
+    },
+    {
+      "name": "helper crash: host survives three SIGSEGVs at blocks 8, 17, 26; restarts twice, restores state each time, then disables the plugin",
+      "pass": true,
+      "restart_ms": [
+        1.8,
+        2.4
+      ]
+    },
+    {
+      "name": "helper crash: full-length output; every lost block is replaced by dry input",
+      "pass": true
+    },
+    {
+      "name": "helper hang: each hang is cut off at the 200 ms deadline, helper killed and restarted",
+      "pass": true,
+      "detect_ms": [
+        210.3,
+        211.2,
+        210.4
+      ]
+    },
+    {
+      "name": "helper non-finite: detected on block 8, plugin disabled, no NaN reaches the output",
+      "pass": true
+    },
+    {
+      "name": "helper init failure: plugin disabled from the start, dry render completes",
+      "pass": true
+    },
+    {
+      "name": "helper transport is lossless for the real effect: identical PCM to in-process",
+      "pass": true
+    },
+    {
       "name": "repeat: fresh process reproduces effect/burst-512.wav byte for byte",
       "pass": true
     },
@@ -197,17 +290,17 @@
       "pass": true
     }
   ],
-  "passed": 42,
+  "passed": 59,
   "failed": 0,
   "measurements": {
     "synth_live_128": {
       "block_budget_ns": 2666666,
-      "process_ns_p50": 6792,
-      "process_ns_p99": 21959,
-      "process_ns_max": 29208,
+      "process_ns_p50": 6834,
+      "process_ns_p99": 23250,
+      "process_ns_max": 46291,
       "blocks_over_budget": 0,
       "late_blocks": 0,
-      "max_lateness_ns": 1907586
+      "max_lateness_ns": 2419685
     },
     "synth_note_end_minus_note_off_frames": {
       "1": 4816,
@@ -287,12 +380,12 @@
     "effect_block_256_equals_512": true,
     "effect_live_256": {
       "block_budget_ns": 5333333,
-      "process_ns_p50": 49750,
-      "process_ns_p99": 100958,
-      "process_ns_max": 271208,
+      "process_ns_p50": 55709,
+      "process_ns_p99": 106875,
+      "process_ns_max": 122083,
       "blocks_over_budget": 0,
       "late_blocks": 0,
-      "max_lateness_ns": 83
+      "max_lateness_ns": 84
     },
     "effect_tail": {
       "reported_frames": 96000,
@@ -327,6 +420,64 @@
       "in_place_restore_max_abs_diff": 0.08562605455517769,
       "fresh_load_s0_vs_default_max_abs_diff": 0.08562605455517769,
       "fresh_load_s0_repeatable": true
+    },
+    "isolation_cost": {
+      "passthrough_in_process_ns": {
+        "64": [
+          167,
+          250
+        ],
+        "256": [
+          291,
+          417
+        ]
+      },
+      "passthrough_helper_roundtrip_ns": {
+        "64": [
+          6875,
+          10083
+        ],
+        "256": [
+          7750,
+          24333
+        ]
+      },
+      "effect_256_helper_roundtrip_ns": [
+        14500,
+        21958,
+        33084
+      ],
+      "effect_256_in_process_ns": [
+        5000,
+        5417
+      ],
+      "helper_first_start_ms": {
+        "fixture": 2.1905829999999997,
+        "effect": 9.199542
+      },
+      "helper_restart_ms": [
+        1.849542,
+        2.404167,
+        2.049917,
+        6.341375
+      ],
+      "block_budget_ns": {
+        "64": 1333333,
+        "256": 5333333
+      }
+    },
+    "failure_detection_ms": {
+      "in_process_hang": 201.056208,
+      "helper_crash": [
+        0.09075,
+        0.076208,
+        0.06966699999999999
+      ],
+      "helper_hang": [
+        210.319375,
+        211.18070799999998,
+        210.41725
+      ]
     }
   },
   "host": "arm64-Darwin 27.3",
@@ -336,9 +487,9 @@
     "effect_executable_sha256": "92152f95a7053ecd65c4e5f356e719c6b82a7dfe4083bc12848f5c755077ad4d"
   },
   "loadavg_1_5_15_at_end": [
-    6.58,
-    8.91,
-    7.93
+    2.18,
+    5.71,
+    7.1
   ],
   "wav_sha256": {
     "effect/burst-256.wav": "fe3099e1731b4455c80584aa5b89dbbac2348a00f1e42d661df5657a96b15692",
@@ -353,6 +504,16 @@
     "effect-state/state-mutated.wav": "d34d556c78502166a22e76b897e7b797a858938f5664782b1e6905ca69b88020",
     "effect-state/state-reference.wav": "fe3099e1731b4455c80584aa5b89dbbac2348a00f1e42d661df5657a96b15692",
     "effect-state/state-restored.wav": "6ef35c39de5afd32a5f675b6009deb0914f7a8ea32b1dbdb00be641cfca483f4",
+    "failures/helper-crash.wav": "ff4f3d165300dcc5e386bc5985eaf3551e40cd0f3e3ca236f706947c76d9b138",
+    "failures/helper-effect-256.wav": "fe3099e1731b4455c80584aa5b89dbbac2348a00f1e42d661df5657a96b15692",
+    "failures/helper-hang.wav": "ff4f3d165300dcc5e386bc5985eaf3551e40cd0f3e3ca236f706947c76d9b138",
+    "failures/helper-init-fails.wav": "ff4f3d165300dcc5e386bc5985eaf3551e40cd0f3e3ca236f706947c76d9b138",
+    "failures/helper-nonfinite.wav": "ff4f3d165300dcc5e386bc5985eaf3551e40cd0f3e3ca236f706947c76d9b138",
+    "failures/helper-passthrough-256.wav": "8b6263e0430cca5321bbf00ea98d1f2ccee3f4bd80cc9e32e3dc1cc85ca67640",
+    "failures/helper-passthrough-64.wav": "8b6263e0430cca5321bbf00ea98d1f2ccee3f4bd80cc9e32e3dc1cc85ca67640",
+    "failures/helper-passthrough.wav": "ff4f3d165300dcc5e386bc5985eaf3551e40cd0f3e3ca236f706947c76d9b138",
+    "failures/inproc-passthrough-256.wav": "8b6263e0430cca5321bbf00ea98d1f2ccee3f4bd80cc9e32e3dc1cc85ca67640",
+    "failures/inproc-passthrough-64.wav": "8b6263e0430cca5321bbf00ea98d1f2ccee3f4bd80cc9e32e3dc1cc85ca67640",
     "synth/life-128.wav": "4285ab7a5f671903ff0be7769635ea7d0e1df88b88fd9d34362409182cd45e25",
     "synth/life-256.wav": "4285ab7a5f671903ff0be7769635ea7d0e1df88b88fd9d34362409182cd45e25",
     "synth/life-37.wav": "4285ab7a5f671903ff0be7769635ea7d0e1df88b88fd9d34362409182cd45e25",

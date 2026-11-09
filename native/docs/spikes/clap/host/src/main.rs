@@ -4,11 +4,16 @@
 //!   describe <bundle>
 //!   render <bundle> <plugin-id> <scenario.tsv> <out-dir> <name> [options]
 //!   state <bundle> <plugin-id> <scenario.tsv> <out-dir> <param-name>=<value>
+//!   inproc <bundle> <plugin-id> <scenario.tsv> <out-dir> <name> [--timeout-ms N]
+//!   isolate <bundle> <plugin-id> <scenario.tsv> <out-dir> <name>
+//!           [--timeout-ms N] [--max-restarts K] [--block N]
+//!   helper <bundle> <plugin-id>   (spawned by isolate; speaks on stdin/stdout)
 //!
 //! Render options: --block N, --mode offline|realtime, --live,
 //! --load-state FILE, --save-state FILE.
 
 mod clap;
+mod isolate;
 mod json;
 mod scenario;
 mod wav;
@@ -27,6 +32,9 @@ fn main() -> ExitCode {
         Some("describe") if args.len() == 2 => describe(Path::new(&args[1])),
         Some("render") if args.len() >= 6 => render_cmd(&args[1..]),
         Some("state") if args.len() == 6 => state_cmd(&args[1..]),
+        Some("inproc") if args.len() >= 6 => isolate::inproc(&args[1..]),
+        Some("isolate") if args.len() >= 6 => isolate::isolate(&args[1..]),
+        Some("helper") if args.len() == 3 => isolate::helper(Path::new(&args[1]), &args[2]),
         _ => {
             eprintln!("usage: see the module documentation in host/src/main.rs");
             return ExitCode::from(2);

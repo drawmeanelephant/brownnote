@@ -16,6 +16,15 @@ import sys
 RUN = Path(sys.argv[1])
 SR = 48000
 CHECKS = []
+# Fixture name -> expected probe error kind; check.py writes one report each.
+LOAD_FAILURES = {
+    "missing-bundle": "bundle-missing",
+    "garbage-binary": "dlopen-failed",
+    "not-a-clap": "no-clap-entry",
+    "unknown-id": "unknown-plugin-id",
+    "init-fails": "init-failed",
+    "activate-fails": "activate-failed",
+}
 MEAS = {}
 
 
@@ -259,6 +268,90 @@ def effect_state():
     check("effect state: loading s0 in two fresh processes renders identical audio", f0 == f0b)
 
 
+def failures():
+    """Failure boundary checks (load errors, crash, hang, non-finite)."""
+    for name, kind in LOAD_FAILURES.items():
+        r = json.loads((RUN / f"failures/load-{name}.json").read_text())
+        check(f"load failure {name}: typed error {kind}, exit 3, no output, state file untouched",
+              r["exit_code"] == 3 and r["error"] == kind and not r["output_created"]
+              and r["state_unchanged"], got=r["error"], exit_code=r["exit_code"])
+
+    sr = 48000
+    src = [0.5 * math.sin(2 * math.pi * 440 * i / sr) for i in range(24000)]
+
+    def matches_input(path):
+        w = wav(path)
+        return len(w[0]) == 24000 and all(
+            abs(a - s) < 1e-7 and abs(b - s) < 1e-7 for a, b, s in zip(w[0], w[1], src))
+
+    ip = lambda n: json.loads((RUN / f"failures/inproc-{n}.json").read_text())
+    exits = json.loads((RUN / "failures/inproc-exit-codes.json").read_text())
+    progress = lambda n: (RUN / f"failures/inproc-{n}.progress").read_text().splitlines()
+    check("in-process passthrough completes all 94 blocks",
+          exits["passthrough"] == 0 and ip("passthrough")["blocks_completed"] == 94)
+    crash_lines = progress("crash")
+    check("in-process crash: the whole host process dies with SIGSEGV after 8 blocks",
+          exits["crash"] == -11 and len(crash_lines) == 8
+          and not (RUN / "failures/inproc-crash.json").exists(),
+          exit=exits["crash"], blocks=len(crash_lines))
+    hang = ip("hang")
+    check("in-process hang: watchdog detects it, but the audio thread and plugin are lost",
+          exits["hang"] == 4 and hang["outcome"] == "hang-detected" and hang["blocks_completed"] == 8
+          and hang["audio_thread_reclaimed"] is False and hang["plugin_destroyed"] is False,
+          detect_ms=round(hang["detect_ms"], 1))
+    nf = ip("nonfinite")
+    check("in-process non-finite: completes and returns poisoned samples to the host",
+          exits["nonfinite"] == 0 and nf["nonfinite_samples"] > 0, nonfinite=nf["nonfinite_samples"])
+
+    iso = lambda n: json.loads((RUN / f"failures/helper-{n}.json").read_text())
+    p = iso("passthrough")
+    check("helper passthrough: no failures, output equals the input",
+          not p["failures"] and p["disabled"] is None and matches_input("failures/helper-passthrough.wav"))
+    c = iso("crash")
+    check("helper crash: host survives three SIGSEGVs at blocks 8, 17, 26; restarts twice, "
+          "restores state each time, then disables the plugin",
+          [f["block"] for f in c["failures"]] == [8, 17, 26]
+          and all(f["kind"] == "helper-exited" and f["signal"] == 11 for f in c["failures"])
+          and c["restarts"] == 2 and c["states_restored_after_restart"] == 2
+          and c["disabled"] is not None and c["host_survived"],
+          restart_ms=[round(x, 1) for x in c["restart_ms"]])
+    check("helper crash: full-length output; every lost block is replaced by dry input",
+          matches_input("failures/helper-crash.wav") and c["dry_substituted_blocks"] == 94 - 24)
+    h = iso("hang")
+    check("helper hang: each hang is cut off at the 200 ms deadline, helper killed and restarted",
+          [f["block"] for f in h["failures"]] == [8, 17, 26]
+          and all(f["kind"] == "helper-timed-out" and 200 <= f["detect_ms"] < 400 for f in h["failures"])
+          and h["restarts"] == 2 and matches_input("failures/helper-hang.wav"),
+          detect_ms=[round(f["detect_ms"], 1) for f in h["failures"]])
+    n = iso("nonfinite")
+    check("helper non-finite: detected on block 8, plugin disabled, no NaN reaches the output",
+          [f["kind"] for f in n["failures"]] == ["nonfinite-output"] and n["failures"][0]["block"] == 8
+          and n["disabled"] == "nonfinite-output" and matches_input("failures/helper-nonfinite.wav"))
+    i = iso("init-fails")
+    check("helper init failure: plugin disabled from the start, dry render completes",
+          i["disabled"] is not None and i["dry_substituted_blocks"] == 94
+          and matches_input("failures/helper-init-fails.wav"))
+    real = (RUN / "failures/helper-effect-256.wav").read_bytes() == (RUN / "effect/burst-256.wav").read_bytes()
+    check("helper transport is lossless for the real effect: identical PCM to in-process", real)
+
+    base = {b: json.loads((RUN / f"failures/inproc-passthrough-{b}.json").read_text()) for b in (64, 256)}
+    rt = {b: json.loads((RUN / f"failures/helper-passthrough-{b}.json").read_text()) for b in (64, 256)}
+    fx = iso("effect-256")
+    MEAS["isolation_cost"] = {
+        "passthrough_in_process_ns": {b: [base[b]["process_ns_p50"], base[b]["process_ns_p99"]] for b in base},
+        "passthrough_helper_roundtrip_ns": {b: [rt[b]["roundtrip_ns_p50"], rt[b]["roundtrip_ns_p99"]] for b in rt},
+        "effect_256_helper_roundtrip_ns": [fx["roundtrip_ns_p50"], fx["roundtrip_ns_p99"], fx["roundtrip_ns_max"]],
+        "effect_256_in_process_ns": [summary("effect/burst-256.json")["process_ns_p50"],
+                                     summary("effect/burst-256.json")["process_ns_p99"]],
+        "helper_first_start_ms": {"fixture": p["first_start_ms"], "effect": fx["first_start_ms"]},
+        "helper_restart_ms": c["restart_ms"] + h["restart_ms"],
+        "block_budget_ns": {64: 1333333, 256: 5333333},
+    }
+    MEAS["failure_detection_ms"] = {"in_process_hang": hang["detect_ms"],
+                                    "helper_crash": [f["detect_ms"] for f in c["failures"]],
+                                    "helper_hang": [f["detect_ms"] for f in h["failures"]]}
+
+
 def repeat():
     for p in sorted((RUN / "repeat").rglob("*.wav")):
         rel = p.relative_to(RUN / "repeat")
@@ -271,6 +364,7 @@ def main():
     synth_state()
     effect()
     effect_state()
+    failures()
     repeat()
     failed = [c["name"] for c in CHECKS if not c["pass"]]
     (RUN / "measurements.json").write_text(json.dumps(
