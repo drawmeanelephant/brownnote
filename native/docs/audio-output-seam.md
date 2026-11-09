@@ -51,7 +51,34 @@ for a fresh observation. This is a timestamp handoff, not an event scheduler.
 
 Compare CPAL instants only within one stream identity. They are not a mapping
 to UI wall time or stored take time. Predicted playback minus callback time is
-not round-trip latency. No callback-duration or physical latency claim is made.
+not round-trip latency.
+
+## Callback measurement seam
+
+`CallbackProbe` and `CallbackMeasurements` are the sibling of the timestamp
+queue, with the same shape and guarantees: constructed off-thread, moved into
+the callback, a bounded 64-observation SPSC queue, and an atomic overflow
+counter. `Callback::set_probe` attaches one before the stream starts; the
+normal app open never attaches one, so the app's callback path is unchanged.
+None of this reaches the application handle.
+
+When a probe is attached the callback measures, outside every lock:
+
+- `duration`: two `Instant` reads around the callback body (timestamp publish,
+  command drain, sample render, live mix);
+- `frames`: the buffer length CPAL delivered;
+- `lead`: `playback - callback` from the callback's own `OutputStreamTimestamp`,
+  or unavailable when the prediction does not follow the callback instant.
+
+`CallbackSummary::absorb` drains the queue on the consumer thread and computes
+nearest-rank p50/p95, keeping at most 4096 values per distribution, so the
+audio thread stores nothing and a long run stays bounded. It rejects replayed,
+reordered and foreign observations instead of merging them, and counts
+unavailable predictions rather than reporting a zero lead. `--check-audio`
+prints that summary as a stable block; round-trip latency stays explicitly
+unmeasured because output-only timestamps cannot derive it. Those printed
+numbers describe one machine's run; nothing here is a latency guarantee, and no
+device test depends on a probe.
 
 ## Reproduce
 
@@ -76,8 +103,12 @@ make native-test
 fallback, defaults, invalid whole configurations, both sample rates, unknown
 buffer bounds, and honest silent state. `output_timing` checks stream identity,
 frame reset, observed buffer sizes, overflow, and zero allocations/frees in
-timestamp publication. These are deterministic software tests, not physical
-disconnect/reconnect evidence.
+timestamp publication. It also checks that synthesised callback durations and
+CPAL leads summarize as min/p50/p95, that zero and single observations report
+placeholders instead of numbers, that an unavailable prediction is counted
+rather than read as a zero lead, and that a probed real callback neither
+allocates nor frees while its full queue counts drops. These are deterministic
+software tests, not physical disconnect/reconnect evidence.
 
 On a Mac with a physical default output:
 
@@ -89,9 +120,10 @@ cargo run --release --manifest-path native/Cargo.toml -- --check-audio
 The example opens the current default by its explicit CPAL ID at 44.1 and
 48 kHz, uses a silent sample to check voice lifecycle, and verifies real
 callback timestamps and fresh stream identities. It fails if either rate is
-unsupported. It prints neither device IDs nor names. The existing binary
-probe plays pad 0 and checks frames and signal, not physical latency or
-listening quality.
+unsupported. It prints neither device IDs nor names. The binary probe plays
+pad 0, checks frames and signal, and prints the callback-duration,
+observed-frame and presentation-lead summary described above. It measures no
+round-trip latency and no listening quality.
 
 ## Remaining manual gates
 
@@ -105,8 +137,10 @@ listening quality.
    and successful remembered-ID retry, including a restart with a stale ID.
 4. Have a maintainer listen for correct output and unwanted artifacts.
    Record the named-device procedure without publishing IDs, serials or media.
-5. Measure callback duration and presentation estimates separately from any
-   real round-trip measurement. The seam alone supplies no such measurements.
+5. Measure the real round-trip latency. The probe reports callback cost,
+   delivered buffer lengths and CPAL's presentation estimate separately, and
+   says so; none of them is a round-trip measurement, and only a physical
+   input/output loop can supply one.
 
 Built-in Mac audio alone cannot prove the second-device loss/reconnect gate.
 No audio-interface, other-platform, listening, or latency support is claimed.

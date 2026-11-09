@@ -19,7 +19,7 @@ use std::{
         atomic::{AtomicU64, Ordering::Relaxed},
         mpsc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Debug)]
@@ -349,6 +349,258 @@ impl PlaybackTimestamps {
     }
 }
 
+/// What one output callback cost and what CPAL predicted around it. `lead` is
+/// None when the delivered prediction does not follow the callback instant; an
+/// unavailable prediction is counted, never coerced to zero. Neither value is
+/// round-trip latency, which output-only instants cannot measure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallbackMeasurement {
+    pub stream_id: StreamId,
+    /// Publication order within one probe, starting at zero. Overflow skips
+    /// numbers; a consumer rejects anything that does not advance.
+    pub sequence: u64,
+    /// Frames CPAL actually delivered, never a requested buffer size.
+    pub frames: usize,
+    /// Wall time inside the callback body: timestamp publish, command drain,
+    /// sample render and live mix. No lock is held or taken to measure it.
+    pub duration: Duration,
+    /// `playback - callback` from this callback's own CPAL timestamp.
+    pub lead: Option<Duration>,
+}
+
+const PROBE_CAPACITY: usize = 64;
+
+/// Construct off-thread, then move into the callback with
+/// [`Callback::set_probe`]. Publishing is bounded, allocation, lock, I/O and
+/// wait free, and touches no samples.
+pub struct CallbackProbe {
+    stream_id: StreamId,
+    sequence: u64,
+    sender: rtrb::Producer<CallbackMeasurement>,
+    dropped: Arc<AtomicU64>,
+}
+
+pub struct CallbackMeasurements {
+    pub stream_id: StreamId,
+    receiver: rtrb::Consumer<CallbackMeasurement>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl CallbackMeasurements {
+    /// Observations the audio thread could not enqueue because the bounded
+    /// queue was full. They are counted, never blocked on.
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Relaxed)
+    }
+}
+
+impl CallbackProbe {
+    pub fn new(stream_id: StreamId) -> (Self, CallbackMeasurements) {
+        let (sender, receiver) = rtrb::RingBuffer::new(PROBE_CAPACITY);
+        let dropped = Arc::new(AtomicU64::new(0));
+        (
+            Self {
+                stream_id,
+                sequence: 0,
+                sender,
+                dropped: dropped.clone(),
+            },
+            CallbackMeasurements {
+                stream_id,
+                receiver,
+                dropped,
+            },
+        )
+    }
+
+    /// Report the callback that just finished. Overflow drops the newest
+    /// observation, never audio, and never the running stream.
+    pub fn publish(&mut self, duration: Duration, frames: usize, timestamp: OutputStreamTimestamp) {
+        let item = CallbackMeasurement {
+            stream_id: self.stream_id,
+            sequence: self.sequence,
+            frames,
+            duration,
+            lead: presentation_lead(timestamp),
+        };
+        self.sequence = self.sequence.saturating_add(1);
+        if self.sender.push(item).is_err() {
+            self.dropped.fetch_add(1, Relaxed);
+        }
+    }
+}
+
+/// CPAL predicts playback after the callback instant it reports. A prediction
+/// at or before it is unavailable, not a zero-length lead, and neither is a
+/// round-trip measurement.
+fn presentation_lead(timestamp: OutputStreamTimestamp) -> Option<Duration> {
+    timestamp
+        .playback
+        .checked_duration_since(timestamp.callback)
+}
+
+/// Per-distribution ceiling for the consumer-side summary. The audio thread
+/// never stores values; the consumer keeps at most this many and counts the
+/// rest, so a long probe cannot grow without bound.
+const SUMMARY_CAPACITY: usize = 4096;
+
+#[derive(Default)]
+struct Distribution {
+    values: Vec<u64>,
+    total: u64,
+    min: u64,
+    max: u64,
+}
+
+impl Distribution {
+    fn add(&mut self, nanos: u64) {
+        if self.total == 0 {
+            self.min = nanos;
+            self.max = nanos;
+        } else {
+            self.min = self.min.min(nanos);
+            self.max = self.max.max(nanos);
+        }
+        self.total += 1;
+        if self.values.len() < SUMMARY_CAPACITY {
+            self.values.push(nanos);
+        }
+    }
+
+    /// Nearest-rank p50 and p95 over the kept observations, in nanos, sorting
+    /// once. No interpolation, so the same observations always report the same
+    /// numbers. None when nothing was observed.
+    fn percentiles(&self) -> Option<(u64, u64)> {
+        if self.values.is_empty() {
+            return None;
+        }
+        let mut sorted = self.values.clone();
+        sorted.sort_unstable();
+        let rank = |percent: usize| {
+            sorted
+                .len()
+                .saturating_mul(percent)
+                .div_ceil(100)
+                .clamp(1, sorted.len())
+        };
+        Some((sorted[rank(50) - 1], sorted[rank(95) - 1]))
+    }
+}
+
+/// Off-thread summary of [`CallbackMeasurement`]s for one stream.
+/// [`CallbackSummary::absorb`] drains the bounded queue on the consumer thread;
+/// percentiles interpolate nothing, so a report is reproducible from the same
+/// observations.
+#[derive(Default)]
+pub struct CallbackSummary {
+    stream_id: Option<StreamId>,
+    next_sequence: Option<u64>,
+    callbacks: u64,
+    dropped: u64,
+    rejected: u64,
+    inverted_lead: u64,
+    frames_min: u64,
+    frames_max: u64,
+    durations: Distribution,
+    leads: Distribution,
+}
+
+impl CallbackSummary {
+    /// Drain every queued observation. Foreign streams, duplicate sequences
+    /// and out-of-order sequences are counted as rejected and never merged, so
+    /// a replayed or reordered queue cannot invent a measurement.
+    pub fn absorb(&mut self, measurements: &mut CallbackMeasurements) {
+        self.dropped = measurements.dropped();
+        for _ in 0..PROBE_CAPACITY {
+            let Ok(item) = measurements.receiver.pop() else {
+                break;
+            };
+            self.observe(item);
+        }
+    }
+
+    fn observe(&mut self, item: CallbackMeasurement) {
+        let same_stream = match self.stream_id {
+            None => {
+                self.stream_id = Some(item.stream_id);
+                true
+            }
+            Some(seen) => seen == item.stream_id,
+        };
+        if !same_stream || self.next_sequence.is_some_and(|next| item.sequence < next) {
+            self.rejected += 1;
+            return;
+        }
+        self.next_sequence = Some(item.sequence.saturating_add(1));
+        self.callbacks += 1;
+        let frames = item.frames as u64;
+        if self.callbacks == 1 {
+            self.frames_min = frames;
+            self.frames_max = frames;
+        } else {
+            self.frames_min = self.frames_min.min(frames);
+            self.frames_max = self.frames_max.max(frames);
+        }
+        self.durations.add(nanos(item.duration));
+        match item.lead {
+            Some(lead) => self.leads.add(nanos(lead)),
+            None => self.inverted_lead += 1,
+        }
+    }
+}
+
+fn nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// Whole microseconds, rounded, so a stable text block never hides a sub-unit
+/// observation behind a truncated zero.
+fn micros(nanos: u64) -> u64 {
+    nanos.saturating_add(500) / 1_000
+}
+
+fn summary(distribution: &Distribution) -> String {
+    match distribution.percentiles() {
+        Some((p50, p95)) => format!(
+            "min={}, p50={}, p95={}, n={}",
+            micros(distribution.min),
+            micros(p50),
+            micros(p95),
+            distribution.total
+        ),
+        None => "min=none, p50=none, p95=none, n=0".into(),
+    }
+}
+
+impl fmt::Display for CallbackSummary {
+    /// The stable, parseable `--check-audio` measurement block. Round-trip
+    /// latency is labelled unmeasured because output-only timestamps cannot
+    /// derive it; nothing here is invented.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "callbacks={}, dropped={}, rejected={}, inverted_lead={}",
+            self.callbacks, self.dropped, self.rejected, self.inverted_lead
+        )?;
+        writeln!(f, "callback_duration_us={}", summary(&self.durations))?;
+        if self.callbacks == 0 {
+            f.write_str("callback_frames=min=none, max=none, n=0\n")?;
+        } else {
+            writeln!(
+                f,
+                "callback_frames=min={}, max={}, n={}",
+                self.frames_min, self.frames_max, self.callbacks
+            )?;
+        }
+        writeln!(f, "presentation_lead_us={}", summary(&self.leads))?;
+        write!(
+            f,
+            "round_trip_latency=unmeasured (output-only callback and presentation \
+             instants cannot derive it)"
+        )
+    }
+}
+
 /// Frames mixed from the live instrument per scratch pass, so a helper block is
 /// never larger than this preallocated buffer.
 const LIVE_CHUNK_FRAMES: usize = 1024;
@@ -363,6 +615,8 @@ pub struct Callback {
     channels: usize,
     live: Option<LiveVoice>,
     live_scratch: Vec<f32>,
+    /// Absent on the normal app path; only a probe-enabled open measures.
+    probe: Option<CallbackProbe>,
 }
 
 impl Callback {
@@ -379,7 +633,14 @@ impl Callback {
             channels,
             live: None,
             live_scratch: vec![0.0; LIVE_CHUNK_FRAMES * channels.max(1)],
+            probe: None,
         }
+    }
+
+    /// Measure every call from now on. Call only while the stream is not
+    /// running, like [`Callback::set_live`].
+    pub fn set_probe(&mut self, probe: CallbackProbe) {
+        self.probe = Some(probe);
     }
 
     /// Replace the live voice. Call only while the stream is not running: this
@@ -392,11 +653,31 @@ impl Callback {
         self.live.as_ref().map(LiveVoice::frame)
     }
 
-    /// The real output callback body: publish timing, drain commands, render
-    /// the sample mixer, then add the already-rendered live instrument block.
-    /// The live voice contributes silence when its worker has not produced
-    /// audio, so a failed or starved helper never silences the mixer.
+    /// The real output callback body, with its wall-clock cost and CPAL's
+    /// presentation lead measured around it when a probe is attached. The
+    /// measurement is two `Instant` reads outside every lock; it neither
+    /// allocates nor blocks, and it changes no sample.
     pub fn process<T: cpal::SizedSample + cpal::FromSample<f32>>(
+        &mut self,
+        data: &mut [T],
+        timestamp: OutputStreamTimestamp,
+    ) where
+        f32: cpal::FromSample<T>,
+    {
+        let started = self.probe.is_some().then(Instant::now);
+        self.render(data, timestamp);
+        let (Some(started), Some(probe)) = (started, self.probe.as_mut()) else {
+            return;
+        };
+        let frames = data.len().checked_div(self.channels).unwrap_or(0);
+        probe.publish(started.elapsed(), frames, timestamp);
+    }
+
+    /// Publish timing, drain commands, render the sample mixer, then add the
+    /// already-rendered live instrument block. The live voice contributes
+    /// silence when its worker has not produced audio, so a failed or starved
+    /// helper never silences the mixer.
+    fn render<T: cpal::SizedSample + cpal::FromSample<f32>>(
         &mut self,
         data: &mut [T],
         timestamp: OutputStreamTimestamp,
@@ -450,6 +731,7 @@ pub struct Output {
     selection: OutputSelection,
     opened: Option<OpenedOutput>,
     timestamps: Option<PlaybackTimestamps>,
+    measurements: Option<CallbackMeasurements>,
     wake: Arc<OnceLock<rune::Waker>>,
     pub commands: rtrb::Producer<Command>,
     schedule: ScheduleSender,
@@ -475,6 +757,7 @@ impl Output {
             selection: OutputSelection::default(),
             opened: None,
             timestamps: None,
+            measurements: None,
             driver: Driver::Virtual {
                 mixer: Box::new(mixer),
                 commands: consumer,
@@ -514,6 +797,28 @@ impl Output {
         selection: &OutputSelection,
         live: impl FnOnce(u32, u32) -> (Option<LiveVoice>, Option<String>),
     ) -> Result<Self, AudioError> {
+        Self::open_inner(slots, selection, live, false)
+    }
+
+    /// The system-default wrapper used by `--check-audio`: it additionally
+    /// measures every callback's wall duration, observed buffer length and
+    /// CPAL presentation lead, for [`CallbackSummary`] to read off-thread.
+    /// The normal app path never opts in, so it carries no measurement cost.
+    fn open_probed(slots: impl Into<Slots>) -> Result<Self, AudioError> {
+        Self::open_inner(
+            slots,
+            &OutputSelection::default(),
+            |_, _| (None, None),
+            true,
+        )
+    }
+
+    fn open_inner(
+        slots: impl Into<Slots>,
+        selection: &OutputSelection,
+        live: impl FnOnce(u32, u32) -> (Option<LiveVoice>, Option<String>),
+        probing: bool,
+    ) -> Result<Self, AudioError> {
         let host = cpal::default_host();
         let device = match &selection.device_id {
             Some(id) => host
@@ -530,6 +835,12 @@ impl Output {
         let rate =
             NonZeroU32::new(config.sample_rate).ok_or(AudioError::UnsupportedConfiguration)?;
         let (clock, timestamps) = PlaybackClock::new(rate);
+        let (probe, measurements) = if probing {
+            let (probe, measurements) = CallbackProbe::new(timestamps.stream_id);
+            (Some(probe), Some(measurements))
+        } else {
+            (None, None)
+        };
         let opened = OpenedOutput {
             device_id: info.id,
             name: info.name,
@@ -564,6 +875,9 @@ impl Output {
         };
         let mut callback = Callback::new(clock, mixer, consumer, usize::from(config.channels));
         callback.set_live(live);
+        if let Some(probe) = probe {
+            callback.set_probe(probe);
+        }
         let (send_error, errors) = mpsc::channel();
         let wake = Arc::new(OnceLock::new());
         let send_error = ErrorSink {
@@ -583,6 +897,7 @@ impl Output {
             selection: selection.clone(),
             opened: Some(opened),
             timestamps: Some(timestamps),
+            measurements,
             driver: Driver::Device {
                 _stream: stream,
                 errors,
@@ -608,6 +923,12 @@ impl Output {
 
     pub fn timestamps(&mut self) -> Option<&mut PlaybackTimestamps> {
         self.timestamps.as_mut()
+    }
+
+    /// Bounded callback measurements. Present only for the probe-enabled open
+    /// that `--check-audio` uses; the app's normal open never measures.
+    pub fn measurements(&mut self) -> Option<&mut CallbackMeasurements> {
+        self.measurements.as_mut()
     }
 
     /// The virtual mixer also has an epoch/cursor, but never device timestamps.
@@ -753,13 +1074,18 @@ where
         .map_err(device_error)
 }
 
+/// How long `--check-audio` plays pad 0, and how often it drains the bounded
+/// callback queue so a two-second run does not overflow it.
+const CHECK_AUDIO_WINDOW: Duration = Duration::from_secs(2);
+const CHECK_AUDIO_POLL: Duration = Duration::from_millis(10);
+
 pub fn check_audio(samples: Box<[Sample]>) -> Result<String, AudioError> {
     if samples.first().is_none_or(|s| s.data.is_empty()) {
         return Err(AudioError::Device(
             "pad 0 sample is missing or invalid".into(),
         ));
     }
-    let mut output = Output::open(samples)?;
+    let mut output = Output::open_probed(samples)?;
     output.send(Command::Trigger {
         pad: 0,
         slot: 0,
@@ -769,7 +1095,14 @@ pub fn check_audio(samples: Box<[Sample]>) -> Result<String, AudioError> {
         pan: 0.0,
         semitones: 0.0,
     });
-    std::thread::sleep(Duration::from_secs(2));
+    let deadline = Instant::now() + CHECK_AUDIO_WINDOW;
+    let mut timing = CallbackSummary::default();
+    while Instant::now() < deadline {
+        std::thread::sleep(CHECK_AUDIO_POLL);
+        if let Some(measurements) = output.measurements() {
+            timing.absorb(measurements);
+        }
+    }
     if let Some(error) = output.take_error() {
         return Err(AudioError::Device(error));
     }
@@ -782,7 +1115,7 @@ pub fn check_audio(samples: Box<[Sample]>) -> Result<String, AudioError> {
         )));
     }
     Ok(format!(
-        "{}\nframes={frames}, peak={peak:.6}",
+        "{}\nframes={frames}, peak={peak:.6}\n{timing}",
         output.status
     ))
 }
@@ -846,6 +1179,35 @@ mod tests {
                 .frames
                 .load(std::sync::atomic::Ordering::Relaxed),
             11_025
+        );
+    }
+
+    #[test]
+    fn replayed_reordered_and_foreign_observations_are_rejected_not_merged() {
+        let (_clock, observations) = PlaybackClock::new(NonZeroU32::new(48_000).unwrap());
+        let stream_id = observations.stream_id;
+        let foreign = StreamId(stream_id.0 ^ 1);
+        let measurement = |sequence: u64, stream_id: StreamId| CallbackMeasurement {
+            stream_id,
+            sequence,
+            frames: 128,
+            duration: Duration::from_micros(500),
+            lead: Some(Duration::from_millis(4)),
+        };
+        let mut summary = CallbackSummary::default();
+        summary.observe(measurement(0, stream_id));
+        summary.observe(measurement(0, stream_id)); // Replayed sequence.
+        summary.observe(measurement(2, stream_id)); // Queue overflow skipped 1.
+        summary.observe(measurement(1, stream_id)); // Out of order.
+        summary.observe(measurement(3, foreign)); // Another stream entirely.
+        assert_eq!(
+            summary.to_string(),
+            "callbacks=2, dropped=0, rejected=3, inverted_lead=0\n\
+             callback_duration_us=min=500, p50=500, p95=500, n=2\n\
+             callback_frames=min=128, max=128, n=2\n\
+             presentation_lead_us=min=4000, p50=4000, p95=4000, n=2\n\
+             round_trip_latency=unmeasured (output-only callback and presentation \
+             instants cannot derive it)"
         );
     }
 
