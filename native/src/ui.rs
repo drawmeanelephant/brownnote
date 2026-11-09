@@ -146,6 +146,9 @@ pub fn setup(s: &mut State, wake: rune::Waker) {
 }
 
 pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    if media::controls::on_key(s, event, tx) {
+        return true;
+    }
     if event.mods.cmd || event.mods.ctrl || event.mods.alt || event.mods.logo {
         return false;
     }
@@ -180,6 +183,7 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(Duration::from_millis(1));
     }
     s.output.advance(elapsed);
+    let import_changed = media::controls::poll(s);
     let media_changed = media::poll(s);
     if s.media.busy() {
         tx.wake_after(Duration::from_millis(33));
@@ -193,6 +197,7 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let changed = devices_changed
         || failed
         || pedals_changed
+        || import_changed
         || media_changed
         || counts != s.counts
         || peak != s.peak
@@ -212,6 +217,18 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
 
 type Scene = (&'static str, fn(&mut State));
 pub const SCENES: &[Scene] = &[
+    ("import-path", |s| {
+        media::controls::scene(s, media::controls::SceneKind::Path)
+    }),
+    ("import-busy", |s| {
+        media::controls::scene(s, media::controls::SceneKind::Busy)
+    }),
+    ("import-error", |s| {
+        media::controls::scene(s, media::controls::SceneKind::Error)
+    }),
+    ("import-success", |s| {
+        media::controls::scene(s, media::controls::SceneKind::Success)
+    }),
     ("output-selection", |s| {
         devices::scene(s, devices::SceneKind::Selection)
     }),
