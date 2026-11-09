@@ -3,6 +3,7 @@
 //! D3/D4/D8: project.json + media/<sha256>.wav; required renders are retained.
 //! The v1 kit boundary remains provisional until the #104 contract lands.
 pub mod media;
+pub mod plugin;
 pub mod recovery;
 pub mod session;
 pub mod store;
@@ -18,6 +19,7 @@ use crate::{
     takes::{Takes, TakesDocument, TakesDocumentError},
 };
 pub use media::{Asset, AssetId, AssetRef, MediaKind};
+pub use plugin::PluginChain;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, fmt};
 
@@ -74,6 +76,10 @@ pub struct Pad {
     pub semitones: f32,
     #[serde(with = "chain_document")]
     pub chain: Chain,
+    /// Offline plugin stages baked into `sample.retained`. Exclusive with a
+    /// GuitarPedal `chain`: one retained render has one recipe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<PluginChain>,
 }
 
 impl Default for Pad {
@@ -84,6 +90,7 @@ impl Default for Pad {
             pan: 0.0,
             semitones: 0.0,
             chain: Chain::default(),
+            plugins: None,
         }
     }
 }
@@ -143,6 +150,7 @@ pub enum DocumentError {
     DuplicateAsset(AssetId),
     MissingAsset(AssetId),
     InvalidChain(PadId),
+    InvalidPluginChain(PadId),
     MissingRetained(PadId),
     WrongMediaKind(AssetId),
     MidiMappings(MappingDocumentError),
@@ -275,14 +283,20 @@ impl Document {
             {
                 return Err(DocumentError::InvalidChain(id));
             }
+            if let Some(plugins) = &pad.plugins
+                && (plugins.validate().is_err() || !pad.chain.stages.is_empty())
+            {
+                return Err(DocumentError::InvalidPluginChain(id));
+            }
+            let processed = !pad.chain.stages.is_empty() || pad.plugins.is_some();
             if let Some(sample) = &pad.sample {
                 self.require_asset(sample.source, MediaKind::Source)?;
                 if let Some(retained) = sample.retained {
                     self.require_asset(retained, MediaKind::RetainedRender)?;
-                } else if !pad.chain.stages.is_empty() {
+                } else if processed {
                     return Err(DocumentError::MissingRetained(id));
                 }
-            } else if !pad.chain.stages.is_empty() {
+            } else if processed {
                 return Err(DocumentError::MissingRetained(id));
             }
         }

@@ -100,6 +100,10 @@ native-test: native-plugin-host
 native-clap-effect-test: native-plugin-host
 	$(CLAP_TEST_ENV) BROWNNOTE_REQUIRE_CLAP_EFFECT=1 $(CARGO) test --manifest-path native/Cargo.toml --test clap_offline -- --nocapture
 
+# Mounted app workflow, including the pinned real effect, with no helper skips.
+native-plugin-workflow-test: native-plugin-host
+	$(CLAP_TEST_ENV) BROWNNOTE_REQUIRE_CLAP_EFFECT=1 $(CARGO) test --manifest-path native/Cargo.toml --bin brownnote-native ui::pedals::plugin::tests:: -- --nocapture
+
 # Required (not opt-in): the live CLAP instrument helper tests hard-fail
 # under BROWNNOTE_REQUIRE_CLAP=1 when the brownnote-clap-live binary or the
 # fault fixture is missing.
@@ -117,4 +121,4 @@ native-ladspa-plate-test: native-plugin-host
 native-soundcraft-test:
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_recipe_and_adapter -- --ignored --exact
 
-.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-soundcraft-test native-plugin-host native-clap-effect-test native-clap-live-test native-ladspa-plate-test
+.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-soundcraft-test native-plugin-host native-clap-effect-test native-plugin-workflow-test native-clap-live-test native-ladspa-plate-test

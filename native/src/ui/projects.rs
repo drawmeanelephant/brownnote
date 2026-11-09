@@ -86,12 +86,13 @@ fn snapshot(s: &State) -> Result<Snapshot, String> {
             .pads
             .iter()
             .any(|pad| !pad.project_chain_is_current())
+        || (0..16).any(|pad| !pedals::plugin::is_current(s, pad))
     {
         return Err(
             "Finish or cancel sample/pedal/instrument work before saving or opening.".into(),
         );
     }
-    let pads = session::pads(std::array::from_fn(|index| {
+    let mut pads = session::pads(std::array::from_fn(|index| {
         let settings = s.settings[index];
         (
             settings.gain,
@@ -100,6 +101,10 @@ fn snapshot(s: &State) -> Result<Snapshot, String> {
             s.pedals.pads[index].chain.clone(),
         )
     }));
+    // The recipe of the plugin sound that plays, never unrendered edits.
+    for (index, pad) in pads.iter_mut().enumerate() {
+        pad.plugins = s.pedals.plugins.pads[index].document();
+    }
     let mut snapshot = Snapshot::capture(&s.assets, pads, s.master, s.choke, s.media.owned.clone())
         .map_err(|error| error.to_string())?;
     if let Some(mappings) = midi::mappings(&s.midi)
@@ -262,13 +267,18 @@ pub fn poll(s: &mut State) -> bool {
                 next_pedals.render_fn = s.pedals.render_fn.clone();
                 next_pedals.auto_load = s.pedals.auto_load;
                 next_pedals.tab = s.pedals.tab;
+                next_pedals.plugins = s.pedals.plugins.reopened();
                 for (index, pad) in prepared.document.pads.iter().enumerate() {
                     let retained_seconds = if pad.sample.as_ref().is_some_and(|sample| sample.retained.is_some()) {
                         let sample = &prepared.registry.audible(session::pad_id(index))
                             .ok_or(Error::Registry)?.imported.sample;
                         Some(sample.data.len() as f32 / sample.rate as f32)
                     } else { None };
-                    next_pedals.pads[index].restore_project_chain(pad.chain.clone(), retained_seconds);
+                    let source = prepared.registry.source(session::pad_id(index))
+                        .map(|asset| (asset.imported.asset.reference.id, &asset.imported.sample));
+                    next_pedals.plugins.pads[index].restore(pad.plugins.clone(), source, retained_seconds);
+                    let pedal_seconds = if pad.plugins.is_some() { None } else { retained_seconds };
+                    next_pedals.pads[index].restore_project_chain(pad.chain.clone(), pedal_seconds);
                 }
                 if let Some(wake) = &s.wake {
                     next_pedals.set_waker(wake.clone());
