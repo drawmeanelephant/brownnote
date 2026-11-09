@@ -1,0 +1,12 @@
+frame	source	kind	note_id	key	value
+0	in	param	-1	1267966365	0.022360679774997897
+37	tail	value	-1	-1	0
+1000	in	note-on	1	57	1
+5003	in	note-on	2	64	0.5
+9001	in	note-on	3	57	0.25
+14000	in	note-off	1	57	0
+18832	out	note-end	1	57	0
+20000	in	note-off	2	64	0
+24826	out	note-end	2	64	0
+26000	in	note-off	3	57	0
+30820	out	note-end	3	57	0

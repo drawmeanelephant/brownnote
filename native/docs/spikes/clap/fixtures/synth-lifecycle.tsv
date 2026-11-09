@@ -1,0 +1,13 @@
+# Overlapping different pitches (ids 1,2) and same pitch (ids 1,3).
+# Note off targets note id 1 only (D14: release one voice).
+sample_rate	48000
+frames	48000
+block	256
+input	silence
+param	0	Attack	0.022360679774997897
+on	1000	1	57	1
+on	5003	2	64	0.5
+on	9001	3	57	0.25
+off	14000	1	57
+off	20000	2	64
+off	26000	3	57

@@ -1,0 +1,36 @@
+{
+  "platform": "macOS arm64 (Apple silicon); arm64 slice of each binary is loaded",
+  "instrument": {
+    "name": "Poly Mod Synth (nih-plug example)",
+    "clap_id": "com.moist-plugins-gmbh.poly-mod-synth",
+    "version": "0.1.0",
+    "source": "https://github.com/robbert-vdh/nih-plug",
+    "revision": "de421011f41a6d10fc8c7a6084e4f4dee0143683",
+    "package": "poly_mod_synth",
+    "source_license": "ISC (plugins/examples/poly_mod_synth/Cargo.toml)",
+    "binary_license_note": "The default nih_plug feature set exports VST3 as well, so the built binary links GPLv3 code (nih-plug README, Licensing). It is built locally and never redistributed.",
+    "build": "cargo build --locked --release -p poly_mod_synth; executable copied into poly_mod_synth.clap/Contents/MacOS",
+    "binary_sha256_note": "Built from source; the hash depends on the toolchain and is recorded per run in evidence/measurements.json, not pinned."
+  },
+  "effect": {
+    "name": "Airwindows Consolidated",
+    "clap_id": "com.airwindows.consolidated",
+    "bundle_id": "com.airwindows.consolidated",
+    "version": "1.2026.313",
+    "source": "https://github.com/baconpaul/airwin2rack",
+    "revision": "316a0485b28516347e325645a39c13c623c02962",
+    "release_tag": "DAWPlugin (rolling)",
+    "dmg_url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/airwindows-consolidated-macOS-2026-11-08-316a048.dmg",
+    "dmg_sha256": "048454ad21c4aaad4a22ec96e7e391256b8f7d4124122b2b315f0e55ad4a3d6c",
+    "pkg_component": "airwindows-consolidated_CLAP.pkg",
+    "executable_sha256": "92152f95a7053ecd65c4e5f356e719c6b82a7dfe4083bc12848f5c755077ad4d",
+    "codesign_team": "547U7G7MZC",
+    "source_license": "MIT (LICENSE.md at the revision)",
+    "binary_license_note": "The DAW plugin combines that MIT code with JUCE and the VST3 SDK; the upstream README says a distributable build may include GPL3 assets. Downloaded per run, never redistributed.",
+    "default_processor": "Galactic (from the saved state: currentProcessorName=\"Galactic\")"
+  },
+  "host_bindings": {
+    "clap-sys": "0.5.0 (CLAP 1.2.2 headers)",
+    "libloading": "0.9.0"
+  }
+}
