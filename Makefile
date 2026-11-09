@@ -81,6 +81,9 @@ DYLIB = $(if $(filter Darwin,$(shell uname -s)),dylib,so)
 CLAP_TEST_ENV = BROWNNOTE_CLAP_HELPER="$(PLUGIN_HOST_OUT)/brownnote-plugin-host" \
 	BROWNNOTE_CLAP_FAULT_FIXTURE="$(PLUGIN_HOST_OUT)/libbrownnote_clap_fault_fixture.$(DYLIB)" \
 	BROWNNOTE_REQUIRE_CLAP=1
+LADSPA_TEST_ENV = BROWNNOTE_LADSPA_HELPER="$(PLUGIN_HOST_OUT)/brownnote-plugin-host" \
+	BROWNNOTE_LADSPA_FIXTURE="$(PLUGIN_HOST_OUT)/libbrownnote_ladspa_fault_fixture.$(DYLIB)" \
+	BROWNNOTE_REQUIRE_LADSPA=1
 
 native-plugin-host:
 	$(CARGO) fmt --all --manifest-path $(PLUGIN_HOST) --check
@@ -90,15 +93,22 @@ native-plugin-host:
 native-test: native-plugin-host
 	$(CARGO) fmt --manifest-path native/Cargo.toml --check
 	$(CARGO) clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
-	$(CLAP_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored --skip pinned_app_recipe_and_adapter
+	$(CLAP_TEST_ENV) $(LADSPA_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored --skip pinned_app_recipe_and_adapter
 
 # Explicit opt-in: requires the pinned Airwindows Consolidated bundle in
 # BROWNNOTE_CLAP_EFFECT (see native/plugin-host/README.md).
 native-clap-effect-test: native-plugin-host
 	$(CLAP_TEST_ENV) BROWNNOTE_REQUIRE_CLAP_EFFECT=1 $(CARGO) test --manifest-path native/Cargo.toml --test clap_offline -- --nocapture
 
+# Explicit opt-in: provisions and verifies the pinned CAPS 0.9.26 library
+# (native/plugin-host/caps/provision.py, hard hash failures, nothing bundled).
+native-ladspa-plate-test: native-plugin-host
+	python3 native/plugin-host/caps/provision.py
+	$(LADSPA_TEST_ENV) BROWNNOTE_LADSPA_PLATE=$$(python3 native/plugin-host/caps/provision.py | tail -n 1) \
+	BROWNNOTE_REQUIRE_LADSPA_PLATE=1 $(CARGO) test --manifest-path native/Cargo.toml --test ladspa_offline -- --nocapture
+
 # Explicit opt-in: requires the pinned SoundCraft app, CLI and Python environment.
 native-soundcraft-test:
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_recipe_and_adapter -- --ignored --exact
 
-.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-soundcraft-test native-plugin-host native-clap-effect-test
+.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-soundcraft-test native-plugin-host native-clap-effect-test native-ladspa-plate-test
