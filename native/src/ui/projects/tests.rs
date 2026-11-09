@@ -7,7 +7,7 @@ use brownnote_native::{
     pedals::render::{Chain, Stage},
     project::{Asset, AssetRef, MediaKind, SampleAssignment, store::Store},
 };
-use rune::{Env, Key, Runtime};
+use rune::{Env, Key, KeyEvent, Mods, Runtime};
 use std::{
     fs,
     sync::{
@@ -514,42 +514,281 @@ fn project_controls_reject_pending_work_and_relative_paths_without_io() {
 #[test]
 fn project_controls_runtime_buttons_path_entry_and_shortcuts_use_real_callers() {
     let root = Root::new();
-    let mut s = state();
-    s.projects.visible = true;
-    set_path(&mut s, &root.0.join("from-controls"));
-    let mut rt = Runtime::new(s, |s, _| panel(s), (1120.0, 800.0), Env::new(true, 2.0));
+    let project = root.0.join("from controls ");
+    let mut rt = Runtime::new(
+        state(),
+        crate::ui::view,
+        (820.0, 600.0),
+        Env::new(true, 2.0),
+    );
+    rt.set_full_keyboard_access(true);
     rt.on_key = Some(crate::ui::on_key);
     rt.poll = Some(crate::ui::poll);
     rt.frame(0.01);
+    control_press(&mut rt, "projects-toggle");
+    assert!(rt.state.projects.visible);
     assert!(rt.find("projects-path").is_some());
-    let (x, y) = rt.find("projects-save").unwrap();
-    rt.pointer_down(x, y);
-    rt.frame(0.001);
-    rt.pointer_up(x, y);
-    rt.frame(0.001);
-    finish(&mut rt.state);
+    control_focus(&mut rt, "projects-path");
+    control_key(&mut rt, Key::Text(project.to_str().unwrap().into()));
+    assert_eq!(rt.state.projects.path.text, project.to_str().unwrap());
+    control_key(&mut rt, Key::Escape);
+    assert!(
+        !rt.state.projects.visible,
+        "Escape in the path field did not close projects"
+    );
+    control_press(&mut rt, "projects-toggle");
+    assert_eq!(rt.state.projects.path.text, project.to_str().unwrap());
+    control_press(&mut rt, "projects-save");
+    finish_runtime(&mut rt);
     assert!(
         rt.state.projects.error.is_none(),
         "{:?}",
         rt.state.projects.error
     );
-    assert!(root.0.join("from-controls/project.json").is_file());
-    rt.key(Key::Text("1".into()).into());
-    rt.frame(0.01);
+    assert!(project.join("project.json").is_file());
+    assert!(
+        !root.0.join("from controls").exists(),
+        "path whitespace was stripped"
+    );
+    control_key(&mut rt, Key::Text("1".into()));
     assert_eq!(
         rt.state.output.meters.counts(),
         [0; 16],
         "path entry played a pad"
     );
     rt.state.master = 0.11;
-    let (x, y) = rt.find("projects-open").unwrap();
-    rt.pointer_down(x, y);
-    rt.frame(0.001);
-    rt.pointer_up(x, y);
-    rt.frame(0.001);
-    finish(&mut rt.state);
+    control_press(&mut rt, "projects-open");
+    finish_runtime(&mut rt);
     assert!(rt.state.projects.error.is_none());
     assert_eq!(rt.state.master, 0.8);
+    control_key(&mut rt, Key::Escape);
+    assert!(!rt.state.projects.visible);
+    control_key(&mut rt, Key::Text("q".into()));
+    assert_eq!(rt.state.counts[4], 1, "performance keys did not resume");
+}
+
+fn control_key(rt: &mut Runtime<State>, key: Key) {
+    rt.key(key.into());
+    rt.frame(0.0);
+    rt.frame(0.001);
+}
+
+fn control_focus(rt: &mut Runtime<State>, target: &str) {
+    for _ in 0..32 {
+        if rt
+            .elements()
+            .iter()
+            .any(|el| el.key.as_deref() == Some(target) && el.focused)
+        {
+            return;
+        }
+        control_key(rt, Key::Tab);
+    }
+    panic!(
+        "Tab did not reach {target}: busy={}, visible={}, focusable={:?}",
+        rt.state.projects.busy(),
+        rt.state.projects.visible,
+        rt.elements()
+            .iter()
+            .filter(|el| el.focusable || el.focused)
+            .map(|el| (el.key.as_deref(), el.focused))
+            .collect::<Vec<_>>()
+    );
+}
+
+fn control_press(rt: &mut Runtime<State>, target: &str) {
+    control_focus(rt, target);
+    control_key(rt, Key::Text(" ".into()));
+}
+
+fn finish_runtime(rt: &mut Runtime<State>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while rt.state.projects.busy() && Instant::now() < deadline {
+        rt.frame(0.001);
+        std::thread::yield_now();
+    }
+    assert!(
+        !rt.state.projects.busy(),
+        "mounted project worker timed out"
+    );
+    rt.frame(0.0);
+    rt.frame(0.01);
+}
+
+#[test]
+fn project_controls_real_view_recovery_requires_a_keyboard_choice() {
+    let root = Root::new();
+    let project = root.0.join("saved");
+    let mut s = state();
+    saved(&mut s, &project);
+    let generation = Store::new(project.clone())
+        .inspect_committed()
+        .unwrap()
+        .unwrap()
+        .generation;
+    s.master = 0.32;
+    saved(&mut s, &project);
+    fs::write(project.join("project.json"), b"corrupt").unwrap();
+    let mut rt = Runtime::new(s, crate::ui::view, (820.0, 600.0), Env::new(true, 2.0));
+    rt.set_full_keyboard_access(true);
+    rt.on_key = Some(crate::ui::on_key);
+    rt.poll = Some(crate::ui::poll);
+    rt.frame(0.01);
+    control_press(&mut rt, "projects-toggle");
+    control_press(&mut rt, "projects-recover");
+    finish_runtime(&mut rt);
+    assert_eq!(
+        rt.state.master, 0.32,
+        "listing applied recovery without a choice"
+    );
+    control_press(&mut rt, &format!("projects-generation-{generation}"));
+    finish_runtime(&mut rt);
+    assert!(
+        rt.state.projects.error.is_none(),
+        "{:?}",
+        rt.state.projects.error
+    );
+    assert_eq!(rt.state.master, 0.8);
+    assert_eq!(fs::read(project.join("project.json")).unwrap(), b"corrupt");
+    control_press(&mut rt, "projects-save");
+    assert!(
+        rt.state.projects.error.is_some(),
+        "recovery overwrote its original root"
+    );
+    control_focus(&mut rt, "projects-path");
+    rt.key(KeyEvent {
+        key: Key::Command('a'),
+        mods: Mods {
+            cmd: true,
+            ..Mods::default()
+        },
+    });
+    rt.frame(0.001);
+    let rescued = root.0.join("rescued");
+    control_key(&mut rt, Key::Text(rescued.to_str().unwrap().into()));
+    control_press(&mut rt, "projects-save");
+    finish_runtime(&mut rt);
+    assert!(
+        rt.state.projects.error.is_none(),
+        "{:?}",
+        rt.state.projects.error
+    );
+    assert!(rescued.join("project.json").is_file());
+    assert_eq!(fs::read(project.join("project.json")).unwrap(), b"corrupt");
+}
+
+#[test]
+fn project_controls_keyboard_import_save_fresh_state_and_relocate() {
+    let root = Root::new();
+    let source = root.0.join("picked sample.wav");
+    let bytes = encoded(0.4, 80_000);
+    let expected_asset = AssetRef::of(&bytes);
+    fs::write(&source, bytes).unwrap();
+    let mut rt = Runtime::new(
+        state(),
+        crate::ui::view,
+        (820.0, 600.0),
+        Env::new(true, 2.0),
+    );
+    rt.set_full_keyboard_access(true);
+    rt.on_key = Some(crate::ui::on_key);
+    rt.poll = Some(crate::ui::poll);
+    rt.frame(0.01);
+    control_press(&mut rt, "import-toggle");
+    control_focus(&mut rt, "import-path");
+    control_key(&mut rt, Key::Text(source.to_str().unwrap().into()));
+    control_key(&mut rt, Key::Enter);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while rt.state.media.busy() && Instant::now() < deadline {
+        rt.frame(0.001);
+        std::thread::yield_now();
+    }
+    assert!(!rt.state.media.busy(), "mounted import worker timed out");
+    assert_eq!(
+        rt.state
+            .assets
+            .source(session::pad_id(0))
+            .unwrap()
+            .imported
+            .asset
+            .reference,
+        expected_asset
+    );
+    control_key(&mut rt, Key::Escape);
+    control_focus(&mut rt, "gain");
+    for _ in 0..3 {
+        control_key(&mut rt, Key::Left);
+    }
+    assert!((rt.state.settings[0].gain - 0.85).abs() < 0.00001);
+    let saved = root.0.join("Original kit");
+    control_press(&mut rt, "projects-toggle");
+    control_focus(&mut rt, "projects-path");
+    control_key(&mut rt, Key::Text(saved.to_str().unwrap().into()));
+    control_press(&mut rt, "projects-save");
+    finish_runtime(&mut rt);
+    assert!(
+        rt.state.projects.error.is_none(),
+        "{:?}",
+        rt.state.projects.error
+    );
+    drop(rt);
+    let moved = root.0.join("Relocated kit");
+    fs::rename(saved, &moved).unwrap();
+    fs::remove_file(source).unwrap();
+    let mut rt = Runtime::new(
+        state(),
+        crate::ui::view,
+        (820.0, 600.0),
+        Env::new(true, 2.0),
+    );
+    rt.set_full_keyboard_access(true);
+    rt.on_key = Some(crate::ui::on_key);
+    rt.poll = Some(crate::ui::poll);
+    rt.frame(0.01);
+    assert_eq!(rt.state.settings[0].gain, 1.0);
+    control_press(&mut rt, "projects-toggle");
+    control_focus(&mut rt, "projects-path");
+    control_key(&mut rt, Key::Text(moved.to_str().unwrap().into()));
+    control_press(&mut rt, "projects-open");
+    finish_runtime(&mut rt);
+    assert!(
+        rt.state.projects.error.is_none(),
+        "{:?}",
+        rt.state.projects.error
+    );
+    assert!((rt.state.settings[0].gain - 0.85).abs() < 0.00001);
+    let sample = &rt.state.assets.source(session::pad_id(0)).unwrap().imported;
+    assert_eq!(sample.asset.reference, expected_asset);
+    assert_eq!(sample.sample.data[0], 0.4);
+    control_key(&mut rt, Key::Escape);
+    control_key(&mut rt, Key::Text("1".into()));
+    assert_eq!(rt.state.counts[0], 1);
+    assert!(rt.state.peak > 0.0);
+}
+
+#[test]
+fn project_controls_take_keyboard_priority_over_an_open_import_panel() {
+    let mut s = state();
+    s.projects.visible = true;
+    s.media.controls.visible = true;
+    let mut rt = Runtime::new(s, crate::ui::view, (820.0, 600.0), Env::new(true, 2.0));
+    rt.on_key = Some(crate::ui::on_key);
+    rt.poll = Some(crate::ui::poll);
+    rt.frame(0.01);
+    assert!(rt.find("projects-panel").is_some());
+    assert!(rt.find("import-panel").is_none());
+    rt.key(KeyEvent {
+        key: Key::Command('i'),
+        mods: Mods {
+            cmd: true,
+            ..Mods::default()
+        },
+    });
+    rt.frame(0.001);
+    assert!(
+        rt.state.media.controls.visible,
+        "project key changed a hidden import panel"
+    );
 }
 
 #[test]

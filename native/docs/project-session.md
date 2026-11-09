@@ -1,47 +1,32 @@
 # Application project transactions
 
 Refs #100. This slice supplies `project::session` and `ui/projects.rs`, under
-D3–D5, D7 and D8. It does **not** close #100. D6 autosave, permanent application
-mounting, manual save/reopen/relocation listening, and recovery/media collection
-policy remain open.
+D3–D5, D7 and D8. It does **not** close #100. D6 autosave, manual
+save/reopen/relocation listening, and recovery/media collection policy remain
+open.
 
-## Exact integrator wiring
+## Application controls
 
-The lane does not edit `ui.rs`, `ui/view.rs`, `main.rs`, `lib.rs`, either Cargo
-file, `ui/media.rs`, scheduler code, or the takes model. There are no new
-dependencies. `project/mod.rs` exports the new `session` child module. The only
-decoder change is making the existing `kit::decode_wav_max` public.
+Activate **PROJECT** in the compact pad header with Tab and Space. Enter an
+absolute project directory, then activate **SAVE / SAVE AS**, **OPEN (REPLACE
+KIT)**, or **LIST RECOVERY**. Paths are literal, including spaces and trailing
+whitespace; they are not shell commands or tilde-expanded paths.
 
-Apply these small root changes:
+Opening stops old voices only after the whole replacement is ready. Listing
+recovery does not apply it: choose a specific evidenced generation. Save
+recovered content to a new directory. **CANCEL OPEN** or Escape cancels an open
+or recovery request; an admitted save cannot be cancelled. Escape returns to
+the pads when no save is still running. **BACK TO PADS** also leaves the panel.
 
-1. In `ui.rs`, declare `pub(crate) mod projects;`. Add
-   `pub projects: projects::Projects` to `State`. Initialize it with
-   `projects::Projects::default()` in `State::with_cache`. No constructor
-   filesystem access occurs. It starts one bounded project worker.
-2. In `ui::poll`, call `let projects_changed = projects::poll(s);` before
-   output/device/media/pedal polling. Include it in `changed`. While
-   `s.projects.busy()`, call `tx.wake_after(Duration::from_millis(10))`.
-   Starting a request invokes the existing `State::wake`; no new setup hook
-   or waker field is needed.
-3. At the start of `ui::on_key`, before pad shortcuts and modifier checks:
-   `if projects::on_key(s, event, tx) { return true; }`.
-   Project-panel keys must never also trigger pads. This consumes the global
-   pad shortcut handler, not Rune's focused text-input/button handling.
-4. In `ui/view.rs`, add `projects::header(s)` to the header. When
-   `s.projects.visible`, render `projects::panel(s)` instead of pads/editor.
-   Choose the project panel before the device/import panels, or close those
-   panels when opening it. Keep device preferences and import UI unchanged.
-   The project panel has its own scroll area and keyboard-accessible path,
-   save, open, recovery-list, generation-choice, and cancel controls.
-5. At the end of `ui/pedals/mod.rs`, add
-   `include!("../projects/pedal_state.rs");`. The owned helper lives in this
-   feature but compiles inside the pedal module. It checks the private landed
-   chain before snapshotting and initializes its private landed/requested
-   metadata on open, without exposing those fields or regenerating audio.
-   This one-line addition is necessary: a generic `Ready` status alone does not
-   prove that a retained sound belongs to the currently edited chain.
-6. Compile and run the tests embedded in `ui/projects/tests.rs`, then repeat
-   the actual shipped application's full `make native-test` and `make test`.
+`State` owns the bounded project worker. Its poll runs before output, device,
+media, and pedal polling. The shipped view gives project controls priority
+over device/import panels, and project keys cannot trigger pads or change a
+hidden import panel. The panel scrolls and all controls are keyboard reachable.
+
+The pedal module includes the narrow `projects/pedal_state.rs` helper. It
+checks the private landed chain before snapshotting and initializes its
+private landed/requested metadata on open. A generic `Ready` status alone
+does not prove that retained sound belongs to the currently edited chain.
 
 There are no `main.rs`, `lib.rs`, Cargo, engine, or device-service changes.
 The separate output is created through `Projects::open_output`; production
@@ -132,16 +117,14 @@ check lock, shared Cargo target and two-job wrapper**. Set
 `BROWNNOTE_REQUIRE_BENCH=1`, `BROWNNOTE_BIN`, `BROWNNOTE_BENCH` and `BENCH` to
 the existing real C CLI/bench.
 
-Because the lane cannot change the integrator-owned root, the script generates
-temporary test-only mounting glue from the actual checkout's `ui.rs`. It adds
-exactly the proposed field, constructor, module, poll, panel and key wiring,
-then imports the existing media, pedals, audio and view modules by path. It
-does not create a second State model or decoder, and does not alter root file
-contents. It refuses to overwrite existing probe files and removes only its
-own files afterwards. A changed mounting anchor is an error, not a guess.
+The validator compiles and tests the actual application binary and its
+`ui::projects` module. It no longer creates temporary mounting glue, copies
+`State`, or adds a path-bootstrap integration target.
 
-The probe tests use the actual `State` service methods, worker, Rune button/key
-callers, registry and virtual mixer. They cover custom float32 WAV, PCM16 stereo,
+The tests use the actual `State` service methods, worker, Rune button/key
+callers, registry and virtual mixer. Keyboard save/open/recovery flows use the
+shipped `ui::view`, `ui::on_key`, and `ui::poll` at 820×600. They cover custom
+float32 WAV, PCM16 stereo,
 all pad settings and chains, retained audio beyond 30 seconds, physical
 directory relocation, deleting original paths and the opened project before
 save-as, missing/corrupt media, hash-valid bad retained WAV, failed saves,
@@ -150,13 +133,12 @@ overlapping requests, immutable save snapshots, cancellation, stale completion,
 and explicit recovery/save-as.
 
 The script forces the local crate fresh and checks every expected checkout-local
-project-control test name, then runs `make native-test` after removing the
-temporary glue. A zero exit from an unrelated stale test executable is not
-enough. This proves the bounded artifact with the proposed mount, **not that
-the shipped application already mounts it**. The integrator must apply the
-wiring and run the real entry point before claiming application coverage.
+project-control test name, both in the focused run and full `make native-test`.
+A zero exit from an unrelated stale test executable is not enough. Registered
+`project-path` and `project-error` scenes also run through the actual binary's
+GPU renderer, checking the minimum window and accessible controls.
 
 These deterministic virtual-output tests do not establish listening,
-physical-output, GPU visual, OS power-loss, or packaged pedal evidence.
+physical-output, OS power-loss, or packaged pedal evidence.
 Store fault-injection coverage remains in `project_store`; no new power-loss
 durability claim is made here.
