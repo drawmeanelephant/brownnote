@@ -92,12 +92,12 @@ mod preferences {
     }
 }
 
-use super::{State, button, caption, ink, media::pad_id};
+use super::{State, button, caption, ink, media::pad_id, transport};
 use brownnote_native::{
     engine::Command,
     midi::{
         input::{self, Action, Input, PortInfo, Report, Sink},
-        mapping::{ControlAction, Mapping, MappingKey, NoteTarget},
+        mapping::{ControlAction, ControlIntent, Mapping, MappingKey, Mappings, NoteTarget},
     },
     performance::{OriginalTime, SourceId, TakeId},
     project::PadId,
@@ -114,23 +114,51 @@ fn now_nanos(s: &State) -> OriginalTime {
 }
 
 /// The dispatch boundary from the MIDI controller to the app: one-shot pads go
-/// through the real 256-slot command queue; held-instrument voices and the
-/// recorder are #108/#106 integration gates and are accepted here so the
-/// controller's lifecycle stays consistent.
+/// through the real 256-slot command queue, and every action is offered to the
+/// recording transport. Held-instrument starts/ends are captured with their
+/// lifecycle but not sounded: no held-instrument audio backend is mounted.
 struct UiSink<'a> {
     state: &'a mut State,
+    source: SourceId,
+    /// Disconnect/refresh reconciliation ends notes now, on the app clock.
+    reconcile: bool,
+}
+
+impl<'a> UiSink<'a> {
+    fn new(state: &'a mut State, source: SourceId, reconcile: bool) -> Self {
+        Self {
+            state,
+            source,
+            reconcile,
+        }
+    }
+
+    fn at(&mut self, time: OriginalTime) -> u64 {
+        if self.reconcile {
+            transport::app_nanos(self.state)
+        } else {
+            transport::midi_time(self.state, self.source, time)
+        }
+    }
 }
 
 impl Sink for UiSink<'_> {
     fn dispatch(&mut self, action: Action) -> bool {
         match action {
-            Action::Trigger { pad, velocity, .. } => {
+            Action::Trigger {
+                pad,
+                velocity,
+                time,
+                ..
+            } => {
                 let index = pad.index();
                 let Some((slot, group)) = self.state.assets.playback(pad) else {
                     // No audible sample on this pad: nothing to queue, and
                     // not a queue loss.
                     return true;
                 };
+                let at = self.at(time);
+                transport::capture_pad(self.state, pad, velocity, transport::MIDI_PAD_SOURCE, at);
                 let settings = self.state.settings[index];
                 let sent = self.state.output.send(Command::Trigger {
                     pad: index,
@@ -147,7 +175,23 @@ impl Sink for UiSink<'_> {
                 }
                 sent
             }
-            Action::HeldStart(_) | Action::HeldEnd(_) | Action::Control { .. } => true,
+            Action::HeldStart(on) => {
+                let at = self.at(on.original_time);
+                transport::held_start(self.state, &on, at);
+                true
+            }
+            Action::HeldEnd(note) => {
+                let at = self.at(note.original_end());
+                transport::held_end(self.state, &note, at);
+                true
+            }
+            Action::Control {
+                action: ControlIntent::Panic,
+                ..
+            } => transport::panic(self.state),
+            // Sustain and all-notes-off are applied by the controller's own
+            // lifecycle; their releases arrive here as HeldEnd.
+            Action::Control { .. } => true,
         }
     }
 }
@@ -366,7 +410,8 @@ pub fn poll(s: &mut State, midi: &Midi) -> bool {
         let refresh_requested = midi.inner().refresh_requested;
         if refresh_requested {
             midi.inner_mut().refresh_requested = false;
-            match input.refresh(&mut UiSink { state: s }, now) {
+            let source = input.controller().source();
+            match input.refresh(&mut UiSink::new(s, source, true), now) {
                 Ok(refresh) => {
                     let mut inner = midi.inner_mut();
                     inner.ports = refresh.ports;
@@ -411,7 +456,12 @@ pub fn poll(s: &mut State, midi: &Midi) -> bool {
         let disconnect_requested = midi.inner().disconnect_requested;
         if disconnect_requested {
             midi.inner_mut().disconnect_requested = false;
-            let released = input.disconnect(&mut UiSink { state: s }, now);
+            let source = input.controller().source();
+            let mut sink = UiSink::new(s, source, true);
+            let released = input.disconnect(&mut sink, now)
+                // A fixture input has a controller connection but no backend
+                // port; reconcile it the same way (a no-op after a real close).
+                + input.controller_mut().end_connection(&mut sink, now);
             let mut inner = midi.inner_mut();
             inner.connected = None;
             inner.notice = Some(format!(
@@ -422,7 +472,8 @@ pub fn poll(s: &mut State, midi: &Midi) -> bool {
         if let Some(port) = input.port() {
             midi.inner_mut().connected = Some(port.clone());
         }
-        let report = input.poll(&mut UiSink { state: s });
+        let source = input.controller().source();
+        let report = input.poll(&mut UiSink::new(s, source, false));
         let mut inner = midi.inner_mut();
         if inner.last_report != Some(report) {
             changed = true;
@@ -431,6 +482,54 @@ pub fn poll(s: &mut State, midi: &Midi) -> bool {
     }
     midi.inner_mut().input = owned;
     changed
+}
+
+/// The controller's project mappings (D8), for saving with the project.
+pub fn mappings(midi: &Midi) -> Option<Mappings> {
+    midi.inner()
+        .input
+        .as_ref()
+        .map(|input| input.controller().mappings().clone())
+}
+
+/// Replace the project mappings after a project opens. Device choice is
+/// machine-local and stays as it was.
+pub fn set_mappings(midi: &Midi, mappings: Mappings) {
+    if let Some(input) = midi.inner_mut().input.as_mut() {
+        input.controller_mut().set_mappings(mappings);
+    }
+}
+
+/// Deterministic virtual input for scenes and tests: a connected fixture
+/// source with `mappings` (a project mappings document) and pre-queued raw
+/// packets `(backend microseconds, bytes)`, drained by the next real `poll`.
+pub fn fixture(midi: &Midi, source: SourceId, mappings: &str, packets: &[(u64, &[u8])]) {
+    let mut inner = midi.inner_mut();
+    let Some(input) = inner.input.as_mut() else {
+        return;
+    };
+    let (mut producer, consumer) = rtrb::RingBuffer::new(input::RAW_QUEUE_CAPACITY);
+    let controller = input.controller_mut();
+    controller.attach(consumer);
+    controller.begin_connection(source, OriginalTime::from_nanos(0));
+    if let Ok(document) = serde_json::from_str::<input::MappingsDocument>(mappings)
+        && let Ok(mappings) = document.to_mappings()
+    {
+        controller.set_mappings(mappings);
+    }
+    for (timestamp, bytes) in packets {
+        push_raw(&mut producer, *timestamp, bytes);
+    }
+    inner.connected = Some(PortInfo {
+        id: "fixture".into(),
+        name: "Fixture MIDI input".into(),
+    });
+}
+
+/// Reconcile the fixture/real connection as a disconnect, through the same
+/// path the panel's DISCONNECT button uses.
+pub fn request_disconnect(midi: &Midi) {
+    midi.inner_mut().disconnect_requested = true;
 }
 
 /// Assign the current learn candidate (a CC) to a control action. Shared by the
@@ -767,7 +866,7 @@ pub fn panel<S: 'static>(s: &State, midi: &Midi) -> El {
         );
     }
     body.child(list).child(
-        caption("Mappings are project data keyed by channel + note/CC (D8); persisting them in the project document is #100's wiring.").wrap(),
+        caption("Mappings are project data keyed by channel + note/CC (D8) and are saved with the project.").wrap(),
     )
 }
 

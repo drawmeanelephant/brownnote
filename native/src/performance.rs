@@ -282,6 +282,9 @@ impl TryFrom<u8> for LoopBars {
     }
 }
 impl LoopBars {
+    pub fn bars(self) -> u8 {
+        self.0
+    }
     fn units(self) -> u128 {
         u128::from(self.0) * 4 * UNITS_PER_QUARTER
     }

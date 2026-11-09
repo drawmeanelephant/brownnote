@@ -25,6 +25,9 @@ use crate::performance::{
 use crate::takes::{Take, Takes, TakesError};
 use std::{collections::BTreeMap, fmt};
 
+mod document;
+pub use document::{EDITS_FORMAT_VERSION, EditsDocument, EditsDocumentError, EventEditDocument};
+
 /// D15: undo history keeps the last 100 steps.
 pub const MAX_UNDO_STEPS: usize = 100;
 
