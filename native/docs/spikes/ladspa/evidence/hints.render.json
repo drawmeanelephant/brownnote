@@ -1,0 +1,49 @@
+{
+  "library": "native/docs/spikes/ladspa/.work/fixture_plugins.so",
+  "ladspa_path": null,
+  "search_dirs": ["~/Library/Audio/Plug-Ins/LADSPA", "/Library/Audio/Plug-Ins/LADSPA"],
+  "host": "aarch64-macos",
+  "plugin": {
+    "unique_id": 9701,
+    "label": "hints",
+    "name": "hints",
+    "maker": "Brownnote fixture",
+    "copyright": "MIT",
+    "properties": ["INPLACE_BROKEN"],
+    "run_adding": true,
+    "activate": true,
+    "deactivate": true,
+    "hint_rate": 44100,
+    "ports": [
+      {"index": 0, "name": "in", "direction": "input", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+      {"index": 1, "name": "out", "direction": "output", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+      {"index": 2, "name": "rate", "direction": "input", "kind": "control", "extra_descriptor_bits": 0, "hints": ["BOUNDED_BELOW", "BOUNDED_ABOVE", "SAMPLE_RATE", "DEFAULT_MAXIMUM"], "raw_lower": 0.0, "raw_upper": 0.5, "resolved_lower": 0.0, "resolved_upper": 22050.0, "resolved_default": 22050.0},
+      {"index": 3, "name": "log", "direction": "input", "kind": "control", "extra_descriptor_bits": 0, "hints": ["BOUNDED_BELOW", "BOUNDED_ABOVE", "LOGARITHMIC", "DEFAULT_MIDDLE"], "raw_lower": 20.0, "raw_upper": 20000.0, "resolved_lower": 20.0, "resolved_upper": 20000.0, "resolved_default": 632.4555320336755},
+      {"index": 4, "name": "int", "direction": "input", "kind": "control", "extra_descriptor_bits": 0, "hints": ["BOUNDED_BELOW", "BOUNDED_ABOVE", "INTEGER", "DEFAULT_LOW"], "raw_lower": 1.0, "raw_upper": 8.0, "resolved_lower": 1.0, "resolved_upper": 8.0, "resolved_default": 3.0},
+      {"index": 5, "name": "toggle", "direction": "input", "kind": "control", "extra_descriptor_bits": 0, "hints": ["TOGGLED", "DEFAULT_1"], "raw_lower": 0.0, "raw_upper": 0.0, "resolved_lower": null, "resolved_upper": null, "resolved_default": 1.0},
+      {"index": 6, "name": "rate_out", "direction": "output", "kind": "control", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+      {"index": 7, "name": "log_out", "direction": "output", "kind": "control", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+      {"index": 8, "name": "int_out", "direction": "output", "kind": "control", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+      {"index": 9, "name": "toggle_out", "direction": "output", "kind": "control", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0}
+    ]
+  },
+  "input": {"path": "recordings/fart_dry.wav", "channels": 1, "frames": 79380, "rate": 44100},
+  "channel_map": "identity",
+  "block_frames": 256,
+  "process_call": "run",
+  "buffers": "separate input and output buffers (in-place never used)",
+  "controls": [
+    {"name": "rate", "value": 22050.0, "source": "default"},
+    {"name": "log", "value": 632.4555320336755, "source": "default"},
+    {"name": "int", "value": 3.0, "source": "default"},
+    {"name": "toggle", "value": 1.0, "source": "default"}
+  ],
+  "control_outputs": {
+    "rate_out": 22050.0,
+    "log_out": 632.4555,
+    "int_out": 3.0,
+    "toggle_out": 1.0
+  },
+  "tail": {"threshold_dbfs": -90.0, "hold_seconds": 0.05, "max_seconds": 30.0, "frames": 0, "seconds": 0.0},
+  "output": {"file": "render.wav", "format": "float32", "channels": 1, "frames": 79380, "rate": 44100, "peaks": [0.6715698]}
+}

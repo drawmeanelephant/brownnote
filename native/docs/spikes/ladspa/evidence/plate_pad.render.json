@@ -1,0 +1,43 @@
+{
+  "library": "native/docs/spikes/ladspa/.work/patched/caps-0.9.26/caps.so",
+  "ladspa_path": null,
+  "search_dirs": ["~/Library/Audio/Plug-Ins/LADSPA", "/Library/Audio/Plug-Ins/LADSPA"],
+  "host": "aarch64-macos",
+  "plugin": {
+    "unique_id": 1779,
+    "label": "Plate",
+    "name": "C* Plate - Versatile plate reverb",
+    "maker": "Tim Goetze <tim@quitte.de>",
+    "copyright": "GPLv3",
+    "properties": ["HARD_RT_CAPABLE"],
+    "run_adding": false,
+    "activate": true,
+    "deactivate": false,
+    "hint_rate": 44100,
+    "ports": [
+      {"index": 0, "name": "bandwidth", "direction": "input", "kind": "control", "extra_descriptor_bits": 0, "hints": ["BOUNDED_BELOW", "BOUNDED_ABOVE", "DEFAULT_MIDDLE"], "raw_lower": 0.0, "raw_upper": 1.0, "resolved_lower": 0.0, "resolved_upper": 1.0, "resolved_default": 0.5},
+      {"index": 1, "name": "tail", "direction": "input", "kind": "control", "extra_descriptor_bits": 16, "hints": ["BOUNDED_BELOW", "BOUNDED_ABOVE", "DEFAULT_HIGH"], "raw_lower": 0.0, "raw_upper": 1.0, "resolved_lower": 0.0, "resolved_upper": 1.0, "resolved_default": 0.75},
+      {"index": 2, "name": "damping", "direction": "input", "kind": "control", "extra_descriptor_bits": 0, "hints": ["BOUNDED_BELOW", "BOUNDED_ABOVE", "DEFAULT_MIDDLE"], "raw_lower": 0.0, "raw_upper": 1.0, "resolved_lower": 0.0, "resolved_upper": 1.0, "resolved_default": 0.5},
+      {"index": 3, "name": "blend", "direction": "input", "kind": "control", "extra_descriptor_bits": 16, "hints": ["BOUNDED_BELOW", "BOUNDED_ABOVE", "DEFAULT_LOW"], "raw_lower": 0.0, "raw_upper": 1.0, "resolved_lower": 0.0, "resolved_upper": 1.0, "resolved_default": 0.25},
+      {"index": 4, "name": "in", "direction": "input", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["BOUNDED_BELOW", "BOUNDED_ABOVE", "DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+      {"index": 5, "name": "out.l", "direction": "output", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+      {"index": 6, "name": "out.r", "direction": "output", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0}
+    ]
+  },
+  "input": {"path": "recordings/fart_dry.wav", "channels": 1, "frames": 79380, "rate": 44100},
+  "channel_map": "identity",
+  "block_frames": 256,
+  "process_call": "run",
+  "buffers": "separate input and output buffers (in-place never used)",
+  "controls": [
+    {"name": "bandwidth", "value": 0.5, "source": "default"},
+    {"name": "tail", "value": 0.75, "source": "default"},
+    {"name": "damping", "value": 0.5, "source": "default"},
+    {"name": "blend", "value": 0.25, "source": "default"}
+  ],
+  "control_outputs": {
+
+  },
+  "tail": {"threshold_dbfs": -90.0, "hold_seconds": 0.05, "max_seconds": 30.0, "frames": 149556, "seconds": 3.3912925170068027},
+  "output": {"file": "render.wav", "format": "float32", "channels": 2, "frames": 228936, "rate": 44100, "peaks": [0.6023018, 0.5987815]}
+}

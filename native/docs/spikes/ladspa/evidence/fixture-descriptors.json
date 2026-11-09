@@ -1,0 +1,112 @@
+{
+  "library": "native/docs/spikes/ladspa/.work/fixture_plugins.so",
+  "descriptors": [
+    {
+      "unique_id": 9701,
+      "label": "hints",
+      "name": "hints",
+      "maker": "Brownnote fixture",
+      "copyright": "MIT",
+      "properties": ["INPLACE_BROKEN"],
+      "run_adding": true,
+      "activate": true,
+      "deactivate": true,
+      "hint_rate": 44100,
+      "ports": [
+        {"index": 0, "name": "in", "direction": "input", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+        {"index": 1, "name": "out", "direction": "output", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+        {"index": 2, "name": "rate", "direction": "input", "kind": "control", "extra_descriptor_bits": 0, "hints": ["BOUNDED_BELOW", "BOUNDED_ABOVE", "SAMPLE_RATE", "DEFAULT_MAXIMUM"], "raw_lower": 0.0, "raw_upper": 0.5, "resolved_lower": 0.0, "resolved_upper": 22050.0, "resolved_default": 22050.0},
+        {"index": 3, "name": "log", "direction": "input", "kind": "control", "extra_descriptor_bits": 0, "hints": ["BOUNDED_BELOW", "BOUNDED_ABOVE", "LOGARITHMIC", "DEFAULT_MIDDLE"], "raw_lower": 20.0, "raw_upper": 20000.0, "resolved_lower": 20.0, "resolved_upper": 20000.0, "resolved_default": 632.4555320336755},
+        {"index": 4, "name": "int", "direction": "input", "kind": "control", "extra_descriptor_bits": 0, "hints": ["BOUNDED_BELOW", "BOUNDED_ABOVE", "INTEGER", "DEFAULT_LOW"], "raw_lower": 1.0, "raw_upper": 8.0, "resolved_lower": 1.0, "resolved_upper": 8.0, "resolved_default": 3.0},
+        {"index": 5, "name": "toggle", "direction": "input", "kind": "control", "extra_descriptor_bits": 0, "hints": ["TOGGLED", "DEFAULT_1"], "raw_lower": 0.0, "raw_upper": 0.0, "resolved_lower": null, "resolved_upper": null, "resolved_default": 1.0},
+        {"index": 6, "name": "rate_out", "direction": "output", "kind": "control", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+        {"index": 7, "name": "log_out", "direction": "output", "kind": "control", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+        {"index": 8, "name": "int_out", "direction": "output", "kind": "control", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+        {"index": 9, "name": "toggle_out", "direction": "output", "kind": "control", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0}
+      ]
+    },
+    {
+      "unique_id": 9702,
+      "label": "no_output",
+      "name": "no_output",
+      "maker": "Brownnote fixture",
+      "copyright": "MIT",
+      "properties": [],
+      "run_adding": false,
+      "activate": true,
+      "deactivate": true,
+      "hint_rate": 44100,
+      "ports": [
+        {"index": 0, "name": "in", "direction": "input", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0}
+      ]
+    },
+    {"label": "bad_port", "error": "plugin bad_port: port 1 (out) is not exactly input or output"},
+    {
+      "unique_id": 9704,
+      "label": "nan",
+      "name": "nan",
+      "maker": "Brownnote fixture",
+      "copyright": "MIT",
+      "properties": [],
+      "run_adding": false,
+      "activate": true,
+      "deactivate": true,
+      "hint_rate": 44100,
+      "ports": [
+        {"index": 0, "name": "in", "direction": "input", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+        {"index": 1, "name": "out", "direction": "output", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0}
+      ]
+    },
+    {
+      "unique_id": 9705,
+      "label": "endless",
+      "name": "endless",
+      "maker": "Brownnote fixture",
+      "copyright": "MIT",
+      "properties": [],
+      "run_adding": false,
+      "activate": true,
+      "deactivate": true,
+      "hint_rate": 44100,
+      "ports": [
+        {"index": 0, "name": "in", "direction": "input", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+        {"index": 1, "name": "out", "direction": "output", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0}
+      ]
+    },
+    {
+      "unique_id": 9706,
+      "label": "bad_hint",
+      "name": "bad_hint",
+      "maker": "Brownnote fixture",
+      "copyright": "MIT",
+      "properties": [],
+      "run_adding": false,
+      "activate": true,
+      "deactivate": true,
+      "hint_rate": 44100,
+      "ports": [
+        {"index": 0, "name": "in", "direction": "input", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+        {"index": 1, "name": "out", "direction": "output", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+        {"index": 2, "name": "inverted", "direction": "input", "kind": "control", "extra_descriptor_bits": 0, "hints": ["BOUNDED_BELOW", "BOUNDED_ABOVE", "DEFAULT_MIDDLE"], "raw_lower": 1.0, "raw_upper": 0.0, "hint_error": "control inverted: lower bound above upper bound"}
+      ]
+    },
+    {
+      "unique_id": 9707,
+      "label": "wide",
+      "name": "wide",
+      "maker": "Brownnote fixture",
+      "copyright": "MIT",
+      "properties": [],
+      "run_adding": false,
+      "activate": true,
+      "deactivate": true,
+      "hint_rate": 44100,
+      "ports": [
+        {"index": 0, "name": "in", "direction": "input", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+        {"index": 1, "name": "out1", "direction": "output", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+        {"index": 2, "name": "out2", "direction": "output", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0},
+        {"index": 3, "name": "out3", "direction": "output", "kind": "audio", "extra_descriptor_bits": 0, "hints": ["DEFAULT_NONE"], "raw_lower": 0.0, "raw_upper": 0.0}
+      ]
+    }
+  ]
+}
