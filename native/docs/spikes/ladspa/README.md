@@ -11,8 +11,8 @@ This spike proves that Plate builds for arm64 from pinned upstream source
 with a two-file compiler patch. A standalone host loads it and renders a
 real Brownnote pad sample offline. The render is reproducible and its output
 is checked independently. LADSPA is not deferred. #114 can start against the
-scope below. #97 stays open until the maintainer has listened to the
-reference render (see [Open gates](#open-gates)).
+scope below. #97 closed on this evidence; the maintainer listening pass is an
+optional follow-up and is not a close gate (see [Open gates](#open-gates)).
 
 This is a standalone probe. It adds no production module, dependency, UI
 or project format. It does not change `native/Cargo.toml` or any
@@ -22,7 +22,7 @@ integrator-owned file.
 
 | Question | Answer |
 | --- | --- |
-| Musical use | A plate reverb on drum and pad hits: a short, bright and dense stereo tail. The current GuitarPedal pipeline has a mono `Reverb` (Room, Damp) and renders mono PCM16 with a fixed 2 s tail. Plate adds a decorrelated **stereo** output (left/right tail correlation −0.08 in the reference) and a tail that runs past 2 s at its defaults. Whether it sounds better is the maintainer's call (listening gate below). |
+| Musical use | A plate reverb on drum and pad hits: a short, bright and dense stereo tail. The current GuitarPedal pipeline has a mono `Reverb` (Room, Damp) and renders mono PCM16 with a fixed 2 s tail. Plate adds a decorrelated **stereo** output (left/right tail correlation −0.08 in the reference) and a tail that runs past 2 s at its defaults. Whether it sounds better is the maintainer's call (optional listening follow-up below). |
 | Controls | Four 0–1 controls, all with LADSPA bounds and defaults: `bandwidth` (mid), `tail` (high), `damping` (mid), `blend` (low). They map directly to pad pedal knobs. |
 | Layout | 1 audio input (mono) and 2 audio outputs (stereo). No `run_adding`, no `deactivate`. Declares `HARD_RT_CAPABLE`, not `INPLACE_BROKEN`, not `REALTIME`. |
 | Source | [quitte.de/dsp/caps.html](https://quitte.de/dsp/caps.html), version 0.9.26 (October 2018, latest release). Tarball SHA256 `e7496c5b…f98c9`, byte-identical to Debian's `caps_0.9.26.orig.tar.bz2`. Pinned in [`pin.json`](pin.json). |
@@ -226,14 +226,16 @@ sandbox. Load only libraries you trust.
 
 ## Open gates
 
-- **Listening (maintainer).** Play `evidence/plate_pad.listen-pcm16.wav`
-  next to `recordings/fart_dry.wav`. Confirm that the plate is a sound you
-  want for pads and that the 3.4 s default tail is not excessive. An agent
-  cannot hear, so no listening claim is made.
-- **#114 production work.** Lift the mono PCM16 conversion and the fixed
-  2 s tail, add the allow-list and project recall (library hash, ID, label
-  and controls), retain renders as project media (D4), and report a missing
-  plugin in the UI.
+- **Listening (maintainer, optional).** Play
+  `evidence/plate_pad.listen-pcm16.wav` next to `recordings/fart_dry.wav`
+  and confirm that the plate is a sound you want for pads and that the 3.4 s
+  default tail is not excessive. An agent cannot hear, so no listening claim
+  is made. The maintainer decision recorded on #97 makes this a quality
+  follow-up rather than a close gate.
+- **#114 production work.** The allow-list and offline adapter landed in
+  #164; app registration, audition, project recall (library hash, ID, label
+  and controls), retained media (D4) and missing-plugin reporting are
+  tracked on #114.
 - **Not shown:** Linux, Intel macOS, other Xcode versions, bundling,
   real-time use, and any CAPS descriptor other than Plate.
 
