@@ -1,6 +1,7 @@
 mod audio;
 mod control;
 pub(crate) mod devices;
+mod edit;
 mod graphics;
 #[cfg(test)]
 #[path = "ui_import_tests.rs"]
