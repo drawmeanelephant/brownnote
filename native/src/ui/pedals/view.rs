@@ -108,8 +108,9 @@ fn menu_button(s: &mut State, tx: &mut Tx) {
 }
 
 fn add_button(s: &State, pad: usize) -> El {
-    let full =
-        s.pedals.pads[pad].chain.stages.len() >= brownnote_native::pedals::render::MAX_STAGES;
+    let full = s.pedals.pads[pad].chain.stages.len()
+        >= brownnote_native::pedals::render::MAX_STAGES
+        || super::plugin::active(s, pad);
     let mut button = button("pedal-add", "+ PEDAL");
     button = button
         .w(70.0)
@@ -434,15 +435,25 @@ fn focused_stage(s: &State) -> El {
 /// The strip body: chain chips and the focused stage's controls.
 pub fn strip(s: &State) -> El {
     let pad = s.selected;
+    if s.pedals.plugins.shown {
+        return super::plugin::strip(s);
+    }
     if let CatalogState::Unavailable(message) = &s.pedals.catalog {
-        return row()
+        // Plugin stages do not need the GuitarPedal bench.
+        return col()
             .key("pedal-message")
             .h(61.0)
-            .center_y()
+            .gap(4.0)
+            .child(super::plugin::mode_switch(s))
             .child(caption(message.clone()).color(ink("#ffad92")).truncate());
     }
     let chain = &s.pedals.pads[pad].chain;
-    let mut chips = row().key("pedal-chain").gap(4.0).h(18.0).scroll_x();
+    let mut chips = row()
+        .key("pedal-chain")
+        .gap(4.0)
+        .h(18.0)
+        .scroll_x()
+        .child(super::plugin::mode_switch(s));
     for (index, stage) in chain.stages.iter().enumerate() {
         chips = chips.child(chip(s, pad, index, stage));
     }
@@ -457,6 +468,9 @@ pub fn strip(s: &State) -> El {
 
 /// The `PEDALS` tab's view, for the editor header.
 pub fn header(s: &State) -> El {
+    if s.pedals.plugins.shown {
+        return super::plugin::header(s);
+    }
     let spec = &PADS[s.selected];
     let status = &s.pedals.pads[s.selected].status;
     let (message, color) = match &s.pedals.catalog {
@@ -478,7 +492,7 @@ pub fn header(s: &State) -> El {
 pub fn tag(s: &State, pad: usize) -> Option<El> {
     let count = s.pedals.pads[pad].chain.stages.len();
     if count == 0 {
-        return None;
+        return super::plugin::tag(s, pad);
     }
     let failed = matches!(s.pedals.pads[pad].status, Status::Error(_));
     Some(

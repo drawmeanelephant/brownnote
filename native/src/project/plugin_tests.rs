@@ -61,17 +61,19 @@ fn chain() -> PluginChain {
 fn document(plugins: Option<PluginChain>, retained: bool) -> Document {
     let source = AssetRef::of(b"source");
     let render = AssetRef::of(b"render");
-    let mut document = Document::default();
-    document.assets = vec![
-        Asset {
-            reference: source.clone(),
-            kind: MediaKind::Source,
-        },
-        Asset {
-            reference: render.clone(),
-            kind: MediaKind::RetainedRender,
-        },
-    ];
+    let mut document = Document {
+        assets: vec![
+            Asset {
+                reference: source.clone(),
+                kind: MediaKind::Source,
+            },
+            Asset {
+                reference: render.clone(),
+                kind: MediaKind::RetainedRender,
+            },
+        ],
+        ..Default::default()
+    };
     document.pads[2].sample = Some(SampleAssignment {
         source: source.id,
         retained: retained.then_some(render.id),

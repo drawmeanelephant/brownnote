@@ -95,6 +95,21 @@ impl PartKey {
     }
 }
 
+/// What is baked into a pad's retained render, named honestly: GuitarPedal
+/// effects by name, plugin stages by exact identity. Plugin state and
+/// parameters are a record of how the sound was made, not editable effects.
+fn baked_chain(pad: &project::Pad) -> Vec<String> {
+    let mut chain: Vec<String> = pad.chain.stages.iter().map(|s| s.effect.clone()).collect();
+    if let Some(plugins) = &pad.plugins {
+        chain.extend(plugins.stages.iter().map(|stage| stage.describe()));
+        chain.push(format!(
+            "offline {:?} render downmixed to the mono pad voice (render identity {})",
+            plugins.policy.layout, plugins.render
+        ));
+    }
+    chain
+}
+
 pub struct ProjectExport {
     pub events: FixtureExport,
     pub audio: AudioSettings,
@@ -124,7 +139,7 @@ pub fn prepare(
             id: index as u8,
             source: Some(asset_id(sample.source)?),
             retained: sample.retained.map(asset_id).transpose()?,
-            baked_chain: pad.chain.stages.iter().map(|s| s.effect.clone()).collect(),
+            baked_chain: baked_chain(pad),
             choke: document.choke,
         });
         audio.pads.insert(

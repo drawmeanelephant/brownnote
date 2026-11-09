@@ -4,6 +4,8 @@
 //! A pad's chain renders off the UI thread with `rune::Latest` and lands in
 //! `poll`. The pad's next hit plays the rendered sample; a voice already
 //! playing keeps the sample it started with.
+#[path = "../plugin_pedals.rs"]
+pub mod plugin;
 mod view;
 
 use super::{State, media::pad_id};
@@ -91,6 +93,8 @@ pub struct Pedals {
     pub render_fn: RenderFn,
     /// An in-app pedal list, used where the platform has no native menus.
     pub add_open: bool,
+    /// Offline plugin stages, shown in the same strip.
+    pub plugins: plugin::Plugins,
     catalog_request: Latest<Result<Catalog, CatalogError>>,
 }
 
@@ -118,6 +122,7 @@ impl Pedals {
             catalog_fn: Arc::new(move || brownnote::list(&list_bin, Duration::from_secs(5))),
             render_fn: Arc::new(render::render),
             add_open: false,
+            plugins: plugin::Plugins::default(),
             catalog_request: Latest::default(),
         }
     }
@@ -144,6 +149,7 @@ impl Pedals {
         for pad in &self.pads {
             pad.render.set_waker(waker.clone());
         }
+        self.plugins.set_waker(waker);
     }
 }
 
@@ -246,6 +252,7 @@ fn reset_to_base(s: &mut State, pad: usize) {
 }
 
 pub(super) fn cancel_work(s: &mut State, pad: usize) {
+    plugin::cancel_work(s, pad);
     s.pedals.pads[pad].render.cancel();
     s.pedals.pads[pad].pending = None;
     s.pedals.pads[pad].requested = None;
@@ -264,6 +271,8 @@ pub(super) fn source_changed(s: &mut State, pad: usize) {
     s.pedals.pads[pad].landed = None;
     s.pedals.pads[pad].status = Status::Base;
     request(s, pad);
+    // After the GuitarPedal request, so its ticket is the pad's newest.
+    plugin::source_changed(s, pad);
 }
 
 /// Ask for a render of this pad's chain, or cancel it when the chain is empty.
@@ -272,6 +281,10 @@ pub fn request(s: &mut State, pad: usize) {
         return;
     }
     let chain = s.pedals.pads[pad].chain.clone();
+    if chain.stages.is_empty() && plugin::active(s, pad) {
+        // The pad's retained sound belongs to its plugin stages.
+        return;
+    }
     if chain.stages.is_empty() {
         s.cancel_import(pad);
         s.pedals.pads[pad].render.cancel();
@@ -345,7 +358,7 @@ pub fn add_stage(s: &mut State, pad: usize, name: &str) {
     let Some(found) = effect(&catalog, name) else {
         return;
     };
-    if !found.routable() {
+    if !found.routable() || plugin::active(s, pad) {
         return;
     }
     let chain = &mut s.pedals.pads[pad].chain;
@@ -466,6 +479,7 @@ pub fn poll(s: &mut State) -> bool {
         }
         changed |= retry_pending(s, pad);
     }
+    changed |= plugin::poll(s);
     changed
 }
 
