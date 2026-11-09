@@ -1,14 +1,14 @@
 //! Export bundle transaction: one time origin, deterministic traversal,
-//! write-then-commit (issue #109, wave 3 first PR).
+//! write-then-commit (issue #109).
 //!
 //! A bundle is a directory: `manifest.json` plus `media/<sha256>.wav` copies
 //! (D3/D4). Everything is staged in a sibling directory and published with a
 //! single atomic rename, so an injected write failure or a missing media file
 //! can never present a partial bundle as complete. The writer is injectable,
-//! so fault tests never touch disk. The MIDI/audio writers are a follow-up PR
-//! and plug into this same transaction without changing it.
+//! so fault tests never touch disk. WAVs and SMF publish in that transaction.
 
 use super::{
+    audio::{self, AudioError, AudioSettings},
     fixture::{
         FixtureAsset, FixtureEvent, FixtureExport, FixtureMediaKind, FixturePad, FixturePart,
         FixturePartKind, FixtureTarget,
@@ -17,6 +17,7 @@ use super::{
         AssetEntry, AssetId, AssetKind, EventEntry, EventId, LossRecord, MANIFEST_NAME, MEDIA_DIR,
         Manifest, ManifestError, PartEntry, PartKind, TimeOrigin, Timing,
     },
+    midi::{self, MidiError},
 };
 use std::{
     collections::BTreeMap,
@@ -100,6 +101,10 @@ pub struct BundleReceipt {
 
 #[derive(Debug)]
 pub enum BundleError {
+    Audio(AudioError),
+    Midi(MidiError),
+    TimingOverflow(EventId),
+    TargetPartMismatch(EventId),
     Manifest(ManifestError),
     Io {
         context: &'static str,
@@ -138,6 +143,16 @@ impl BundleError {
 impl From<ManifestError> for BundleError {
     fn from(error: ManifestError) -> Self {
         Self::Manifest(error)
+    }
+}
+impl From<AudioError> for BundleError {
+    fn from(error: AudioError) -> Self {
+        Self::Audio(error)
+    }
+}
+impl From<MidiError> for BundleError {
+    fn from(error: MidiError) -> Self {
+        Self::Midi(error)
     }
 }
 
@@ -196,6 +211,7 @@ fn part_kind(kind: &FixturePartKind) -> PartKind {
         FixturePartKind::InstrumentNotes { instrument } => PartKind::InstrumentNotes {
             instrument: *instrument,
         },
+        FixturePartKind::SampleClips { source } => PartKind::SampleClips { source: *source },
     }
 }
 
@@ -249,6 +265,20 @@ pub fn build_manifest(
                 .then_with(|| a.id.cmp(&b.id))
         });
         for event in events {
+            let matches_part = match (&part.kind, event.target) {
+                (FixturePartKind::PadClips { pad }, FixtureTarget::Pad(target)) => *pad == target,
+                (FixturePartKind::SampleClips { source }, FixtureTarget::Sample(target)) => {
+                    *source == target
+                }
+                (
+                    FixturePartKind::InstrumentNotes { instrument },
+                    FixtureTarget::Instrument(target),
+                ) => *instrument == target,
+                _ => false,
+            };
+            if !matches_part {
+                return Err(BundleError::TargetPartMismatch(event.id));
+            }
             for (label, time) in [
                 ("start", event.start_nanos),
                 ("effective start", effective_start_nanos(event)),
@@ -289,7 +319,9 @@ pub fn build_manifest(
                 if definition.choke {
                     choke_hits.entry(pad).or_default().push((
                         effective,
-                        effective + event.duration_nanos,
+                        effective
+                            .checked_add(event.duration_nanos)
+                            .ok_or(BundleError::TimingOverflow(event.id))?,
                         event.id,
                     ));
                 }
@@ -304,6 +336,11 @@ pub fn build_manifest(
                 channel: event.channel,
                 velocity: event.velocity,
                 asset,
+                source: match event.target {
+                    FixtureTarget::Pad(pad) => pads.get(&pad).and_then(|pad| pad.source),
+                    FixtureTarget::Sample(id) => Some(id),
+                    FixtureTarget::Instrument(_) => None,
+                },
                 variant_of: event.variant_of,
             });
         }
@@ -350,79 +387,24 @@ pub fn write_bundle<W: BundleWriter + ?Sized>(
     request: &BundleRequest,
     export: &FixtureExport,
 ) -> Result<BundleReceipt, BundleError> {
-    let manifest = build_manifest(request, export)?;
-    let manifest_bytes = manifest.encode()?;
-    let manifest_id = AssetId::of(&manifest_bytes);
-    let event_count = manifest.events.len();
-    let asset_count = manifest.assets.len();
+    write_bundle_with_settings(writer, request, export, &AudioSettings::default())
+}
 
+pub fn write_bundle_with_settings<W: BundleWriter + ?Sized>(
+    writer: &mut W,
+    request: &BundleRequest,
+    export: &FixtureExport,
+    settings: &AudioSettings,
+) -> Result<BundleReceipt, BundleError> {
+    let mut manifest = build_manifest(request, export)?;
+    manifest.validate()?;
     if writer
         .exists(&request.destination)
         .map_err(|e| BundleError::io("destination", e))?
     {
         return Err(BundleError::DestinationExists);
     }
-    let parent = request
-        .destination
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| {
-            BundleError::io("destination", io::Error::from(io::ErrorKind::InvalidInput))
-        })?;
-    let staging = staging_path(&request.destination)?;
-    writer
-        .ensure_dir(&parent)
-        .map_err(|e| BundleError::io("ensure destination parent", e))?;
-    if writer
-        .exists(&staging)
-        .map_err(|e| BundleError::io("staging", e))?
-    {
-        // Leftover from an aborted run of this same destination.
-        writer
-            .remove_dir_all(&staging)
-            .map_err(|e| BundleError::io("clean stale staging", e))?;
-    }
-
-    match stage_and_commit(
-        writer,
-        request,
-        &parent,
-        &staging,
-        &manifest,
-        &manifest_bytes,
-    ) {
-        Ok(()) => Ok(BundleReceipt {
-            destination: request.destination.clone(),
-            manifest,
-            manifest_id,
-            event_count,
-            asset_count,
-        }),
-        Err(error) => {
-            // Abort: the destination only ever appears via the commit rename,
-            // so removing staging guarantees no partial bundle is presented.
-            let _ = writer.remove_dir_all(&staging);
-            Err(error)
-        }
-    }
-}
-
-fn stage_and_commit<W: BundleWriter + ?Sized>(
-    writer: &mut W,
-    request: &BundleRequest,
-    parent: &Path,
-    staging: &Path,
-    manifest: &Manifest,
-    manifest_bytes: &[u8],
-) -> Result<(), BundleError> {
-    writer
-        .ensure_dir(staging)
-        .map_err(|e| BundleError::io("ensure staging", e))?;
-    writer
-        .ensure_dir(&staging.join(MEDIA_DIR))
-        .map_err(|e| BundleError::io("ensure media", e))?;
-    // Assets in content-hash order; each is read from the source project,
-    // verified (byte count + SHA-256, D3) and staged before anything publishes.
+    let mut media = BTreeMap::new();
     for asset in &manifest.assets {
         let id = asset.id;
         let source = request.source_root.join(id.relative_path());
@@ -447,10 +429,91 @@ fn stage_and_commit<W: BundleWriter + ?Sized>(
                 actual,
             });
         }
+        media.insert(id, bytes);
+    }
+    let generated = audio::render(&mut manifest, export, &media, settings)?;
+    media.extend(generated);
+    let midi = midi::encode(&manifest)?;
+    manifest.midi = Some(midi.entry);
+    manifest.losses.extend(midi.losses);
+    let manifest_bytes = manifest.encode()?;
+    let manifest_id = AssetId::of(&manifest_bytes);
+    let event_count = manifest.events.len();
+    let asset_count = manifest.assets.len();
+    let parent = request
+        .destination
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            BundleError::io("destination", io::Error::from(io::ErrorKind::InvalidInput))
+        })?;
+    let staging = staging_path(&request.destination)?;
+    writer
+        .ensure_dir(&parent)
+        .map_err(|e| BundleError::io("ensure destination parent", e))?;
+    if writer
+        .exists(&staging)
+        .map_err(|e| BundleError::io("staging", e))?
+    {
+        // Leftover from an aborted run of this same destination.
         writer
-            .write_file(&staging.join(&asset.path), &bytes)
+            .remove_dir_all(&staging)
+            .map_err(|e| BundleError::io("clean stale staging", e))?;
+    }
+
+    match stage_and_commit(
+        writer,
+        request,
+        &staging,
+        &manifest,
+        &manifest_bytes,
+        &media,
+        &midi.bytes,
+    ) {
+        Ok(()) => Ok(BundleReceipt {
+            destination: request.destination.clone(),
+            manifest,
+            manifest_id,
+            event_count,
+            asset_count,
+        }),
+        Err(error) => {
+            // Abort: the destination only ever appears via the commit rename,
+            // so removing staging guarantees no partial bundle is presented.
+            let _ = writer.remove_dir_all(&staging);
+            Err(error)
+        }
+    }
+}
+
+fn stage_and_commit<W: BundleWriter + ?Sized>(
+    writer: &mut W,
+    request: &BundleRequest,
+    staging: &Path,
+    manifest: &Manifest,
+    manifest_bytes: &[u8],
+    media: &BTreeMap<AssetId, Vec<u8>>,
+    midi_bytes: &[u8],
+) -> Result<(), BundleError> {
+    writer
+        .ensure_dir(staging)
+        .map_err(|e| BundleError::io("ensure staging", e))?;
+    writer
+        .ensure_dir(&staging.join(MEDIA_DIR))
+        .map_err(|e| BundleError::io("ensure media", e))?;
+    // Original bytes were verified before rendering; generated assets share
+    // their hash paths and publish in the same transaction, not a sidecar.
+    for asset in &manifest.assets {
+        let bytes = media
+            .get(&asset.id)
+            .ok_or(BundleError::MissingMedia(asset.id))?;
+        writer
+            .write_file(&staging.join(&asset.path), bytes)
             .map_err(|e| BundleError::io("write media", e))?;
     }
+    writer
+        .write_file(&staging.join(midi::MIDI_PATH), midi_bytes)
+        .map_err(|e| BundleError::io("write MIDI", e))?;
     // The manifest is staged last; it becomes visible only together with the
     // whole staging directory at the commit rename.
     writer
@@ -472,7 +535,9 @@ fn stage_and_commit<W: BundleWriter + ?Sized>(
         }
     }
     writer
-        .sync_dir(parent)
+        .sync_dir(request.destination.parent().ok_or_else(|| {
+            BundleError::io("destination", io::Error::from(io::ErrorKind::InvalidInput))
+        })?)
         .map_err(|e| BundleError::io("sync destination parent", e))?;
     Ok(())
 }

@@ -1,9 +1,8 @@
-//! Synthetic export DTOs mirroring the #98/#104/#106 contract shapes.
+//! Neutral writer DTOs, also used by synthetic export fixtures.
 //!
-//! Wave 3's first PR builds the manifest and bundle transaction against these
-//! synthetic DTOs only. They mirror the `project`/`performance`/`takes` shapes
-//! but are deliberately not wired to the real project store; the MIDI and
-//! audio writers land in a follow-up PR. SoundCraft does not shape them (D19).
+//! The public names from the first manifest PR are retained. `adapter` now
+//! supplies these from real project/takes/edit inputs, without making the
+//! writers depend on those owners. SoundCraft does not shape them (D19).
 
 use super::manifest::{AssetId, EventId, PartId};
 
@@ -41,7 +40,7 @@ pub struct FixturePad {
 pub enum FixtureTarget {
     Pad(u8),
     Sample(AssetId),
-    Instrument(u64),
+    Instrument(u128),
 }
 
 /// Mirror of the #107 effective edit view: the exported onset may differ from
@@ -75,7 +74,7 @@ pub struct FixtureEvent {
 /// recording tempo is retained with the take.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FixtureTake {
-    pub id: u64,
+    pub id: u128,
     pub recording_tempo_milli_bpm: u32,
     pub events: Vec<FixtureEvent>,
 }
@@ -84,7 +83,8 @@ pub struct FixtureTake {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FixturePartKind {
     PadClips { pad: u8 },
-    InstrumentNotes { instrument: u64 },
+    InstrumentNotes { instrument: u128 },
+    SampleClips { source: AssetId },
 }
 
 /// A bundle part and the stable event IDs it renders.
