@@ -1,0 +1,228 @@
+{
+  "backend": "rustysynth 1.3.8",
+  "sample_rate": 48000,
+  "block_size": 64,
+  "maximum_polyphony": 8,
+  "effects": false,
+  "d14_fifo_supported": false,
+  "native_integration_tested": false,
+  "cases": {
+    "fresh": {
+      "sha256": "3f13f3405e63f1f0488ac11cc004e47da8a4fe0820e8f9050efe161a015219a4",
+      "first_nonzero_frame": 14400,
+      "rms_36000_40800_left": 0.0010794420481895725,
+      "tail_peak_65000_72000": 0
+    },
+    "loud": {
+      "sha256": "daac880fc643ab3904a3069e93aadf973b55c7fa67af6882fc7f3355fcbc503a",
+      "first_nonzero_frame": 4800,
+      "rms_36000_40800_left": 0.0,
+      "tail_peak_65000_72000": 0
+    },
+    "missing_program": {
+      "sha256": "3f13f3405e63f1f0488ac11cc004e47da8a4fe0820e8f9050efe161a015219a4",
+      "first_nonzero_frame": 14400,
+      "rms_36000_40800_left": 0.0010794420481895725,
+      "tail_peak_65000_72000": 0
+    },
+    "overlap": {
+      "sha256": "8c1733d699ee9f8565d39da45a3649a55aa65a0c0cb0d85ebcac1813306c2a2c",
+      "first_nonzero_frame": 4800,
+      "rms_36000_40800_left": 0.01905985012126111,
+      "tail_peak_65000_72000": 0
+    },
+    "panic": {
+      "sha256": "0438d3bae1bc942589de3f3c953be9a3eddbc081b34b94432855ded2bbaabb46",
+      "first_nonzero_frame": 4800,
+      "rms_36000_40800_left": 0.0,
+      "tail_peak_65000_72000": 0,
+      "last_nonzero_frame": 19263
+    },
+    "polyphony": {
+      "sha256": "06b0bcb963dd4f4f5fd7733ddbbf5f544837981f22243c5c9f9f18aa31bf57f9",
+      "first_nonzero_frame": 4800,
+      "rms_36000_40800_left": 0.05353780621271964,
+      "tail_peak_65000_72000": 0
+    },
+    "reopen": {
+      "sha256": "3f13f3405e63f1f0488ac11cc004e47da8a4fe0820e8f9050efe161a015219a4",
+      "first_nonzero_frame": 14400,
+      "rms_36000_40800_left": 0.0010794420481895725,
+      "tail_peak_65000_72000": 0
+    },
+    "repeat": {
+      "sha256": "4f33eba70108ebdf6d2e15c49244403d84f20f38660bd9a3d0630395fc45ce61",
+      "first_nonzero_frame": 4800,
+      "rms_36000_40800_left": 0.0,
+      "tail_peak_65000_72000": 0
+    },
+    "repeat_held": {
+      "sha256": "faf69b9d096f3225f66c8d13cf1a13bcd0dd8f0f332dcdcba6d236025e0b0b0e",
+      "first_nonzero_frame": 4800,
+      "rms_36000_40800_left": 0.03802731904299422,
+      "tail_peak_65000_72000": 0
+    },
+    "reset_recall": {
+      "sha256": "eed8c63684976d4160552a6e66f8910cdbab9289c6aa3a43726dc42b7cf2aec8",
+      "first_nonzero_frame": 4800,
+      "rms_36000_40800_left": 0.0010794420481895725,
+      "tail_peak_65000_72000": 0
+    },
+    "reset_tail": {
+      "sha256": "6f08e333ba9cf18f1f4d2e64faabaf4d471782305b78d0658fb3c9b331fad6b4",
+      "first_nonzero_frame": 4800,
+      "rms_36000_40800_left": 0.0,
+      "tail_peak_65000_72000": 0,
+      "last_nonzero_frame": 19200
+    },
+    "separate_channels": {
+      "sha256": "9a3bdb1f8fe99da4dd91eee2ad257695fe8ce347b1f3dd1b4464943d112baa42",
+      "first_nonzero_frame": 4800,
+      "rms_36000_40800_left": 0.019013765941733974,
+      "tail_peak_65000_72000": 0
+    },
+    "soft": {
+      "sha256": "356ef9f91526433a4797a8b05d36ce2f186eb615a153e98f0ef2b6187d822ba6",
+      "first_nonzero_frame": 4800,
+      "rms_36000_40800_left": 0.0,
+      "tail_peak_65000_72000": 0
+    },
+    "sustain": {
+      "sha256": "5acec457ddbdfc575b68b12c50f85e7c4a2013db786f5f96e63b48af4bd2cca9",
+      "first_nonzero_frame": 4800,
+      "rms_36000_40800_left": 0.019013768462239615,
+      "tail_peak_65000_72000": 0
+    },
+    "sustain_below_threshold": {
+      "sha256": "c8896111dc91066ca79d80328543c7d2d21cf1f1373f18bfca725d2e1d8a04f5",
+      "first_nonzero_frame": 4800,
+      "rms_36000_40800_left": 0.0,
+      "tail_peak_65000_72000": 0
+    },
+    "zero_velocity": {
+      "sha256": "ab75116e9382135d832968cb307be5f835314f6d10940c5cbd7182593630eed5",
+      "first_nonzero_frame": 4800,
+      "rms_36000_40800_left": 0.0,
+      "tail_peak_65000_72000": 0
+    }
+  },
+  "checks": [
+    "fresh: onset within 128 frames of first note",
+    "fresh: exact pre-note silence",
+    "fresh: exact final silence",
+    "loud: onset within 128 frames of first note",
+    "loud: exact pre-note silence",
+    "loud: exact final silence",
+    "missing_program: onset within 128 frames of first note",
+    "missing_program: exact pre-note silence",
+    "missing_program: exact final silence",
+    "overlap: onset within 128 frames of first note",
+    "overlap: exact pre-note silence",
+    "overlap: exact final silence",
+    "panic: onset within 128 frames of first note",
+    "panic: exact pre-note silence",
+    "panic: exact final silence",
+    "polyphony: onset within 128 frames of first note",
+    "polyphony: exact pre-note silence",
+    "polyphony: exact final silence",
+    "reopen: onset within 128 frames of first note",
+    "reopen: exact pre-note silence",
+    "reopen: exact final silence",
+    "repeat: onset within 128 frames of first note",
+    "repeat: exact pre-note silence",
+    "repeat: exact final silence",
+    "repeat_held: onset within 128 frames of first note",
+    "repeat_held: exact pre-note silence",
+    "repeat_held: exact final silence",
+    "reset_recall: onset within 128 frames of first note",
+    "reset_recall: exact pre-note silence",
+    "reset_recall: exact final silence",
+    "reset_tail: onset within 128 frames of first note",
+    "reset_tail: exact pre-note silence",
+    "reset_tail: exact final silence",
+    "separate_channels: onset within 128 frames of first note",
+    "separate_channels: exact pre-note silence",
+    "separate_channels: exact final silence",
+    "soft: onset within 128 frames of first note",
+    "soft: exact pre-note silence",
+    "soft: exact final silence",
+    "sustain: onset within 128 frames of first note",
+    "sustain: exact pre-note silence",
+    "sustain: exact final silence",
+    "sustain_below_threshold: onset within 128 frames of first note",
+    "sustain_below_threshold: exact pre-note silence",
+    "sustain_below_threshold: exact final silence",
+    "zero_velocity: onset within 128 frames of first note",
+    "zero_velocity: exact pre-note silence",
+    "zero_velocity: exact final silence",
+    "velocity changes decoded level",
+    "note-on velocity zero releases",
+    "CC64 threshold and pedal-up release",
+    "different-pitch overlaps release independently",
+    "D14 BLOCKER reproduced: first same-pitch off releases both notes",
+    "same pitch on another channel survives first off",
+    "panic: exact silence within 64 frames",
+    "reset_tail: exact silence within 0 frames",
+    "saved config and fresh construction reproduce exact PCM",
+    "reset/reapply reproduces exact PCM from reset frame onward",
+    "missing preset silently falls back to default (integration hazard)",
+    "16 simultaneous single-region notes leave 8 fundamentals",
+    "CC120 clears bounded-polyphony output within one block",
+    "persisted configuration bytes round-trip"
+  ],
+  "velocity_rms": {
+    "32": 0.001947306071084261,
+    "112": 0.023850652847234713,
+    "ratio": 12.248024694933887
+  },
+  "sustain_rms": {
+    "cc64_127": 0.019013768462239615,
+    "cc64_63": 0.0
+  },
+  "same_pitch_rms": {
+    "after_first_off": 0.0,
+    "without_first_off": 0.03802731904299422,
+    "second_on_separate_channel": 0.019013765941733974
+  },
+  "polyphony": {
+    "fundamental_amplitudes": {
+      "60": 2.8671376983301445e-05,
+      "61": 0.02668457971368286,
+      "62": 0.026671109241054834,
+      "63": 0.02668261758376837,
+      "64": 0.026688066957735998,
+      "65": 0.0266964130629484,
+      "66": 0.026698473246987108,
+      "67": 0.026690963323678638,
+      "68": 8.359134595553259e-06,
+      "69": 2.3689119587061492e-07,
+      "70": 1.7068195544931666e-07,
+      "71": 2.999453828404344e-07,
+      "72": 9.696324500409643e-08,
+      "73": 1.523349728956007e-07,
+      "74": 2.506201472092137e-06,
+      "75": 0.02669418475842461
+    },
+    "threshold": 0.002669847324698711,
+    "present_keys": [
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      75
+    ]
+  },
+  "fresh_process_runs": 2,
+  "fresh_process_pcm_differences": 0,
+  "negative_asset_checks": [
+    "absent SF2 fails",
+    "corrupt SF2 fails"
+  ],
+  "retained_wav_decodes_without_backend_or_sf2": true,
+  "host": "arm64-Darwin",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "fixture_sha256": "2f7c7099043d7460eb33fb9dfbf90d50488bbe6f7c64dec7f889d6a5335f4004"
+}

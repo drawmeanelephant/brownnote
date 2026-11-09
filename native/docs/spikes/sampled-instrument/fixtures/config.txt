@@ -1,0 +1,7 @@
+sample_rate=48000
+block_size=64
+maximum_polyphony=8
+effects=false
+master_volume=0.5
+bank=0
+program=0
