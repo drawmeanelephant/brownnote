@@ -5,7 +5,7 @@ use super::{
     graphics::{led, logo, meter, waveform},
     ink,
     media::controls as import,
-    pedals, projects,
+    midi, pedals, projects,
 };
 use brownnote_native::{engine::Command, kit::PADS};
 use rune::{Cx, Drag, El, Phase, TextStyle, col, el, row, text};
@@ -44,6 +44,17 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 }),
         );
     controls = controls.child(devices::header(s));
+    // The lane header owns its internal visibility flag (label + Escape); the
+    // on_drag hook mirrors the toggle into State so this view can swap the
+    // panel slot. A clean click queues both Drag(Up) and Press, so the two
+    // flags stay in sync.
+    controls = controls.child(midi::header::<State>(s, &s.midi).on_drag(
+        |s: &mut State, d: &mut Drag, _tx| {
+            if d.phase == Phase::Up && !d.cancelled() && d.dx.abs() < 4.0 && d.dy.abs() < 4.0 {
+                s.midi_panel = !s.midi_panel;
+            }
+        },
+    ));
     if s.output.failed {
         controls = controls.child(
             button("retry-audio", "RETRY AUDIO")
@@ -111,6 +122,8 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             vec![import::panel(s)]
         } else if s.devices.visible {
             vec![devices::panel(s)]
+        } else if s.midi_panel {
+            vec![midi::panel::<State>(s, &s.midi)]
         } else {
             vec![grid, editor(s)]
         })
