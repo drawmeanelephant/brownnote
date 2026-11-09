@@ -28,17 +28,17 @@ contain IDs, not machine paths. Verification is not a concurrent-writer lock:
 
 ## Timing agreement with #104
 
-The current document persists a kit only. Future take serialization belongs
-here, using #104's semantic IDs and immutable integer nanosecond originals
-relative to each take, with its recording tempo. Playback derives musical
-positions at the current tempo; device frames and MIDI PPQ are boundary
-conversions. Quantize-off must reproduce originals exactly. No take, tempo,
-instrument backend, or placeholder arbitrary JSON schema is invented in v1.
-Adding those document fields requires an explicit format-version decision.
+Take serialization lives here (see "Takes and edits"), using #104's semantic
+IDs and immutable integer nanosecond originals relative to each take, with its
+recording tempo. Playback derives musical positions at the current tempo;
+device frames and MIDI PPQ are boundary conversions. Quantize-off reproduces
+originals exactly. No arbitrary JSON schema is added.
 
 Machine audio/MIDI device selection, window layout and cache location are
-excluded (D8). Instrument configuration will be added with its own feature
-contract, not serialized from runtime state.
+excluded (D8). The optional `instrument` entry is its own versioned contract
+(`instrument::InstrumentDocument`, see `sampled-instrument.md`), not
+serialized runtime state. Its SF2 bytes are an `instrument_source` asset and
+its per-note renders are `instrument_render` assets.
 
 ## MIDI mappings (#105, D8)
 
@@ -65,9 +65,9 @@ in `session::Prepared::mappings` for both current and explicit recovery opens.
 
 ### Integrator wiring
 
-The project APIs are ready; mounting them in the MIDI/project UI is outside this
-lane's ownership. The current `ui/midi.rs` handle keeps its input private and
-needs capture/apply accessors. No MIDI library API is missing.
+`ui/projects.rs` follows these steps through `midi::mappings` and
+`midi::set_mappings`; a save captures non-empty mappings, and every successful
+open applies the opened project's mappings (empty for legacy projects).
 
 1. Capture the controller's `Mappings` with
    `Snapshot::capture(...)?.with_midi_mappings(controller.mappings())` for every
@@ -85,6 +85,29 @@ bytes, typed failures, channel-sensitive recall, recovery and relocation.
 This is deterministic software evidence, not named-controller evidence.
 The #105 `needs-hardware` close gate stays open.
 
+## Takes and edits (#106, #107)
+
+Project format v1 accepts two more optional fields, `takes`
+(`takes::TakesDocument`) and `edits` (`edit::EditsDocument`), each with its own
+`version: 1`. Missing means no takes and no edits; default documents omit both.
+Existing v1 fixtures load unchanged.
+
+- `takes` stores tempo, loop bars, the next take ID, the selected take, and
+  every committed take (removed ones included, with `user` or `replaced_by`).
+  Each note keeps its sequence, semantic target, source/channel/pitch,
+  velocity and original take-relative `on_nanos`/`end_nanos`. u128 IDs are
+  canonical decimal strings. Tentative passes never save.
+- `edits` stores quantized take IDs and per-event deleted/velocity/nudge
+  overrides. Undo history is not saved (D15).
+- `Document::validate` rebuilds both: unknown fields, unsupported versions,
+  non-canonical IDs, out-of-order sequences, ends before starts, an unknown or
+  removed selection, a next ID not above every take, and edits that name
+  unknown takes or events fail as `DocumentError::Takes`/`Edits`.
+- `session::Prepared::takes` carries the rebuilt `(Takes, EditModel)` for
+  current and recovery opens.
+
+`cargo test --manifest-path native/Cargo.toml --test project_takes` covers
+round trip, validation, legacy bytes and the active-pass refusal.
 ## Library integration and validation
 
 `native/src/lib.rs` exports `project`. Its regular dependencies are:

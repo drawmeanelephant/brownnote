@@ -127,3 +127,25 @@ jobs:
       # locally
       - name: Test
         run: cargo test --manifest-path native/Cargo.toml
+
+      - name: Required pinned CLAP instrument and effect research
+        run: |
+          python3 native/docs/spikes/clap/check.py \
+            --lock-file "$RUNNER_TEMP/brownnote-clap-validation.lock" \
+            --target-dir "$GITHUB_WORKSPACE/native/target"
+
+      - name: Required CLAP helper and real-effect tests
+        env:
+          BROWNNOTE_CLAP_EFFECT: ${{ github.workspace }}/native/docs/spikes/clap/.work/plugins/Airwindows Consolidated.clap
+        run: make native-clap-effect-test
+
+      - name: Required plugin pad workflow and real-effect tests
+        env:
+          BROWNNOTE_CLAP_EFFECT: ${{ github.workspace }}/native/docs/spikes/clap/.work/plugins/Airwindows Consolidated.clap
+        run: make native-plugin-workflow-test
+
+      - name: Required CLAP live-instrument helper tests
+        run: make native-clap-live-test
+
+      - name: Required LADSPA helper and pinned Plate tests
+        run: make native-ladspa-plate-test

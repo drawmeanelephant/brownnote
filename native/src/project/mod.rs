@@ -9,11 +9,14 @@ pub mod session;
 pub mod store;
 
 use crate::{
+    edit::{EditModel, EditsDocument, EditsDocumentError},
+    instrument::{self, InstrumentDocument},
     midi::{
         input::{MAPPINGS_FORMAT_VERSION, MappingDocumentError, MappingsDocument},
         mapping::Mappings,
     },
     pedals::render::{Chain, MAX_STAGES, Stage},
+    takes::{Takes, TakesDocument, TakesDocumentError},
 };
 pub use media::{Asset, AssetId, AssetRef, MediaKind};
 pub use plugin::PluginChain;
@@ -105,6 +108,16 @@ pub struct Document {
     /// D8: channel-keyed project data, never the selected input device.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub midi_mappings: Option<MappingsDocument>,
+    /// Committed takes with their original times (D9); absent means none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takes: Option<TakesDocument>,
+    /// The current edit layer over `takes` (D15); undo history is not saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edits: Option<EditsDocument>,
+    /// The one sampled instrument (D18): identity, source, preset and the
+    /// retained per-note renders; absent means none was loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrument: Option<InstrumentDocument>,
 }
 
 impl Default for Document {
@@ -116,6 +129,9 @@ impl Default for Document {
             master: 0.8,
             choke: true,
             midi_mappings: None,
+            takes: None,
+            edits: None,
+            instrument: None,
         }
     }
 }
@@ -138,6 +154,10 @@ pub enum DocumentError {
     MissingRetained(PadId),
     WrongMediaKind(AssetId),
     MidiMappings(MappingDocumentError),
+    /// Boxed: take/event identities would bloat every store/session `Result`.
+    Takes(Box<TakesDocumentError>),
+    Edits(Box<EditsDocumentError>),
+    Instrument(instrument::DocumentError),
 }
 
 impl fmt::Display for DocumentError {
@@ -183,9 +203,38 @@ impl Document {
         .map_err(DocumentError::MidiMappings)
     }
 
+    /// Rebuild the take registry and edit layer; `None` when no takes were saved.
+    pub fn takes(&self) -> Result<Option<(Takes, EditModel)>, DocumentError> {
+        let Some(document) = &self.takes else {
+            // Edits without takes can only reference unknown takes/events.
+            if let Some(edits) = &self.edits {
+                let empty = Takes::new(
+                    crate::performance::LoopBars::try_from(1)
+                        .map_err(|_| DocumentError::InvalidDocument)?,
+                    crate::performance::TakeId(0),
+                );
+                edits
+                    .to_model(&empty)
+                    .map_err(|error| DocumentError::Edits(Box::new(error)))?;
+            }
+            return Ok(None);
+        };
+        let takes = document
+            .to_takes()
+            .map_err(|error| DocumentError::Takes(Box::new(error)))?;
+        let edits = match &self.edits {
+            Some(edits) => edits
+                .to_model(&takes)
+                .map_err(|error| DocumentError::Edits(Box::new(error)))?,
+            None => EditModel::new(),
+        };
+        Ok(Some((takes, edits)))
+    }
+
     pub fn validate(&self) -> Result<(), DocumentError> {
         check_version(self.version)?;
         self.mappings()?;
+        self.takes()?;
         if !in_range(self.master, 0.0, 1.0) {
             return Err(DocumentError::Setting {
                 pad: None,
@@ -196,6 +245,13 @@ impl Document {
         for asset in &self.assets {
             if !ids.insert(asset.reference.id) {
                 return Err(DocumentError::DuplicateAsset(asset.reference.id));
+            }
+        }
+        if let Some(instrument) = &self.instrument {
+            instrument.validate().map_err(DocumentError::Instrument)?;
+            self.require_asset(instrument.source, MediaKind::InstrumentSource)?;
+            for render in &instrument.renders {
+                self.require_asset(render.asset, MediaKind::InstrumentRender)?;
             }
         }
         for (index, pad) in self.pads.iter().enumerate() {
@@ -254,7 +310,11 @@ impl Document {
             .find(|a| a.reference.id == id)
             .ok_or(DocumentError::MissingAsset(id))?;
         // A retained render can itself be reused as another pad's source.
-        if kind == MediaKind::RetainedRender && asset.kind != kind {
+        let fits = match kind {
+            MediaKind::Source => asset.kind.is_pad_audio(),
+            kind => asset.kind == kind,
+        };
+        if !fits {
             return Err(DocumentError::WrongMediaKind(id));
         }
         Ok(())

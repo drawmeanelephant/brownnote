@@ -2,7 +2,8 @@
 //! native app's offline renderer. The wire protocol is specified in
 //! `native/src/pedals/offline/PROTOCOL.md`.
 //!
-//! Usage: `brownnote-plugin-host clap`
+//! Usage: `brownnote-plugin-host clap` or
+//! `brownnote-plugin-host ladspa [--allow UniqueID:Label]...`
 use std::{
     fs::File,
     io::{self, Write},
@@ -12,7 +13,11 @@ use std::{
 
 mod clap;
 mod clap_helper;
+mod ladspa;
+mod ladspa_helper;
 mod protocol;
+
+const USAGE: &str = "usage: brownnote-plugin-host clap\n       brownnote-plugin-host ladspa [--allow UniqueID:Label]...";
 
 unsafe extern "C" {
     fn dup2(old: i32, new: i32) -> i32;
@@ -31,12 +36,39 @@ fn protocol_output() -> io::Result<File> {
     Ok(File::from(protocol))
 }
 
-fn main() -> ExitCode {
-    let backend = std::env::args().nth(1);
-    if backend.as_deref() != Some("clap") {
-        eprintln!("usage: brownnote-plugin-host clap");
-        return ExitCode::from(2);
+enum Backend {
+    Clap,
+    /// The LADSPA plugins this process may load.
+    Ladspa(Vec<String>),
+}
+
+fn parse(args: &[String]) -> Option<Backend> {
+    match args {
+        [backend] if backend == "clap" => Some(Backend::Clap),
+        [backend, rest @ ..] if backend == "ladspa" => {
+            let mut allowed: Vec<String> = ladspa_helper::ALLOWED
+                .iter()
+                .map(|id| (*id).to_owned())
+                .collect();
+            let mut rest = rest.iter();
+            while let Some(flag) = rest.next() {
+                if flag != "--allow" {
+                    return None;
+                }
+                allowed.push(rest.next()?.clone());
+            }
+            Some(Backend::Ladspa(allowed))
+        }
+        _ => None,
     }
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let Some(backend) = parse(&args) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
     let output = match protocol_output() {
         Ok(output) => output,
         Err(error) => {
@@ -44,5 +76,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    ExitCode::from(clap_helper::serve(io::stdin().lock(), output))
+    ExitCode::from(match backend {
+        Backend::Clap => clap_helper::serve(io::stdin().lock(), output),
+        Backend::Ladspa(allowed) => ladspa_helper::serve(io::stdin().lock(), output, &allowed),
+    })
 }

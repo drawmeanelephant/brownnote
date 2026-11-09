@@ -1,24 +1,27 @@
 //! Application transactions. The worker owns I/O/decode; callers own the final swap.
 use super::{
-    AssetId, Document, MediaKind, PAD_COUNT, Pad, PadId,
+    Asset, AssetId, AssetRef, Document, MediaKind, PAD_COUNT, Pad, PadId,
     recovery::{OpenChoice, PreparedProject, RecoveryOptions},
     store::{GenerationId, SaveFailure, SaveReceipt, Store, StoreError},
 };
 use crate::{
     assets::{AssetRegistry, ChokeIdentity},
+    edit::{EditModel, EditsDocument},
     engine::{Command, SLOTS, Slots},
     import::{Imported, MediaPublisher, ProjectMedia, SessionMedia},
+    instrument::{Font, InstrumentDocument, InstrumentError, RenderDocument, RenderKey},
     kit::{KIT_SECONDS, decode_wav_max, waveform},
     midi::{input::MappingsDocument, mapping::Mappings},
     output::Output,
     pedals::render::Chain,
+    takes::{Takes, TakesDocument},
 };
 use std::{
     collections::BTreeMap,
     fmt, fs,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
     thread,
@@ -36,6 +39,8 @@ pub enum Error {
     Registry,
     Admission(String),
     RecoveryDestination,
+    PassActive,
+    Render(String),
 }
 
 impl fmt::Display for Error {
@@ -60,6 +65,8 @@ impl fmt::Display for Error {
                 f,
                 "Save recovered content to a new, nonexistent project directory."
             ),
+            Self::PassActive => write!(f, "Stop or cancel recording before saving or opening."),
+            Self::Render(reason) => write!(f, "Instrument notes could not be frozen: {reason}"),
         }
     }
 }
@@ -70,7 +77,22 @@ impl std::error::Error for Error {}
 pub struct Snapshot {
     pub document: Document,
     pub media: Arc<SessionMedia>,
+    /// Notes the save worker still has to freeze, and the font to do it with.
+    pub freeze: Option<Freeze>,
 }
+
+/// Per-note renders a save still needs (D4). Rendering runs on the project
+/// worker, never the UI thread; without a font the notes stay unfrozen and
+/// export reports them as having no retained audio.
+pub struct Freeze {
+    pub font: Option<Font>,
+    pub keys: Vec<RenderKey>,
+    /// The owner's render cache; each new render is recorded here too.
+    pub cache: Arc<Mutex<BTreeMap<RenderKey, AssetId>>>,
+}
+
+/// More distinct notes than this are saved without renders for the rest.
+pub const MAX_RENDERS: usize = 1024;
 
 impl Snapshot {
     pub fn capture(
@@ -104,13 +126,124 @@ impl Snapshot {
         document
             .validate()
             .map_err(|error| Error::Store(StoreError::Document(error)))?;
-        Ok(Self { document, media })
+        Ok(Self {
+            document,
+            media,
+            freeze: None,
+        })
+    }
+
+    /// Add the instrument, its source, and the renders the current effective
+    /// notes still use. Renders no note uses any more are dropped; missing
+    /// ones are listed for [`Snapshot::freeze`] on the worker.
+    pub fn with_instrument(
+        mut self,
+        instrument: &InstrumentDocument,
+        font: Option<Font>,
+        cache: Arc<Mutex<BTreeMap<RenderKey, AssetId>>>,
+        takes: &Takes,
+        edits: &EditModel,
+    ) -> Result<Self, Error> {
+        let needed = instrument
+            .needed(takes, edits)
+            .map_err(|_| Error::Registry)?;
+        let mut document = instrument.clone();
+        document
+            .renders
+            .retain(|render| needed.contains(&render.key()));
+        let keys = needed
+            .into_iter()
+            .filter(|key| document.render(*key).is_none())
+            .take(MAX_RENDERS.saturating_sub(document.renders.len()))
+            .collect();
+        let mut ids = vec![(document.source, MediaKind::InstrumentSource)];
+        ids.extend(
+            document
+                .renders
+                .iter()
+                .map(|render| (render.asset, MediaKind::InstrumentRender)),
+        );
+        for (id, kind) in ids {
+            self.add_asset(id, kind)?;
+        }
+        self.document.instrument = Some(document);
+        self.freeze = Some(Freeze { font, keys, cache });
+        self.document
+            .validate()
+            .map_err(|error| Error::Store(StoreError::Document(error)))?;
+        Ok(self)
+    }
+
+    fn add_asset(&mut self, id: AssetId, kind: MediaKind) -> Result<(), Error> {
+        if self.document.assets.iter().any(|a| a.reference.id == id) {
+            return Ok(());
+        }
+        let bytes = self.media.get(id).ok_or(Error::Media)?;
+        self.document.assets.push(Asset {
+            reference: AssetRef::of(&bytes),
+            kind,
+        });
+        Ok(())
+    }
+
+    /// Worker side: render the listed notes into owned session media.
+    pub fn freeze(&mut self) -> Result<(), Error> {
+        let Some(Freeze {
+            font: Some(font),
+            keys,
+            cache,
+        }) = self.freeze.take()
+        else {
+            return Ok(());
+        };
+        let Some(gain) = self.document.instrument.as_ref().map(|i| i.gain) else {
+            return Ok(());
+        };
+        for key in keys {
+            let bytes = font
+                .render(key, gain)
+                .map_err(|error| Error::Render(error.to_string()))?;
+            let reference = AssetRef::of(&bytes);
+            self.media
+                .publish(&reference, &bytes)
+                .map_err(|_| Error::Media)?;
+            self.add_asset(reference.id, MediaKind::InstrumentRender)?;
+            if let Ok(mut cache) = cache.lock() {
+                cache.insert(key, reference.id);
+            }
+            if let Some(instrument) = &mut self.document.instrument {
+                instrument.renders.push(RenderDocument {
+                    pitch: key.pitch,
+                    velocity: key.velocity,
+                    gate_frames: key.gate_frames,
+                    asset: reference.id,
+                });
+            }
+        }
+        self.document
+            .validate()
+            .map_err(|error| Error::Store(StoreError::Document(error)))
     }
 
     /// Freeze the controller's project mappings alongside settings and media.
     pub fn with_midi_mappings(mut self, mappings: &Mappings) -> Self {
         self.document.midi_mappings = Some(MappingsDocument::from_mappings(mappings));
         self
+    }
+
+    /// Freeze committed takes and the current edit layer (D9, D15). Refuses a
+    /// registry with an armed or recording pass: tentative capture never saves.
+    pub fn with_takes(mut self, takes: &Takes, edits: &EditModel) -> Result<Self, Error> {
+        if takes.has_pass() {
+            return Err(Error::PassActive);
+        }
+        let edits = EditsDocument::from_model(edits);
+        self.document.takes = Some(TakesDocument::from_takes(takes));
+        self.document.edits = (!edits.is_empty()).then_some(edits);
+        self.document
+            .validate()
+            .map_err(|error| Error::Store(StoreError::Document(error)))?;
+        Ok(self)
     }
 }
 
@@ -124,9 +257,13 @@ pub fn pad_id(index: usize) -> PadId {
 pub struct Prepared {
     pub document: Document,
     pub mappings: Mappings,
+    /// Restored committed takes and edit layer; `None` when none were saved.
+    pub takes: Option<(Takes, EditModel)>,
     pub generation: GenerationId,
     pub registry: AssetRegistry,
     pub media: Arc<SessionMedia>,
+    /// The saved instrument and whether this build could prepare its source.
+    pub instrument: Option<(InstrumentDocument, Result<Font, InstrumentError>)>,
 }
 
 impl Prepared {
@@ -137,15 +274,31 @@ impl Prepared {
         let mappings = document
             .mappings()
             .map_err(|error| Error::Store(StoreError::Document(error)))?;
-        if document.assets.len() > SLOTS {
+        let takes = document
+            .takes()
+            .map_err(|error| Error::Store(StoreError::Document(error)))?;
+        if document
+            .assets
+            .iter()
+            .filter(|asset| asset.kind.is_pad_audio())
+            .count()
+            > SLOTS
+        {
             return Err(Error::Registry);
         }
         let media = Arc::new(SessionMedia::default());
         let mut slots = Slots::empty();
         let mut imported = Vec::new();
-        for (slot, asset) in document.assets.iter().enumerate() {
+        for asset in &document.assets {
             let id = asset.reference.id;
             let encoded = bytes.get(&id).ok_or(Error::Media)?;
+            if !asset.kind.is_pad_audio() {
+                media
+                    .publish(&asset.reference, encoded)
+                    .map_err(|_| Error::Media)?;
+                continue;
+            }
+            let slot = imported.len();
             let label = format!("{id}.wav");
             let sample = decode_wav_max(encoded.as_ref(), Path::new(&label), |rate| {
                 if asset.kind == MediaKind::RetainedRender {
@@ -186,12 +339,23 @@ impl Prepared {
                     .map_err(|_| Error::Registry)?;
             }
         }
+        // A source this build cannot prepare still opens the project: notes
+        // and renders stay intact, and the app reports the instrument as silent.
+        let instrument = document.instrument.clone().map(|instrument| {
+            let font = bytes
+                .get(&instrument.source)
+                .ok_or(InstrumentError::NoSampleData)
+                .and_then(|source| Font::prepare(source.as_ref(), Some(instrument.preset())));
+            (instrument, font)
+        });
         Ok(Self {
             document,
             mappings,
+            takes,
             generation: inspection.generation,
             registry,
             media,
+            instrument,
         })
     }
 
@@ -280,9 +444,10 @@ fn execute(request: Request) -> Result<Completion, Error> {
     match request {
         Request::Save {
             root,
-            snapshot,
+            mut snapshot,
             new_root,
         } => {
+            snapshot.freeze()?;
             snapshot
                 .document
                 .validate()

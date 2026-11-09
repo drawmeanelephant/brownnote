@@ -1,0 +1,8 @@
+# Attack 0 ms: characterizes the example skipping its release (hard cut at note-off).
+sample_rate	48000
+frames	48000
+block	256
+input	silence
+param	0	Attack	0
+on	1000	1	57	1
+off	10000	1	57

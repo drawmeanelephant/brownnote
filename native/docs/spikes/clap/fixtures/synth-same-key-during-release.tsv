@@ -1,0 +1,11 @@
+# Note id 3 is released while same-key note id 1 is still in its release.
+# Characterizes a plugin defect: the release lands on id 1 again, id 3 sticks.
+sample_rate	48000
+frames	48000
+block	256
+input	silence
+param	0	Attack	0.022360679774997897
+on	1000	1	57	1
+on	3000	3	57	0.25
+off	14000	1	57
+off	15000	3	57

@@ -4,6 +4,11 @@
 //! voices from it, and unloads it; a voice keeps reading its slot until it
 //! ends, and the sample returns to the UI on a queue once no voice reads it.
 //! The callback never allocates, frees, locks, or changes an `Arc` count.
+//!
+//! One sampled instrument (D18) can be mounted beside the voices. It arrives
+//! fully built, plays held notes by `EventId`, and goes back to the UI on the
+//! same return queue when replaced or unmounted.
+use crate::instrument::{self, Player};
 use crate::performance::{
     EventId, StreamEpoch,
     scheduler::{self, ScheduleReceiver, ScheduleSender, ScheduledAction, Trigger},
@@ -27,7 +32,6 @@ pub struct Sample {
     pub rate: u32,
 }
 
-#[derive(Clone)]
 pub enum Command {
     Trigger {
         pad: usize,
@@ -48,6 +52,19 @@ pub enum Command {
     },
     Unload {
         slot: usize,
+    },
+    /// Built off the callback at this mixer's rate. A player at another rate,
+    /// or one replaced by a later mount, comes back as `Returned::Instrument`.
+    Instrument(Box<Player>),
+    UnmountInstrument,
+    /// A live held note, by its own identity (D14). Ignored with no instrument.
+    HeldOn {
+        id: EventId,
+        pitch: u8,
+        velocity: u8,
+    },
+    HeldOff {
+        id: EventId,
     },
 }
 
@@ -105,6 +122,8 @@ pub enum Returned {
     /// A `Load` into a slot that already held a sample. The slot keeps its
     /// sample; the UI just drops this one.
     Rejected(Sample),
+    /// An instrument player the mixer no longer plays, to drop off the callback.
+    Instrument(Box<Player>),
 }
 
 pub struct Meters {
@@ -173,6 +192,11 @@ pub struct Mixer {
     master: f32,
     target_master: f32,
     meters: Arc<Meters>,
+    instrument: Option<Box<Player>>,
+    /// The player renders whole blocks; the mixer reads them out per frame, so
+    /// a held note starts at the next block, under `instrument::BLOCK` late.
+    block: [[f32; instrument::BLOCK]; 2],
+    block_at: usize,
 }
 
 impl Mixer {
@@ -212,6 +236,9 @@ impl Mixer {
             master: 0.8,
             target_master: 0.8,
             meters,
+            instrument: None,
+            block: [[0.0; instrument::BLOCK]; 2],
+            block_at: instrument::BLOCK,
         }
     }
 
@@ -228,6 +255,38 @@ impl Mixer {
                 self.schedule.cancel_queued();
                 for v in self.voices.iter_mut().chain(&mut self.tails).flatten() {
                     v.fade = Some(v.fade.unwrap_or(self.fade_frames).min(self.fade_frames));
+                }
+                if let Some(player) = &mut self.instrument {
+                    player.panic(self.fade_frames);
+                }
+            }
+            Command::Instrument(player) => {
+                if player.rate() != self.rate {
+                    self.return_item(Returned::Instrument(player));
+                    return;
+                }
+                if let Some(old) = self.instrument.replace(player) {
+                    self.return_item(Returned::Instrument(old));
+                }
+                self.block_at = instrument::BLOCK;
+            }
+            Command::UnmountInstrument => {
+                if let Some(old) = self.instrument.take() {
+                    self.return_item(Returned::Instrument(old));
+                }
+            }
+            Command::HeldOn {
+                id,
+                pitch,
+                velocity,
+            } => {
+                if let Some(player) = &mut self.instrument {
+                    player.note_on(id, pitch, velocity);
+                }
+            }
+            Command::HeldOff { id } => {
+                if let Some(player) = &mut self.instrument {
+                    player.note_off(id);
                 }
             }
             Command::Load { slot, sample } => match self.slots.get_mut(slot) {
@@ -388,7 +447,7 @@ impl Mixer {
                 Err(rtrb::PushError::Full(Returned::Retired { sample, .. })) => {
                     self.slots[index] = Some(sample);
                 }
-                Err(rtrb::PushError::Full(Returned::Rejected(_))) => {
+                Err(rtrb::PushError::Full(Returned::Rejected(_) | Returned::Instrument(_))) => {
                     unreachable!("only retirement items are pushed here")
                 }
             }
@@ -424,6 +483,7 @@ impl Mixer {
         }
         let slots = &self.slots;
         let retiring = &self.retiring;
+        let mounted = self.instrument.is_some();
         if self.schedule.drain(|event| match event.action {
             ScheduledAction::NoteOn { trigger, .. } => {
                 trigger.pad < 16
@@ -433,6 +493,7 @@ impl Mixer {
                         .is_some_and(|s| !s.data.is_empty())
                     && !retiring[trigger.slot]
             }
+            ScheduledAction::HeldOn { .. } => mounted,
             ScheduledAction::NoteOff { .. } => true,
         }) {
             self.command(Command::Panic);
@@ -448,6 +509,14 @@ impl Mixer {
                             self.schedule.unavailable();
                         }
                     }
+                    ScheduledAction::HeldOn {
+                        id,
+                        pitch,
+                        velocity,
+                    } => match &mut self.instrument {
+                        Some(player) => player.note_on(id, pitch, velocity),
+                        None => self.schedule.unavailable(),
+                    },
                     ScheduledAction::NoteOff { id } => {
                         for v in self.voices.iter_mut().chain(&mut self.tails).flatten() {
                             if v.event == Some(id) {
@@ -455,11 +524,24 @@ impl Mixer {
                                     Some(v.fade.unwrap_or(self.fade_frames).min(self.fade_frames));
                             }
                         }
+                        if let Some(player) = &mut self.instrument {
+                            player.note_off(id);
+                        }
                     }
                 }
             }
             let mut left = 0.0_f64;
             let mut right = 0.0_f64;
+            if let Some(player) = &mut self.instrument {
+                if self.block_at == instrument::BLOCK {
+                    let [l, r] = &mut self.block;
+                    player.render(l, r);
+                    self.block_at = 0;
+                }
+                left += f64::from(self.block[0][self.block_at]);
+                right += f64::from(self.block[1][self.block_at]);
+                self.block_at += 1;
+            }
             for slot in self.voices.iter_mut().chain(&mut self.tails) {
                 let Some(v) = slot else { continue };
                 let src = match &self.slots[v.slot] {

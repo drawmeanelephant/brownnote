@@ -2,7 +2,7 @@ use crate::engine::{Command, Meters, Mixer, QUEUE_CAPACITY, Returned, SLOTS, Sam
 use crate::performance::{
     MusicalPosition, OriginalTime, PerformanceError, SampleRate, StreamEpoch, Tempo,
     rounded_stream_frame,
-    scheduler::{ScheduleResult, ScheduleSender, ScheduledEvent},
+    scheduler::{ScheduleCounters, ScheduleResult, ScheduleSender, ScheduledEvent},
 };
 use cpal::{
     BufferSize, DeviceId, OutputStreamTimestamp, SampleFormat, Stream, StreamConfig, StreamInstant,
@@ -510,6 +510,10 @@ impl Output {
     /// The virtual mixer also has an epoch/cursor, but never device timestamps.
     pub fn scheduler(&mut self) -> &mut ScheduleSender {
         &mut self.schedule
+    }
+
+    pub fn schedule_counters(&self) -> ScheduleCounters {
+        self.schedule.counters()
     }
 
     pub fn schedule(&mut self, event: ScheduledEvent) -> ScheduleResult {

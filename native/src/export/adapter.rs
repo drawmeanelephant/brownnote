@@ -151,20 +151,35 @@ pub fn prepare(
             },
         );
     }
+    // The instrument's SF2 source is project data, not audio the bundle plays.
     let assets = document
         .assets
         .iter()
-        .map(|asset| {
-            Ok(FixtureAsset {
-                id: asset_id(asset.reference.id)?,
+        .filter_map(|asset| {
+            let kind = match asset.kind {
+                MediaKind::Source => FixtureMediaKind::Source,
+                MediaKind::RetainedRender | MediaKind::InstrumentRender => {
+                    FixtureMediaKind::RetainedRender
+                }
+                MediaKind::InstrumentSource => return None,
+            };
+            Some(asset_id(asset.reference.id).map(|id| FixtureAsset {
+                id,
                 bytes: asset.reference.bytes,
-                kind: match asset.kind {
-                    MediaKind::Source => FixtureMediaKind::Source,
-                    MediaKind::RetainedRender => FixtureMediaKind::RetainedRender,
-                },
-            })
+                kind,
+            }))
         })
         .collect::<Result<_, AdapterError>>()?;
+    // The project's own retained instrument renders join the caller's.
+    let mut frozen = frozen.clone();
+    if let Some(instrument) = &document.instrument {
+        let (hits, _) = instrument
+            .frozen_hits(takes, edits)
+            .map_err(AdapterError::Edit)?;
+        for (id, hit) in hits {
+            frozen.entry(id).or_insert(hit);
+        }
+    }
     let effective = edits.effective_notes(takes).map_err(AdapterError::Edit)?;
     let mut grouped: BTreeMap<PartKey, Vec<EventId>> = BTreeMap::new();
     let mut exported_takes: BTreeMap<u128, FixtureTake> = BTreeMap::new();

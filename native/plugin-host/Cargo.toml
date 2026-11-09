@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["host", "fault-fixture"]
+members = ["host", "fault-fixture", "ladspa-fixture"]
 
 [workspace.package]
 edition = "2024"

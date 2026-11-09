@@ -1,8 +1,8 @@
-# Pure takes model (#106, first slice)
+# Takes model and recording transport (#106)
 
-This is an in-memory producer-side model, not a recorder mounted in the app.
-It has no transport, MIDI backend, scheduler changes, UI, save schema, editable
-export, or sound acknowledgement. Refs #106; the issue stays open.
+The takes model is an in-memory producer-side registry. The app's recording
+transport (below) is its only writer, and committed takes save with the
+project. It has no editable export or sound acknowledgement. Refs #106.
 
 ## Public boundary
 
@@ -14,7 +14,7 @@ The public integration test imports the real library, not a path bootstrap.
   `LoopBars` accepts only 1/2/4/8 bars in 4/4. The tempo starts at 116 BPM.
   The project owner supplies a globally unused `TakeId` range. Accepted arms,
   including cancelled passes, consume one ID; rejected operations consume none.
-  There is no reopen/ID-registry import API in this slice.
+  Reopen goes through `TakesDocument::to_takes` (see "Save and reopen").
 - `arm(PassOptions)` creates a tentative pass and locks tempo.
   `start(id)` changes armed to recording. Default options are overdub, no
   count-in, and metronome off (D12). One-bar count-in and metronome are intent
@@ -55,6 +55,53 @@ The public integration test imports the real library, not a path bootstrap.
   stays off; reversible edits are #107's scope (D13). Loop changes also reject
   while any pass is active, so recording uses its preselected loop length.
 
+## App recording transport (#105/#106 integration)
+
+`ui/transport.rs` mounts a compact strip above the pads: `● REC`, `▶ PLAY`,
+`LOOP 1/2/4/8`, `OVERDUB/REPLACE`, `COUNT-IN OFF/1`, `DISCARD` while a pass is
+open, and a status line (`transport-status`). It drives this model; it adds no
+second registry.
+
+- REC from stopped starts the loop and records one loop cycle from now, or
+  after a one-bar count-in. REC while playing arms the next loop boundary, so
+  overdubs align with replay. A pass closes at its cycle end, on a second REC,
+  on STOP, or on panic (Escape, the PANIC button, a mapped MIDI panic CC).
+  A started pass commits what was played; an armed one is cancelled; an empty
+  one is discarded. `DISCARD` cancels the open pass, held notes included.
+- Keyboard, pointer and MIDI one-shot hits are captured at the app clock as
+  zero-length pad notes under reserved one-shot sources (`u128::MAX`,
+  `u128::MAX - 1`), so they never end a device's held note. Velocities 1–127
+  and flams keep their exact take-relative nanoseconds (D9).
+- MIDI held-instrument starts/ends come from the controller's FIFO lifecycle
+  and keep their real durations (D14). MIDI backend times are mapped to the app
+  clock by anchoring each connection's first packet. A pass whose cycle ends
+  with keys down waits (`CLOSING … HELD`) and never invents note ends. A
+  disconnect or refresh reconciliation ends them at the reconcile time.
+- Replay sends the edit layer's effective notes (D13/D15) through
+  `Output::schedule` with a 500 ms lookahead, re-anchoring when the output
+  stream changes. The status shows sends, the mixer's own dispatched count and
+  any refused events (`LOSS`). STOP/panic sends the engine panic, which also
+  cancels pending scheduled hits.
+- Held notes sound and replay through the sampled instrument when one is
+  loaded (see `sampled-instrument.md`). Without one, they are captured, saved
+  and shown with their durations, and the status reports
+  `N HELD NOT SOUNDED (NO INSTRUMENT LOADED)`. No metronome or count-in click
+  is generated.
+
+`--scene transport-midi` runs a virtual MIDI input (fixture packets through the
+real controller and dispatch path): overlapping held notes on one key, and a
+1/127 velocity flam on a mapped pad. `scripts/transport.json` records, replays
+and panics a keyboard take. Both run in `tests/headless.rs`. This is
+deterministic software evidence only. A named-controller hardware check is
+still required before #105 can close, and listening checks remain manual.
+
+## Save and reopen
+
+Committed takes and the current edit layer are saved in the project document
+(see `project-contract.md`). Armed or recording passes never save:
+`Snapshot::with_takes` returns `Error::PassActive`, and the app refuses save or
+open until the pass stops. Reopen rebuilds every note through `NoteLifecycle`
+and continues take IDs above every saved ID.
 ## Verification
 
 Always use the swarm's shared whole-check lock, Cargo target and two jobs.
@@ -74,5 +121,7 @@ visibility fixture specifies both sides of rational 116 BPM and exact 120 BPM
 loop boundaries. Tests cover restoration, replacement snapshots, cancel and
 failed-finish atomicity, overlapping tempo locks, immutable timing, and integer
 boundaries. These do not measure rendered PCM, physical audio, or listening.
-Save/reopen, actual input capture/replay, held-note stop/panic and tails, UI,
-and editable export remain later issue gates.
+The transport is covered by `ui::transport::tests`, the project round trip by
+`ui::projects::tests` and `tests/project_takes.rs`, and the real binary by
+`tests/headless.rs`. Held-instrument sound, audio tails, editable export,
+named-controller hardware and listening remain later gates.

@@ -506,9 +506,46 @@ fn saved_plugin_sound_survives_cache_plugin_removal_relocation_and_exports_hones
     open_plugins(&mut rt, PAD);
     load(&mut rt, &installed, PASSTHROUGH);
     let heard: Vec<f32> = audible(&rt, PAD).to_vec();
+    // A single project snapshot must preserve every feature's data.
+    let (takes, mut edits) = one_hit_takes();
+    let event = takes.take(TakeId(41)).unwrap().notes()[0].on().id;
+    edits.nudge(&takes, event, 10_000_000).unwrap();
+    rt.state.takes = takes;
+    rt.state.edit.model = edits;
+    ui::midi::fixture(
+        &rt.state.midi,
+        SourceId(7),
+        r#"{"version":1,"mappings":[
+            {"type":"note","channel":0,"pitch":60,"target":{"type":"held","instrument":"1"}}
+        ]}"#,
+        &[],
+    );
+    let font = root.0.join("mechanics.sf2");
+    fs::write(
+        &font,
+        include_bytes!("../../../docs/spikes/sampled-instrument/fixtures/mechanics.sf2"),
+    )
+    .unwrap();
+    rt.state.instrument.path = TextEdit::new(font.to_string_lossy());
+    ui::instrument::load(&mut rt.state);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while rt.state.instrument.busy() {
+        assert!(Instant::now() < deadline, "instrument load timed out");
+        std::thread::sleep(Duration::from_millis(5));
+        rt.frame(0.01);
+    }
+    assert!(
+        rt.state.instrument.error.is_none(),
+        "{:?}",
+        rt.state.instrument.error
+    );
     let saved_at = root.0.join("A");
     save(&mut rt, &saved_at);
     let document = saved_document(&saved_at);
+    assert!(document.midi_mappings.is_some());
+    assert!(document.takes.is_some());
+    assert!(document.edits.is_some());
+    assert!(document.instrument.is_some());
     let chain = document.pads[PAD].plugins.clone().unwrap();
     assert_eq!(chain.stages[0].plugin.id, PASSTHROUGH);
     assert_eq!(chain.stages[0].location_hint.as_deref(), installed.to_str());
@@ -523,6 +560,11 @@ fn saved_plugin_sound_survives_cache_plugin_removal_relocation_and_exports_hones
 
     let mut rt = runtime(&root.0.join("cache2"));
     open(&mut rt, &moved);
+    assert_eq!(rt.state.takes.take(TakeId(41)).unwrap().notes().len(), 1);
+    assert_eq!(
+        ui::midi::mappings(&rt.state.midi).unwrap().entries().len(),
+        1
+    );
     open_plugins(&mut rt, PAD);
     assert_eq!(
         &*audible(&rt, PAD),
@@ -576,6 +618,10 @@ fn saved_plugin_sound_survives_cache_plugin_removal_relocation_and_exports_hones
     let resaved = root.0.join("C");
     save(&mut rt, &resaved);
     let again = saved_document(&resaved);
+    assert_eq!(again.midi_mappings, document.midi_mappings);
+    assert_eq!(again.takes, document.takes);
+    assert_eq!(again.edits, document.edits);
+    assert_eq!(again.instrument, document.instrument);
     let chain_again = again.pads[PAD].plugins.clone().unwrap();
     assert_eq!(chain_again.render, chain.render);
     assert_eq!(chain_again.stages[0].plugin, chain.stages[0].plugin);

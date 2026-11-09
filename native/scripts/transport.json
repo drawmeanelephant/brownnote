@@ -1,0 +1,8 @@
+[
+  {"t": 0.20, "type": "tap", "key": "transport-loop"},
+  {"t": 0.30, "type": "tap", "key": "transport-record"},
+  {"t": 0.55, "type": "key", "name": "q"},
+  {"t": 0.60, "type": "key", "name": "q"},
+  {"t": 0.80, "type": "key", "name": "w"},
+  {"t": 3.40, "type": "key", "name": "Escape"}
+]

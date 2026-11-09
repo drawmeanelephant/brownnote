@@ -1,0 +1,157 @@
+{
+  "plate": {
+    "input": "fart_dry.wav",
+    "input_frames": 79380,
+    "rate": 44100,
+    "resolved_defaults": {
+      "bandwidth": 0.5,
+      "tail": 0.75,
+      "damping": 0.5,
+      "blend": 0.25
+    },
+    "peak": 0.6023017764091492,
+    "measured_tail_seconds": 3.3912925170068027,
+    "exceeds_existing_pedal_tail_seconds": 2.0,
+    "early_tail_rms_dbfs": -39.21,
+    "tail_left_right_correlation": -0.0755,
+    "block_64_vs_256": "byte-identical",
+    "fresh_process_repeat": "byte-identical",
+    "ladspa_path_discovery": "byte-identical",
+    "blend_0": "exactly the dry input on both channels, no tail",
+    "burst_tail_seconds": {
+      "44100": 2.7913832199546484,
+      "48000": 2.7914583333333334
+    },
+    "burst_tail_ratio_48k_over_44k": 1.0,
+    "render_wav_sha256": "e2e04bc445510bc651feb41baa0d568a80ad814abdb93058ada06aa7ebe4c9c4"
+  },
+  "hints_fixture": {
+    "resolved": {
+      "rate": 22050.0,
+      "log": 632.4555320336755,
+      "int": 3.0,
+      "toggle": 1.0
+    },
+    "echoed": {
+      "rate_out": 22050.0,
+      "log_out": 632.4555,
+      "int_out": 3.0,
+      "toggle_out": 1.0
+    },
+    "run_adding": "matches run output; overrides echoed"
+  },
+  "lifecycle": {
+    "endless": [
+      "instantiate",
+      "activate",
+      "deactivate",
+      "cleanup"
+    ],
+    "hints": [
+      "instantiate",
+      "activate",
+      "deactivate",
+      "cleanup"
+    ],
+    "nan": [
+      "instantiate",
+      "activate",
+      "deactivate",
+      "cleanup"
+    ]
+  },
+  "caps_build": {
+    "source_sha256": "e7496c5bce05abebe3dcb635926153bbb58a9337a6e423f048d3b61d8a4f98c9",
+    "host": "arm64-Darwin",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+    "unpatched_build": {
+      "exit_code": 2,
+      "first_error": "./dsp/v4f.h:158:12: error: no matching function for call to 'v4f_map'"
+    },
+    "library_sha256": "83b72440184988e806eb2c0d0d94ccf9fe5fa030b41fbcf16a415e017ccc4957",
+    "library_file": "Mach-O 64-bit bundle arm64",
+    "patch_sha256": "a911348aa797e50df71db5380f91fcbbad5c9030948cfb45259fbd28f09407ff"
+  },
+  "failure_paths": [
+    {
+      "case": "missing library path",
+      "exit": 1,
+      "stderr": "error: missing plugin library: <run>/absent.so"
+    },
+    {
+      "case": "missing via LADSPA_PATH",
+      "exit": 1,
+      "stderr": "error: missing plugin library: caps.so not found in [<run>/empty-ladspa-dir]"
+    },
+    {
+      "case": "corrupt library",
+      "exit": 1,
+      "stderr": "error: cannot load plugin library <run>/junk.so: dlopen(<run>/junk.so, 0x0006): tried: '<run>/junk.so' (slice is not valid mach-o file), '/System/Volumes/Preboot/Cryptexes/OS<run>/junk.so' (no such file), '<run>/junk.so' (slice is not valid mach-o file)"
+    },
+    {
+      "case": "not a LADSPA library",
+      "exit": 1,
+      "stderr": "error: not a LADSPA library (no ladspa_descriptor): <run>/plain.dylib"
+    },
+    {
+      "case": "missing label",
+      "exit": 1,
+      "stderr": "error: plugin label NoSuchPlate not found in native/docs/spikes/ladspa/.work/patched/caps-0.9.26/caps.so"
+    },
+    {
+      "case": "malformed port",
+      "exit": 1,
+      "stderr": "error: plugin bad_port: port 1 (out) is not exactly input or output"
+    },
+    {
+      "case": "inverted bounds",
+      "exit": 1,
+      "stderr": "error: control inverted: lower bound above upper bound"
+    },
+    {
+      "case": "no audio output",
+      "exit": 1,
+      "stderr": "error: plugin no_output: unsupported channel layout 1 in / 0 out (supported: 1-2 in, 1-2 out)"
+    },
+    {
+      "case": "three outputs",
+      "exit": 1,
+      "stderr": "error: plugin wide: unsupported channel layout 1 in / 3 out (supported: 1-2 in, 1-2 out)"
+    },
+    {
+      "case": "non-finite output",
+      "exit": 1,
+      "stderr": "error: plugin nan: non-finite output at frame 1000 on out"
+    },
+    {
+      "case": "unbounded tail",
+      "exit": 1,
+      "stderr": "error: plugin endless: tail did not fall below -90 dBFS within 1 s"
+    },
+    {
+      "case": "control above hint",
+      "exit": 1,
+      "stderr": "error: control blend = 2 is outside its hints (lower 0.0, upper 1.0)"
+    },
+    {
+      "case": "unknown control",
+      "exit": 1,
+      "stderr": "error: plugin Plate has no control input size"
+    },
+    {
+      "case": "run_adding absent",
+      "exit": 1,
+      "stderr": "error: plugin Plate has no run_adding"
+    },
+    {
+      "case": "non-WAV input",
+      "exit": 1,
+      "stderr": "error: unsupported WAV <run>/plain.c: not RIFF/WAVE"
+    },
+    {
+      "case": "output exists",
+      "exit": 1,
+      "stderr": "output already exists (left untouched)"
+    }
+  ]
+}

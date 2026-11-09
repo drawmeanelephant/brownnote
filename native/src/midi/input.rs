@@ -277,18 +277,45 @@ impl Controller {
             return 0;
         }
         self.counters.disconnects += 1;
-        let keys: Vec<NoteKey> = self.active.keys().copied().collect();
+        let released = self.release_all(sink, now);
+        self.counters.released_on_disconnect += released;
+        self.epoch = None;
+        released
+    }
+
+    fn release_all(&mut self, sink: &mut impl Sink, now: OriginalTime) -> u64 {
+        let keys: Vec<NoteKey> = self
+            .active
+            .iter()
+            .flat_map(|(key, count)| std::iter::repeat_n(*key, *count as usize))
+            .collect();
         let mut released = 0;
         for key in keys {
             if self.end_held(key, now, sink) {
                 released += 1;
-                self.counters.released_on_disconnect += 1;
             }
         }
         self.sustained.clear();
         self.deferred.clear();
-        self.epoch = None;
         released
+    }
+
+    /// Commit a project switch without ending the machine-local connection.
+    /// Old queued packets and held notes must not cross into the new project.
+    pub fn replace_project_mappings(
+        &mut self,
+        mappings: Mappings,
+        sink: &mut impl Sink,
+        now: OriginalTime,
+    ) {
+        if let Some(consumer) = self.consumer.as_mut() {
+            while consumer.pop().is_ok() {
+                self.counters.stale_events += 1;
+            }
+        }
+        self.release_all(sink, now);
+        self.set_learn(false);
+        self.set_mappings(mappings);
     }
 
     /// Drain the bounded raw queue, parse, resolve and dispatch. Runs on the
@@ -451,9 +478,9 @@ impl Controller {
 
     fn scope_keys(&self, scope: (SourceId, Channel)) -> Vec<NoteKey> {
         self.active
-            .keys()
-            .copied()
-            .filter(|key| key.source == scope.0 && key.channel == scope.1)
+            .iter()
+            .filter(|(key, _)| key.source == scope.0 && key.channel == scope.1)
+            .flat_map(|(key, count)| std::iter::repeat_n(*key, *count as usize))
             .collect()
     }
 
@@ -1370,6 +1397,72 @@ mod tests {
             vec![SourceId(7), SourceId(9)],
             "fresh source per connection"
         );
+    }
+
+    #[test]
+    fn disconnect_and_panic_release_every_same_pitch_overlap() {
+        for control in [Some(120), Some(123), None] {
+            let (mut controller, mut producer) = rig(9);
+            controller.set_mappings(mappings(NoteTarget::Held(InstrumentId(17))));
+            let mut sink = VecSink::default();
+            push(&mut producer, 10, &[0x91, 40, 100]);
+            push(&mut producer, 20, &[0x91, 40, 90]);
+            controller.poll(&mut sink);
+            assert_eq!(controller.active_held(), 2);
+            if let Some(control) = control {
+                push(&mut producer, 30, &[0xb1, control, 127]);
+                controller.poll(&mut sink);
+            } else {
+                assert_eq!(
+                    controller.end_connection(&mut sink, OriginalTime::from_nanos(100_000)),
+                    2
+                );
+            }
+            assert_eq!(controller.active_held(), 0, "control={control:?}");
+            let ends: Vec<_> = sink
+                .actions
+                .iter()
+                .filter_map(|action| match action {
+                    Action::HeldEnd(note) => Some(note.on().id),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(ends.len(), 2);
+            assert_ne!(ends[0], ends[1]);
+        }
+    }
+
+    #[test]
+    fn project_switch_preserves_connection_but_not_old_packets_notes_sustain_or_learn() {
+        let (mut controller, mut producer) = rig(9);
+        let original = mappings(NoteTarget::Held(InstrumentId(17)));
+        controller.set_mappings(original.clone());
+        let mut sink = VecSink::default();
+        push(&mut producer, 10, &[0x91, 40, 100]);
+        push(&mut producer, 20, &[0x91, 40, 90]);
+        push(&mut producer, 30, &[0xb1, 64, 127]);
+        push(&mut producer, 40, &[0x81, 40, 0]);
+        controller.poll(&mut sink);
+        assert_eq!(controller.active_held(), 2);
+        push(&mut producer, 50, &[0x91, 40, 80]);
+        controller.set_learn(true);
+        controller.replace_project_mappings(original, &mut sink, OriginalTime::from_nanos(100_000));
+        assert!(controller.connected());
+        assert_eq!(controller.source(), SourceId(7));
+        assert_eq!(controller.counters().disconnects, 0);
+        assert_eq!(controller.counters().stale_events, 1);
+        assert_eq!(controller.active_held(), 0);
+        assert!(!controller.learn());
+        push(&mut producer, 200, &[0x91, 40, 70]);
+        push(&mut producer, 210, &[0x81, 40, 0]);
+        controller.poll(&mut sink);
+        assert_eq!(
+            controller.active_held(),
+            0,
+            "old sustain must not hold the new note"
+        );
+        assert_eq!(controller.counters().held_started, 3);
+        assert_eq!(controller.counters().held_ended, 3);
     }
 
     #[test]
