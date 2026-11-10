@@ -30,7 +30,7 @@ use brownnote_native::{
         live::{LiveInstrumentDocument, LiveTakeDocument},
         store::{MediaSource, Store},
     },
-    takes::{PassOptions, Takes},
+    takes::{PassMode, PassOptions, Removal, Takes},
 };
 use std::{
     collections::BTreeMap,
@@ -2492,5 +2492,266 @@ fn live_take_pad_hit_exports_as_a_pad_clip_beside_the_take_notes() {
     assert_eq!(audio_events[0].duration_nanos, 50_000_000);
     let bundled = fs::read(destination.join(&manifest.asset(asset).unwrap().path)).unwrap();
     assert_eq!(bundled, audio);
+    fs::remove_dir_all(base).unwrap();
+}
+
+fn record_live_note(takes: &mut Takes, take: TakeId, pitch: u8, on: u64, off: u64) {
+    let key = NoteKey {
+        source: SourceId(51),
+        channel: Channel::try_from(0).unwrap(),
+        pitch: Pitch::try_from(pitch).unwrap(),
+    };
+    takes
+        .note_on(
+            take,
+            Target::Instrument(InstrumentId(1)),
+            key,
+            Velocity::try_from(100).unwrap(),
+            OriginalTime::from_nanos(on),
+        )
+        .unwrap();
+    takes
+        .note_off(take, key, OriginalTime::from_nanos(off))
+        .unwrap();
+}
+
+/// Replay schedules retained clips only when `!muted && removal.is_none()`, so
+/// a muted take never sounds and a REPLACE pass leaves only the replacing take
+/// audible. Export must agree: a muted or replaced live take may not bake its
+/// retained audio, which would otherwise sound in the reference mix and double
+/// a performance the app already dropped.
+///
+/// Four retained live takes: 12 was replaced by 13 (a real REPLACE pass), 14 is
+/// a plain overdub recorded afterwards, and 15 is muted through the edit
+/// layer. Only 13 and 14 may reach the bundle.
+#[test]
+fn live_take_mute_and_replacement_are_honoured_in_export() {
+    let base = temporary("live-mute-export");
+    fs::create_dir_all(&base).unwrap();
+    let cache = base.join("cache");
+    fs::create_dir_all(&cache).unwrap();
+    let project = base.join("project");
+    // Constant per-take levels make the reference mix arithmetic exact: the two
+    // audible takes must sum, and a leaked take would change both the sample
+    // values and (for the longer buffers) the reference length.
+    let replaced_audio = encode_fixture(48_000, 2, &[0.9, -0.9].repeat(7_200));
+    let replacement_audio = encode_fixture(48_000, 2, &[0.125, -0.125].repeat(2_400));
+    let overdub_audio = encode_fixture(48_000, 2, &[0.25, -0.25].repeat(2_400));
+    let muted_audio = encode_fixture(48_000, 2, &[0.5, -0.5].repeat(4_800));
+    let buffers = [
+        (TakeId(12), &replaced_audio, 7_200_u64),
+        (TakeId(13), &replacement_audio, 2_400),
+        (TakeId(14), &overdub_audio, 2_400),
+        (TakeId(15), &muted_audio, 4_800),
+    ];
+    let asset_of = |bytes: &Vec<u8>| AssetId::of(bytes);
+    let project_asset_of = |bytes: &Vec<u8>| project::AssetId::of(bytes);
+    let plugin = Plugin {
+        backend: Backend::Clap,
+        id: "org.brownnote.fixture.instrument".into(),
+        artifact: brownnote_native::pedals::offline::Hash256::of(b"fixture mute bundle"),
+        abi: "clap-1.2".into(),
+        version: "0.4.0".into(),
+    };
+    let stage = Stage {
+        plugin: plugin.clone(),
+        location: PathBuf::from("/machine/fixture-mute.clap"),
+        params: Vec::new(),
+        state: Some(vec![3, 1].into()),
+    };
+    let mut live = LiveInstrumentDocument::from_stage(&stage, "Fixture Instrument".into(), true);
+    for (take, bytes, frames) in buffers {
+        live.takes.push(LiveTakeDocument {
+            take: take.0.to_string(),
+            asset: project_asset_of(bytes),
+            rate: 48_000,
+            frames,
+        });
+    }
+    let document = Document {
+        master: 1.0,
+        assets: buffers
+            .iter()
+            .map(|(_, bytes, _)| Asset {
+                reference: AssetRef::of(bytes),
+                kind: MediaKind::LiveTakeRender,
+            })
+            .collect(),
+        live_instrument: Some(live),
+        ..Document::default()
+    };
+    document.validate().unwrap();
+    let sources: Vec<_> = buffers
+        .iter()
+        .enumerate()
+        .map(|(index, (_, bytes, _))| {
+            let path = cache.join(format!("live-mute-{index}.wav"));
+            fs::write(&path, bytes).unwrap();
+            MediaSource {
+                id: project_asset_of(bytes),
+                path,
+            }
+        })
+        .collect();
+    Store::new(project.clone())
+        .save(&document, &sources)
+        .unwrap();
+    fs::remove_dir_all(&cache).unwrap();
+
+    let mut takes = Takes::new(LoopBars::try_from(4).unwrap(), TakeId(12));
+    takes
+        .set_tempo(Tempo::try_from(LIVE_PROJECT_MILLI_BPM).unwrap())
+        .unwrap();
+
+    // Take 12 is recorded, then take 13 replaces it: the registry marks 12
+    // replaced, exactly as the transport's REPLACE pass does.
+    let replaced = takes.arm(PassOptions::default()).unwrap();
+    assert_eq!(replaced, TakeId(12));
+    takes.start(replaced).unwrap();
+    record_live_note(&mut takes, replaced, 60, 200_000_000, 300_000_000);
+    takes.finish(replaced).unwrap();
+    let replacement = takes
+        .arm(PassOptions {
+            mode: PassMode::Replace,
+            ..PassOptions::default()
+        })
+        .unwrap();
+    assert_eq!(replacement, TakeId(13));
+    takes.start(replacement).unwrap();
+    record_live_note(&mut takes, replacement, 62, 200_000_000, 300_000_000);
+    takes.finish(replacement).unwrap();
+    assert_eq!(
+        takes.take(TakeId(12)).unwrap().removal(),
+        Some(Removal::ReplacedBy(TakeId(13)))
+    );
+
+    // 14 is a plain overdub after the replace; 15 is muted through the edit
+    // layer every surface uses.
+    let overdub = takes.arm(PassOptions::default()).unwrap();
+    assert_eq!(overdub, TakeId(14));
+    takes.start(overdub).unwrap();
+    record_live_note(&mut takes, overdub, 64, 200_000_000, 300_000_000);
+    takes.finish(overdub).unwrap();
+    let muted = takes.arm(PassOptions::default()).unwrap();
+    assert_eq!(muted, TakeId(15));
+    takes.start(muted).unwrap();
+    record_live_note(&mut takes, muted, 67, 200_000_000, 300_000_000);
+    takes.finish(muted).unwrap();
+    let mut edits = EditModel::default();
+    edits.set_muted(&mut takes, muted, true).unwrap();
+
+    let destination = base.join("bundle");
+    let request = BundleRequest {
+        source_root: project.clone(),
+        destination: destination.clone(),
+        origin: TimeOrigin { nanos: ORIGIN },
+        timing: Timing {
+            tempo_milli_bpm: LIVE_PROJECT_MILLI_BPM,
+            sample_rate_hz: 48_000,
+        },
+    };
+    let receipt = adapter::write_saved_project_bundle(
+        &mut SystemWriter,
+        &request,
+        &takes,
+        &edits,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let manifest = Manifest::decode(&fs::read(destination.join(MANIFEST_NAME)).unwrap()).unwrap();
+    assert_eq!(manifest, receipt.manifest);
+    assert_eq!(manifest.validate(), Ok(()));
+
+    // Two retained clips (takes 13 and 14) and those two takes' notes.
+    assert_eq!(receipt.event_count, 4);
+    assert_eq!(manifest.events.len(), 4);
+    assert_eq!(manifest.parts.len(), 4);
+    let asset_12 = asset_of(&replaced_audio);
+    let asset_13 = asset_of(&replacement_audio);
+    let asset_14 = asset_of(&overdub_audio);
+    let asset_15 = asset_of(&muted_audio);
+    assert!(
+        manifest
+            .events
+            .iter()
+            .all(|event| event.id.take == 13 || event.id.take == 14),
+        "only the audible takes export events: {:?}",
+        manifest.events
+    );
+    for skipped in [asset_12, asset_15] {
+        assert!(
+            !manifest
+                .events
+                .iter()
+                .any(|event| event.asset == Some(skipped)),
+            "no event may reference a skipped take's retained audio"
+        );
+        assert!(
+            !manifest.parts.iter().any(
+                |part| matches!(part.kind, PartKind::SampleClips { source } if source == skipped)
+            ),
+            "a skipped take contributes no clip part"
+        );
+        assert!(
+            !manifest.audio.iter().any(|entry| entry.asset == skipped),
+            "a skipped take contributes no bundle audio"
+        );
+    }
+    let clip_sources: Vec<_> = manifest
+        .parts
+        .iter()
+        .filter_map(|part| match part.kind {
+            PartKind::SampleClips { source } => Some(source),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(clip_sources, [asset_13, asset_14]);
+    let mut notes_parts: Vec<_> = manifest
+        .parts
+        .iter()
+        .filter(|part| matches!(part.kind, PartKind::LiveInstrumentNotes { .. }))
+        .map(|part| {
+            let mut takes: Vec<_> = manifest
+                .events
+                .iter()
+                .filter(|event| event.part == part.id)
+                .map(|event| event.id.take)
+                .collect();
+            takes.sort_unstable();
+            takes
+        })
+        .collect();
+    notes_parts.sort();
+    assert_eq!(
+        notes_parts,
+        [vec![13], vec![14]],
+        "muted/replaced takes contribute no notes part either: replay drops those notes \
+         through Takes::audible_notes, and the effective-notes path export reads does too"
+    );
+    // The surviving notes still carry their plugin identity and timing.
+    let written = destination.join(&manifest.asset(asset_13).unwrap().path);
+    assert_eq!(fs::read(written).unwrap(), replacement_audio);
+
+    // Reference mix: exactly the two audible clips summed at the origin, and
+    // silence after their 2400 frames. The two skipped takes are longer, so a
+    // leak would both change these samples and extend the audible region.
+    let reference = manifest
+        .audio
+        .iter()
+        .find(|entry| entry.role == AudioRole::Reference)
+        .unwrap();
+    let (rate, frames) =
+        read_wav(&fs::read(destination.join(reference.asset.relative_path())).unwrap());
+    assert_eq!(rate, 48_000);
+    // The note events bound the render length even though they carry no audio.
+    assert_eq!(frames.len(), 14_400);
+    for frame in &frames[..2_400] {
+        assert!((frame[0] - 0.375).abs() < 1e-6, "reference {frame:?}");
+        assert!((frame[1] + 0.375).abs() < 1e-6, "reference {frame:?}");
+    }
+    assert!(
+        frames[2_400..].iter().all(|frame| *frame == [0.0, 0.0]),
+        "no muted or replaced take may sound after the audible clips end"
+    );
     fs::remove_dir_all(base).unwrap();
 }

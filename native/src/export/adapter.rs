@@ -323,6 +323,16 @@ pub fn prepare(
     if let Some(live) = &document.live_instrument {
         for take in &live.takes {
             let Some(take_id) = take.id() else { continue };
+            // Replay never schedules a muted or removed/replaced take, so
+            // export must not bake one either: its retained audio would sound
+            // in the reference mix and double a performance the app replaced.
+            // A take with no registry record (document-only) keeps exporting.
+            if takes
+                .take(take_id)
+                .is_some_and(|saved| saved.muted() || saved.removal().is_some())
+            {
+                continue;
+            }
             let asset = asset_id(take.asset)?;
             let key = PartKey::LiveTake(take_id.0);
             let part = key.id();
