@@ -84,6 +84,10 @@ pub struct Live {
     session: Option<Session>,
     loading: Option<mpsc::Receiver<Result<Chosen, String>>>,
     capture: Option<Capture>,
+    /// The take whose live capture was dropped before it committed (the
+    /// instrument stopped, CLEAR INSTRUMENT, or an output device change).
+    /// The commit still reports that take's audio was not retained.
+    abandoned_capture: Option<TakeId>,
 }
 
 /// One retained take's decoded stereo audio, loaded as two project-owned slots.
@@ -287,7 +291,11 @@ impl Live {
             drop(session);
         }
         self.status = None;
-        self.capture = None;
+        if let Some(capture) = self.capture.take() {
+            // Keep the fact for the commit: the pass still ends, and its take
+            // must say the live audio was not retained.
+            self.abandoned_capture = Some(capture.take);
+        }
     }
 
     /// Start a stage at an explicit rate and buffer. Tests and non-device
@@ -427,6 +435,9 @@ impl Live {
         takes: BTreeMap<TakeId, LiveTakeSlots>,
     ) {
         self.stop_session(false);
+        // The project's pass is gone with the old document; only a pass that
+        // still commits reports its lost audio.
+        self.abandoned_capture = None;
         self.takes = takes
             .into_iter()
             .map(|(id, slots)| (id, slots.into()))
@@ -505,6 +516,7 @@ impl Live {
         }
         match session.host.capture(true) {
             Ok(_) => {
+                self.abandoned_capture = None;
                 self.capture = Some(Capture {
                     take,
                     anchor_app: now,
@@ -517,6 +529,9 @@ impl Live {
     }
 
     fn cancel_capture(&mut self, take: TakeId) {
+        if self.abandoned_capture == Some(take) {
+            self.abandoned_capture = None;
+        }
         if self
             .capture
             .as_ref()
@@ -538,15 +553,49 @@ impl Live {
         pass_start: u64,
         pass_end: u64,
     ) {
-        let Some(capture) = self.capture.take().filter(|capture| capture.take == take) else {
+        let Some(capture) = self.capture.take() else {
+            // The capture was dropped before the take committed: the
+            // instrument stopped during the pass (CLEAR INSTRUMENT, or an
+            // output device change that remounts it). Say so; the take is
+            // already committed with its MIDI notes.
+            let stopped = self.abandoned_capture == Some(take);
+            if stopped {
+                self.abandoned_capture = None;
+            }
+            self.notice = Some(format!(
+                "Take {} committed; its live audio was not retained: {}",
+                take.0,
+                if stopped {
+                    "the instrument stopped during the pass (CLEAR INSTRUMENT or an output device change)"
+                } else {
+                    "no capture was running for it"
+                }
+            ));
             return;
         };
+        if capture.take != take {
+            self.notice = Some(format!(
+                "Take {} committed; its live audio was not retained: the capture belonged to take {}",
+                take.0, capture.take.0
+            ));
+            return;
+        }
         let Some(session) = &self.session else {
+            self.notice = Some(format!(
+                "Take {} committed; its live audio was not retained: the instrument stopped before the pass ended",
+                take.0
+            ));
             return;
         };
         let captured = match session.host.capture(false) {
             Ok(Some(captured)) => captured,
-            Ok(None) => return,
+            Ok(None) => {
+                self.notice = Some(format!(
+                    "Take {} committed; its live audio was not retained: the instrument kept no capture for the pass",
+                    take.0
+                ));
+                return;
+            }
             Err(error) => {
                 self.error = Some(format!("Take audio was not retained: {error}"));
                 return;
