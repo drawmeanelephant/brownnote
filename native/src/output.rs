@@ -800,17 +800,23 @@ impl Output {
         Self::open_inner(slots, selection, live, false)
     }
 
-    /// The system-default wrapper used by `--check-audio`: it additionally
-    /// measures every callback's wall duration, observed buffer length and
-    /// CPAL presentation lead, for [`CallbackSummary`] to read off-thread.
-    /// The normal app path never opts in, so it carries no measurement cost.
+    /// Opens an explicitly selected device like [`Output::open_selected`], and
+    /// additionally measures every callback's wall duration, observed buffer
+    /// length and CPAL presentation lead, for [`CallbackSummary`] to read
+    /// off-thread. For manual probes and examples only: the normal app path
+    /// never opts in, so it carries no `Instant` read or measurement
+    /// allocation.
+    pub fn open_selected_probed(
+        slots: impl Into<Slots>,
+        selection: &OutputSelection,
+    ) -> Result<Self, AudioError> {
+        Self::open_inner(slots, selection, |_, _| (None, None), true)
+    }
+
+    /// The system-default wrapper used by `--check-audio`, composed from
+    /// [`Output::open_selected_probed`].
     fn open_probed(slots: impl Into<Slots>) -> Result<Self, AudioError> {
-        Self::open_inner(
-            slots,
-            &OutputSelection::default(),
-            |_, _| (None, None),
-            true,
-        )
+        Self::open_selected_probed(slots, &OutputSelection::default())
     }
 
     fn open_inner(
