@@ -102,6 +102,13 @@ A neutral bundle cannot host a live plugin. For each retained take the adapter
 writes one `sample_clips` part with one event whose asset is the retained WAV.
 The WAV is copied byte-for-byte.
 
+Export honours the take registry the way replay does: a take that is muted, or
+that was removed or replaced by a REPLACE pass, contributes nothing — no
+`sample_clips` part, no event, no notes part, and no audio in the reference mix
+or stems. Only the takes the app would actually schedule reach the bundle, so a
+replacement pass does not export both performances. A take with no registry
+record keeps its previous behaviour and still exports.
+
 A take's instrument-target notes export too, as one more part per take: manifest
 v3 `live_instrument_notes`, carrying the plugin identity (backend, ID, artifact
 SHA-256, ABI, version) instead of the sampled-instrument ID. Every note keeps
@@ -173,6 +180,12 @@ and the absence of any machine path.
 checks that a pad hit recorded in that pass exports as a pad clip with its own
 asset, controls and take-local position, beside the take's instrument note and
 its unchanged retained audio.
+`native/tests/export_bundle.rs::live_take_mute_and_replacement_are_honoured_in_export`
+checks that a take muted through the edit layer, and a take a REPLACE pass
+replaced, export neither a clip part nor an event nor audio, that their notes
+stay out of the bundle with the rest of the app's audible view, that the
+replacing take still exports normally, and that the reference mix holds only
+the audible takes.
 `native/tests/soundcraft_adapter.rs::unavailable_live_plugin_is_reported_and_the_retained_take_still_converts`
 converts such a bundle through the strict fake target: the plugin is reported
 as an unsupported mapping by identity and the retained take is imported as an

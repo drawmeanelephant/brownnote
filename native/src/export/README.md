@@ -87,6 +87,11 @@ are the real take event IDs, so notes and audio join by take identity. Identity
 is name, artifact hash, ABI and version only: the plugin's machine path is
 never exported, and no plugin state is claimed to be portable.
 
+Mute and removal/replacement are honoured exactly as in replay: a muted take,
+or a take removed or replaced by a REPLACE pass, exports no part, no event and
+no audio, so a replacement pass never doubles a performance in the bundle or
+its reference mix. A take with no registry record still exports.
+
 A live take can also hold pad or sample hits played over the pass. The capture
 is the plugin's own output and the pad mixer is summed after it, so those hits
 are in neither the retained WAV nor the take's notes: they keep their usual
