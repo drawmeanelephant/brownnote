@@ -136,4 +136,9 @@ notes and recording state, and continue later input without changing mappings.
 Those paths, IAC, project recall, durations through the recorder, instruments,
 and the named-controller check remain open. **#105 remains open.**
 
+When a physical controller exists, run the
+[named-controller input runbook](../../midi-named-controller-runbook.md). It
+starts `NOT EXECUTED` and only a run on the device named in its record can
+close the hardware gate. A virtual port or fixture never can (D2).
+
 See [reproduction steps](REPRODUCE.md) and [validation status](VALIDATION.md).
