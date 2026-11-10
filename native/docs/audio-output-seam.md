@@ -118,12 +118,17 @@ cargo run --release --manifest-path native/Cargo.toml -- --check-audio
 ```
 
 The example opens the current default by its explicit CPAL ID at 44.1 and
-48 kHz, uses a silent sample to check voice lifecycle, and verifies real
-callback timestamps and fresh stream identities. It fails if either rate is
-unsupported. It prints neither device IDs nor names. The binary probe plays
-pad 0, checks frames and signal, and prints the callback-duration,
-observed-frame and presentation-lead summary described above. It measures no
-round-trip latency and no listening quality.
+48 kHz with `Output::open_selected_probed`, uses a silent sample to check voice
+lifecycle, and verifies real callback timestamps and fresh stream identities. It
+fails if either rate is unsupported. It prints neither device IDs nor names.
+Per rate it prints the identity line and then the same stable measurement block
+`--check-audio` prints (`callbacks`, `callback_duration_us`, `callback_frames`,
+`presentation_lead_us` and `round_trip_latency=unmeasured`), folded from a
+bounded half-second drain of `output.measurements()` that polls every 10 ms like
+the binary probe. The binary probe plays pad 0, checks frames and signal, and
+prints that same summary. Neither measures round-trip latency or listening
+quality; those printed numbers describe one machine's run and are no latency
+guarantee.
 
 ## Remaining manual gates
 

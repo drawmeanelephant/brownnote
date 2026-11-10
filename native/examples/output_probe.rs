@@ -1,10 +1,23 @@
-//! Real-device seam smoke test. No IDs or timing/latency claims are printed.
+//! Real-device seam smoke test. No IDs or names are printed. The measurement
+//! block describes one machine's run; it is not a latency guarantee.
 use brownnote_native::{
     engine::{Command, Sample, Slots},
-    output::{Output, OutputSelection, output_devices},
+    output::{CallbackSummary, Output, OutputSelection, output_devices},
 };
 use cpal::traits::{DeviceTrait, HostTrait};
-use std::{error::Error, sync::Arc, time::Duration};
+use std::{
+    error::Error,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+/// Long enough per rate to collect a small distribution of real callbacks, and
+/// short enough to keep the manual run quick. `--check-audio` uses a
+/// two-second window; the example only needs to show the block shape.
+const PROBE_WINDOW: Duration = Duration::from_millis(500);
+/// The same drain cadence as `--check-audio`, so the bounded queue cannot
+/// overflow inside the shorter window.
+const PROBE_POLL: Duration = Duration::from_millis(10);
 
 fn main() -> Result<(), Box<dyn Error>> {
     let devices = output_devices()?;
@@ -30,7 +43,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             ..selection.clone()
         };
         device.configuration(&requested)?;
-        let mut output = Output::open_selected(slots.clone(), &requested)?;
+        // The same explicit device, opened with probing so the callback block
+        // below can be read off-thread.
+        let mut output = Output::open_selected_probed(slots.clone(), &requested)?;
         let opened = output.opened().ok_or("real output was not opened")?;
         if opened.configuration.stream.sample_rate != rate || Some(opened.stream_id) == previous_id
         {
@@ -50,7 +65,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             pan: 0.0,
             semitones: 0.0,
         });
-        std::thread::sleep(Duration::from_millis(100));
+        // Bounded like `--check-audio`: absorb as we go, never block the audio
+        // thread and never grow the summary without bound.
+        let deadline = Instant::now() + PROBE_WINDOW;
+        let mut timing = CallbackSummary::default();
+        while Instant::now() < deadline {
+            std::thread::sleep(PROBE_POLL);
+            let measurements = output
+                .measurements()
+                .ok_or("probed open did not expose measurements")?;
+            timing.absorb(measurements);
+        }
         if output.take_error().is_some() {
             return Err("device reported a stream error".into());
         }
@@ -71,6 +96,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             "explicit CPAL ID: {rate} Hz, real callbacks and active voice observed; \
              fresh stream identity and empty initial voice pool verified"
         );
+        // The same stable block `--check-audio` prints. Round-trip latency is
+        // unmeasured because output-only instants cannot derive it.
+        println!("{timing}");
         // Dropping this stream while its voice is active precedes the next open.
     }
     Ok(())
