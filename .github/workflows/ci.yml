@@ -160,3 +160,9 @@ jobs:
 
       - name: Required LADSPA plugin pad workflow tests
         run: make native-ladspa-workflow-test
+
+      # Repeats the three render deadline/signal fixtures in fresh processes
+      # with a slow `dirname` on PATH, so a startup timing regression turns
+      # this job red instead of waiting for someone to run the script by hand.
+      - name: Required render deadline stress
+        run: make native-render-timeout

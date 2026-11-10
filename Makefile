@@ -101,6 +101,14 @@ native-test: native-plugin-host
 	$(CARGO) clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
 	$(CLAP_TEST_ENV) $(LADSPA_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored --skip pinned_app_recipe_and_adapter --skip $(CPAL_DEVICE_TEST)
 
+# The render deadline and signal fixtures repeated in fresh processes with a
+# slow `dirname` on PATH, which is how a startup timing regression shows up.
+# It rebuilds with `--lib --no-run` and repeats three cases three times each,
+# so it stays out of `native-test`; the `native` job in
+# `.github/workflows/ci.yml` runs it as its own step.
+native-render-timeout:
+	python3 native/tests/check_render_timeout.py
+
 # Explicit opt-in: requires the pinned Airwindows Consolidated bundle in
 # BROWNNOTE_CLAP_EFFECT (see native/plugin-host/README.md).
 native-clap-effect-test: native-plugin-host
@@ -152,4 +160,4 @@ native-soundcraft-test:
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_recipe_and_adapter -- --ignored --exact
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio -- --ignored --exact
 
-.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-soundcraft-test native-plugin-host native-clap-effect-test native-plugin-workflow-test native-clap-live-test native-clap-live-cpal-test native-ladspa-plate-test native-ladspa-workflow-test
+.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-render-timeout native-soundcraft-test native-plugin-host native-clap-effect-test native-plugin-workflow-test native-clap-live-test native-clap-live-cpal-test native-ladspa-plate-test native-ladspa-workflow-test
