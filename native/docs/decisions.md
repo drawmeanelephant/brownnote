@@ -120,6 +120,15 @@ An entry marked **Revisit** names the evidence that should reopen it.
   the same pass export as their normal pad or sample parts: the retained clip
   holds only the plugin's own output, so this duplicates no audio. No plugin
   state is claimed portable, and there is no reverse import (#171, PR #176).
+- **D22. Live take capacity.** The mixer slots are the bound on retained takes.
+  A pad-playable asset owns one of the 64 slots and a retained live take owns
+  two, so a project's take count depends on its pad samples; the five-file
+  default kit leaves room for 29. A take that cannot be given slots is refused
+  when it commits, with a notice that its audio was not retained. A save refuses
+  an over-capacity project with the counts instead of writing a document that
+  open would reject, and open refuses such a document. No spill to disk and no
+  project format change: one contract, checked when recording, saving and
+  opening.
 
 ## How lanes plug into the app
 

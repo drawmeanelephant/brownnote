@@ -4,10 +4,13 @@
 use super::*;
 use crate::{ui::projects, ui::transport, ui_test_support};
 use brownnote_native::{
+    engine::SLOTS,
     live_audio,
-    pedals::offline::{Hash256, Plugin},
+    pedals::offline::{Backend, Hash256, Plugin},
+    performance::{InstrumentId, NoteKey, OriginalTime, SourceId, Target},
     plugins::live::{LiveState, SendOutcome},
-    project::AssetId,
+    project::{Asset, AssetId, Document, MediaKind, store::Store},
+    takes::PassOptions,
 };
 use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime};
 use std::{
@@ -307,8 +310,14 @@ fn a_recorded_take_survives_a_missing_bundle_and_replays_its_audio() {
         play_lockstep(&session.host, &mut voice, 4_800);
     }
     let media = s.media.owned.clone();
-    s.live
-        .finish_capture(media.as_ref(), TakeId(9), pass_start, pass_end);
+    s.live.finish_capture(
+        media.as_ref(),
+        &mut s.assets,
+        &mut s.output,
+        TakeId(9),
+        pass_start,
+        pass_end,
+    );
     assert!(s.live.error.is_none(), "{:?}", s.live.error);
     let retained_notice = s.live.notice.clone().unwrap_or_default();
     assert!(retained_notice.starts_with("Retained"), "{retained_notice}");
@@ -316,6 +325,18 @@ fn a_recorded_take_survives_a_missing_bundle_and_replays_its_audio() {
         !retained_notice.contains("not retained"),
         "{retained_notice}"
     );
+    // Bug #1: the take just recorded is playable in this same session, with
+    // two mixer slots of its own, not only after a save and reopen.
+    assert!(
+        s.live.takes.contains_key(&TakeId(9)),
+        "committed take has no mixer slots: {:?}",
+        s.live.notice
+    );
+    let committed = s.live.takes[&TakeId(9)];
+    assert_ne!(committed.left, committed.right);
+    let committed_left = s.assets.slots().get(committed.left).unwrap();
+    assert_eq!(committed_left.rate, RATE);
+    assert!(committed_left.data.iter().any(|sample| *sample != 0.0));
     let saved = s.live.for_save().unwrap().unwrap();
     assert_eq!(
         saved.takes.len(),
@@ -530,8 +551,14 @@ fn a_take_whose_host_kept_no_capture_reports_the_missing_audio() {
     );
 
     let media = s.media.owned.clone();
-    s.live
-        .finish_capture(media.as_ref(), TakeId(9), pass_start, pass_end);
+    s.live.finish_capture(
+        media.as_ref(),
+        &mut s.assets,
+        &mut s.output,
+        TakeId(9),
+        pass_start,
+        pass_end,
+    );
     let notice = s.live.notice.clone().expect("the loss is reported");
     assert!(notice.contains("9"), "{notice}");
     assert!(notice.contains("live audio was not retained"), "{notice}");
@@ -571,13 +598,335 @@ fn a_take_finished_without_its_capture_reports_which_capture_was_running() {
         Some(TakeId(4))
     );
     let media = s.media.owned.clone();
-    s.live
-        .finish_capture(media.as_ref(), TakeId(5), 1_000_000_000, 2_000_000_000);
+    s.live.finish_capture(
+        media.as_ref(),
+        &mut s.assets,
+        &mut s.output,
+        TakeId(5),
+        1_000_000_000,
+        2_000_000_000,
+    );
     let notice = s.live.notice.clone().expect("the loss is reported");
     assert!(notice.contains("Take 5"), "{notice}");
     assert!(notice.contains("live audio was not retained"), "{notice}");
     assert!(notice.contains("belonged to take 4"), "{notice}");
     assert!(s.live.for_save().unwrap().unwrap().takes.is_empty());
+}
+
+/// The project's live instrument identity, without a running host.
+fn instrument_record() -> LiveInstrumentDocument {
+    let stage = Stage {
+        plugin: Plugin {
+            backend: Backend::Clap,
+            id: INSTRUMENT.into(),
+            artifact: Hash256::of(b"fixture bundle bytes"),
+            abi: "clap-1.2".into(),
+            version: "1.0.0".into(),
+        },
+        location: PathBuf::from("/tmp/brownnote-fixture.clap"),
+        params: Vec::new(),
+        state: None,
+    };
+    LiveInstrumentDocument::from_stage(&stage, "Fixture".into(), true)
+}
+
+/// One committed take whose only note targets the live instrument, so replay
+/// either plays its retained clip or falls through to the sampled instrument.
+fn committed_instrument_take(s: &mut State) -> TakeId {
+    let key = NoteKey {
+        source: SourceId(1),
+        channel: Channel::try_from(0).unwrap(),
+        pitch: Pitch::try_from(64).unwrap(),
+    };
+    let id = s.takes.arm(PassOptions::default()).unwrap();
+    s.takes.start(id).unwrap();
+    s.takes
+        .note_on(
+            id,
+            Target::Instrument(InstrumentId(1)),
+            key,
+            Velocity::try_from(96).unwrap(),
+            OriginalTime::from_nanos(0),
+        )
+        .unwrap();
+    s.takes
+        .note_off(id, key, OriginalTime::from_nanos(50_000_000))
+        .unwrap();
+    s.takes.finish(id).unwrap();
+    id
+}
+
+/// Constant-level interleaved stereo, the shape a captured pass has.
+fn tone(level: f32, frames: usize) -> Vec<f32> {
+    (0..frames).flat_map(|_| [level, level * 0.5]).collect()
+}
+
+/// The commit half of `finish_capture`, without a host to capture from.
+fn retain(s: &mut State, take: TakeId, samples: &[f32]) {
+    let media = s.media.owned.clone();
+    s.live.retain_take(
+        media.as_ref(),
+        &mut s.assets,
+        &mut s.output,
+        take,
+        RATE,
+        samples,
+    );
+}
+
+/// Sixteen distinct pad sources, so pad assets and take slots are both known.
+fn distinct_pad_sources(s: &mut State) {
+    for index in 0..16 {
+        let imported = ui_test_support::source(0.01 + index as f32 * 0.001, 8_000);
+        ui_test_support::replace(s, index, &imported);
+    }
+    s.output.advance(0.001);
+    s.poll_assets();
+    assert_eq!(s.assets.pad_assets(), 16);
+}
+
+/// A retained take clip published as project media, distinct per `index`.
+fn take_media(s: &mut State, index: u128) -> (AssetRef, LiveTakeDocument) {
+    let bytes = live_audio::encode(RATE, &[0.1, 0.2, index as f32 * 0.001, 0.0]).unwrap();
+    let reference = AssetRef::of(&bytes);
+    s.media.owned.publish(&reference, &bytes).unwrap();
+    let document = LiveTakeDocument {
+        take: index.to_string(),
+        asset: reference.id,
+        rate: RATE,
+        frames: 2,
+    };
+    (reference, document)
+}
+
+fn take_document(s: &mut State, index: u128) -> LiveTakeDocument {
+    take_media(s, index).1
+}
+
+fn published(s: &State, samples: &[f32]) -> bool {
+    let bytes = live_audio::encode(RATE, samples).unwrap();
+    s.media.owned.get(AssetRef::of(&bytes).id).is_some()
+}
+
+/// Bug 1: a take that commits is playable at once, from its own mixer slots,
+/// and its instrument notes no longer fall through to the sampled instrument.
+#[test]
+fn a_committed_take_is_audible_in_the_session_that_recorded_it() {
+    let mut s = state();
+    s.live
+        .install_project(Some(instrument_record()), BTreeMap::new());
+    let take = committed_instrument_take(&mut s);
+    let samples = tone(0.5, 2_400);
+    retain(&mut s, take, &samples);
+    assert!(s.live.error.is_none(), "{:?}", s.live.error);
+    assert!(
+        s.live.takes.contains_key(&take),
+        "the committed take has no mixer slots: {:?}",
+        s.live.notice
+    );
+    let slots = s.live.takes[&take];
+    assert_ne!(slots.left, slots.right);
+    let left = s.assets.slots().get(slots.left).unwrap();
+    assert_eq!(left.rate, RATE);
+    assert!(left.data.iter().any(|sample| *sample != 0.0));
+    assert_eq!(left.data.len(), 2_400);
+
+    // Replay in this same session: the take's clip sounds, its instrument
+    // notes are not counted as unsounded, and no pad meter lights.
+    s.now = 1.0;
+    transport::play(&mut s);
+    transport::poll(&mut s);
+    s.output.advance(0.02);
+    let peak = f32::from_bits(s.output.meters.peak.load(Relaxed));
+    assert!(
+        peak > 0.0,
+        "the committed take did not play: {:?}",
+        s.live.notice
+    );
+    assert_eq!(s.output.meters.counts(), [0; 16], "a take is not a pad hit");
+    let status = transport::status(&s);
+    assert!(
+        !status.contains("NOT SOUNDED"),
+        "the take's notes fell through to the sampled instrument: {status}"
+    );
+    transport::stop(&mut s, "test");
+}
+
+/// Bug 1: one take owns one slot pair. Committing it again keeps that pair.
+#[test]
+fn committing_the_same_take_twice_keeps_one_slot_pair() {
+    let mut s = state();
+    s.live
+        .install_project(Some(instrument_record()), BTreeMap::new());
+    let take = committed_instrument_take(&mut s);
+    let samples = tone(0.4, 960);
+    retain(&mut s, take, &samples);
+    let first = s.live.takes[&take];
+    let occupied = (0..SLOTS)
+        .filter(|slot| s.assets.slots().get(*slot).is_some())
+        .count();
+    retain(&mut s, take, &samples);
+    assert_eq!(s.live.takes.len(), 1);
+    assert_eq!(s.live.takes[&take], first);
+    assert_eq!(
+        (0..SLOTS)
+            .filter(|slot| s.assets.slots().get(*slot).is_some())
+            .count(),
+        occupied,
+        "a second commit allocated more mixer slots"
+    );
+    assert_eq!(s.live.document.as_ref().unwrap().takes.len(), 1);
+    assert!(
+        s.live
+            .notice
+            .as_deref()
+            .unwrap()
+            .contains("already retained"),
+        "{:?}",
+        s.live.notice
+    );
+    assert!(s.live.error.is_none());
+}
+
+/// Bug 2: recording asks the same capacity question a save does, so a take the
+/// save could not hold is refused at commit, before any media or document
+/// entry exists.
+#[test]
+fn recording_is_refused_at_the_mixer_capacity_a_save_enforces() {
+    let mut s = state();
+    distinct_pad_sources(&mut s);
+    // 16 pad assets hold one slot each; 24 retained takes hold the other 48.
+    let mut record = instrument_record();
+    record.takes = (0..24)
+        .map(|index| take_document(&mut s, 100 + index))
+        .collect();
+    s.live.install_project(Some(record), BTreeMap::new());
+    let take = committed_instrument_take(&mut s);
+    let samples = tone(0.4, 480);
+    retain(&mut s, take, &samples);
+    let notice = s.live.notice.clone().unwrap();
+    assert!(notice.contains("was not retained"), "{notice}");
+    assert!(notice.contains("capacity"), "{notice}");
+    assert!(notice.contains("16 pad asset(s)"), "{notice}");
+    assert!(notice.contains("66 of 64"), "{notice}");
+    assert!(!s.live.takes.contains_key(&take));
+    assert_eq!(s.live.document.as_ref().unwrap().takes.len(), 24);
+    assert!(
+        !published(&s, &samples),
+        "a refused take published project media"
+    );
+    assert!(s.live.error.is_none(), "{:?}", s.live.error);
+}
+
+/// Bug 2: with no free slot pair left in this session, the commit is refused
+/// with a notice and leaves no take, media or document entry behind.
+#[test]
+fn a_take_is_refused_when_the_session_has_no_free_mixer_slot() {
+    let mut s = state();
+    s.live
+        .install_project(Some(instrument_record()), BTreeMap::new());
+    ui_test_support::fill_slots(&mut s, 0);
+    assert!(
+        (0..SLOTS).all(|slot| !s.assets.slots().is_empty(slot)),
+        "the fixture did not fill the mixer"
+    );
+    let take = committed_instrument_take(&mut s);
+    let samples = tone(0.3, 480);
+    retain(&mut s, take, &samples);
+    let notice = s.live.notice.clone().unwrap();
+    assert!(notice.contains("was not retained"), "{notice}");
+    assert!(notice.contains("slot"), "{notice}");
+    assert!(!s.live.takes.contains_key(&take));
+    assert!(s.live.document.as_ref().unwrap().takes.is_empty());
+    assert!(!published(&s, &samples));
+}
+
+/// Bug 2: a project at the slot boundary saves and opens; one take past it is
+/// refused with the counts rather than written unopenable.
+#[test]
+fn a_save_refuses_more_retained_takes_than_the_mixer_holds() {
+    let good = Root::new();
+    let mut s = state();
+    distinct_pad_sources(&mut s);
+    let mut record = instrument_record();
+    record.takes = (0..24)
+        .map(|index| take_document(&mut s, 100 + index))
+        .collect();
+    s.live.document = Some(record);
+    s.projects.path = TextEdit::new(good.0.join("good").to_string_lossy());
+    projects::save(&mut s);
+    finish(&mut s);
+    assert!(s.projects.error.is_none(), "{:?}", s.projects.error);
+
+    let overflow = Root::new();
+    let mut record = s.live.document.clone().unwrap();
+    record.takes.push(take_document(&mut s, 200));
+    s.live.document = Some(record);
+    s.projects.path = TextEdit::new(overflow.0.join("over").to_string_lossy());
+    projects::save(&mut s);
+    let error = s.projects.error.clone().expect("the over-capacity save");
+    assert!(error.contains("capacity"), "{error}");
+    assert!(error.contains("16 pad asset(s)"), "{error}");
+    assert!(error.contains("25 retained live take(s)"), "{error}");
+    assert!(error.contains("66 of 64"), "{error}");
+    assert!(
+        !overflow.0.join("over").exists(),
+        "a refused save wrote a project"
+    );
+
+    // The boundary document still opens with every retained take playable.
+    let mut reopened = state();
+    reopened.projects.path = TextEdit::new(good.0.join("good").to_string_lossy());
+    projects::open(&mut reopened);
+    finish(&mut reopened);
+    assert!(
+        reopened.projects.error.is_none(),
+        "{:?}",
+        reopened.projects.error
+    );
+    assert_eq!(reopened.live.takes.len(), 24);
+    assert_eq!(reopened.live.document.as_ref().unwrap().takes.len(), 24);
+    for take in 0..24 {
+        let slots = reopened.live.takes[&TakeId(100 + take)];
+        assert_ne!(slots.left, slots.right);
+        assert!(reopened.assets.slots().get(slots.left).is_some());
+    }
+}
+
+/// Bug 2: open still refuses a hand-built document that cannot fit the mixer.
+#[test]
+fn an_open_still_refuses_a_hand_built_document_over_the_take_capacity() {
+    let root = Root::new();
+    let project = root.0.join("over-capacity");
+    let mut s = state();
+    let media = s.media.owned.clone();
+    let mut document = Document::default();
+    let mut record = instrument_record();
+    for index in 0..33u128 {
+        let (reference, take) = take_media(&mut s, 300 + index);
+        document.assets.push(Asset {
+            reference,
+            kind: MediaKind::LiveTakeRender,
+        });
+        record.takes.push(take);
+    }
+    document.live_instrument = Some(record);
+    fs::create_dir(&project).unwrap();
+    media
+        .adopt(&brownnote_native::import::ProjectMedia::new(
+            project.clone(),
+        ))
+        .unwrap();
+    Store::new(project.clone()).save(&document, &[]).unwrap();
+
+    s.projects.path = TextEdit::new(project.to_string_lossy());
+    projects::open(&mut s);
+    finish(&mut s);
+    let error = s.projects.error.clone().expect("the over-capacity open");
+    assert!(error.contains("capacity"), "{error}");
+    assert!(error.contains("66 of 64"), "{error}");
+    assert!(s.live.document.is_none());
+    assert!(s.live.takes.is_empty());
 }
 
 fn panel_view(state: &State, _cx: &mut Cx<State>) -> El {

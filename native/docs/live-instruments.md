@@ -90,6 +90,25 @@ WAV, publishes it as project media, and records a take entry. Nothing is
 re-rendered offline and no render recipe is invented for a live instrument: the
 captured audio is the authoritative take, not a cache.
 
+A committed take is playable at once, in the session that recorded it. The
+commit claims the take's two unassigned mixer slots and loads them exactly as a
+project open does, so transport replay plays the retained clip from that moment
+instead of falling through to the sampled instrument. One take owns one slot
+pair: committing the same take again keeps the slots it already has and
+allocates nothing.
+
+Recording is bounded by the mixer, not by `MAX_TAKES`. Pad-playable assets take
+one of the 64 slots each and a retained take takes two, so how many takes a
+project can hold depends on its pad samples; the five-file default kit leaves
+room for 29. A take that cannot be given slots is refused when it commits, with
+a notice that its audio was not retained and why, before any media is published
+or any document entry is written. A save asks the same capacity question and
+refuses an over-capacity project with the counts (pad assets, live takes, slots)
+rather than writing a document that open would reject, and an open refuses such
+a hand-built document the same way (`session::live_take_capacity`). Nothing
+spills to disk and the project format is unchanged; this is the existing mixer
+slot contract enforced on record, save and open.
+
 On reopen the take WAV is decoded into two unassigned mixer slots and replayed
 as one stereo clip (`ScheduledAction::Clip`). It is project-owned media, so it
 plays with no plugin, no helper and no pad assignment, and it is never mixed
@@ -154,6 +173,9 @@ promise. Identity is name-and-hash only — the machine path is never exported.
   take's editable instrument notes are retained, and neither can reconstruct the
   plugin's sound without the plugin. Pad or sample hits from the same pass are
   not plugin audio; they export from their pad media as their own parts.
+- Retained takes are bounded by mixer slots (two each, beside one per
+  pad-playable asset), not by the document's own take bound, and nothing spills
+  to disk. The five-file default kit leaves room for 29 takes.
 - The live host's own limits (one helper process, bounded queues, block
   deadlines) apply unchanged.
 
@@ -163,11 +185,24 @@ promise. Identity is name-and-hash only — the machine path is never exported.
 
 - save and reopen in a new `State` restores the opaque state, starts the host
   and renders identical samples for the same note;
-- a recorded pass keeps the exact played stereo audio; with the bundle deleted
+- a recorded pass keeps the exact played stereo audio, owns its two mixer slots
+  as soon as it commits, and plays in that same session; with the bundle deleted
   the project opens, the instrument is disabled with identity in the reason,
   and the retained take plays from its own slots without a pad meter;
 - the panel exposes the instrument, status reason, path/ID fields, choose and
   clear, and clearing keeps the identity and the retained takes.
+
+Device-free tests in the same file cover the commit and the capacity contract
+through the app's own entry points:
+`a_committed_take_is_audible_in_the_session_that_recorded_it` (the clip is
+scheduled, no note is counted unsounded),
+`committing_the_same_take_twice_keeps_one_slot_pair`,
+`recording_is_refused_at_the_mixer_capacity_a_save_enforces`,
+`a_take_is_refused_when_the_session_has_no_free_mixer_slot` (no take, media or
+document entry is left behind),
+`a_save_refuses_more_retained_takes_than_the_mixer_holds` (the boundary saves
+and opens; one past it is refused with the counts and writes nothing) and
+`an_open_still_refuses_a_hand_built_document_over_the_take_capacity`.
 
 `native/tests/export_bundle.rs::live_instrument_take_exports_its_recorded_audio_and_honest_identity`
 checks the exported part, byte-for-byte audio, and the honest loss record.

@@ -130,6 +130,10 @@ omit it and older v1 fixtures load unchanged.
   `DocumentError::LiveInstrument` / `MissingAsset`.
 - `session::Prepared::live` carries the record for a current or recovery open;
   `Prepared::live_takes` maps each valid take to two decoded mixer slots.
+- Pad-playable assets and retained takes must fit the mixer's 64 slots: one per
+  pad-playable asset and two per take. `session::live_take_capacity` is the one
+  check used when recording, saving and opening; an over-capacity save or open
+  is refused with the counts. `MAX_TAKES` bounds the document, not the mixer.
 - A missing bundle or changed artifact does not fail the open: the instrument
   is disabled with its identity and reason, and retained takes still play.
 
