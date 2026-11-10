@@ -107,9 +107,10 @@ owned temporary directory before launching the app.
    with default configuration. Verify Tab focus and status updates through
    both failures and recovery. Check VoiceOver announcements manually.
 7. With the built-in output connected, run the release `--check-audio` and
-   record its printed block. It reports callback cost, observed buffer lengths
-   and CPAL's own presentation estimate for the system default. It still says
-   round-trip latency is unmeasured, so it does not close the latency gate.
+   record its printed block. It reports callback cost, deadline headroom,
+   observed buffer lengths and CPAL's own presentation estimate for the system
+   default. It still says round-trip latency is unmeasured, so it does not
+   close the latency gate.
 
 The optional second-output run, maintainer listening, and first-use latency
 measurements remain unresolved. `--check-audio` probes the system default,
@@ -122,6 +123,7 @@ callbacks=<observed>, dropped=<queue overflow>, rejected=<replayed or foreign>, 
 callback_duration_us=min=<us>, p50=<us>, p95=<us>, n=<observed>
 callback_frames=min=<frames>, max=<frames>, n=<observed>
 presentation_lead_us=min=<us>, p50=<us>, p95=<us>, n=<observed>
+callback_headroom_us=min=<us>, p50=<us>, p95=<us>, n=<observed>, deadline_overruns=<count>, worst_overrun_us=<us>
 round_trip_latency=unmeasured (output-only callback and presentation instants cannot derive it)
 ```
 
@@ -129,10 +131,21 @@ round_trip_latency=unmeasured (output-only callback and presentation instants ca
 timestamp publish, command drain, sample render and live mix.
 `callback_frames` is the buffer length CPAL actually delivered, not the
 requested fixed size. `presentation_lead_us` is CPAL's own predicted
-`playback - callback` instant for that callback. Each is reported separately,
-and none is round-trip latency, which output-only timestamps cannot derive.
-Percentiles are nearest-rank over the observations; the callback keeps at most
-64 queued and the summary keeps at most 4096 values. `dropped` counts
+`playback - callback` instant for that callback. `callback_headroom_us` is
+each callback's own deadline minus its measured duration. The deadline is that
+callback's delivered `frames` divided by the opened stream rate, truncated to
+whole nanoseconds, never a shared or minimum frame count, so a run whose buffer
+length varied is measured honestly. It is negative when a callback used more
+than its deadline, and zero when it used exactly its deadline. Each line is
+reported separately, and none is round-trip latency, which output-only
+timestamps cannot derive.
+Percentiles are nearest-rank over the kept observations of each distribution,
+including headroom; the callback keeps at most 64 queued and the summary keeps
+at most 4096 values per distribution. `deadline_overruns` counts callbacks
+whose duration strictly exceeded their own budget, and `worst_overrun_us` is
+the largest measured excess. A duration exactly equal to its budget is a zero
+headroom, not an overrun. A non-zero overrun count is reported plainly: the
+probe neither fails nor claims a latency figure from it. `dropped` counts
 observations the bounded queue refused, not lost audio. `rejected` counts
 observations that did not advance, and `inverted_lead` counts callbacks whose
 CPAL prediction did not follow their callback instant; those are counted, not
