@@ -1,7 +1,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 use crate::ui;
-use brownnote_native::{kit::PADS, performance::scheduler::ScheduleCounters, takes::Removal};
+use brownnote_native::{
+    instrument::{DEFAULT_GAIN, Font, INSTRUMENT, describe},
+    kit::PADS,
+    performance::scheduler::ScheduleCounters,
+    project::AssetId,
+    takes::Removal,
+};
 use rune::{Env, Key, Runtime};
 
 fn runtime() -> Runtime<State> {
@@ -386,4 +392,351 @@ fn disconnect_ends_held_notes_at_reconcile_and_never_invents_ends() {
     let note = &rt.state.takes.take(TakeId(1)).unwrap().notes()[0];
     assert_eq!(note.on().original_time.nanos(), 0);
     assert_eq!(note.original_end().nanos(), expected);
+}
+
+/// The pinned mechanics fixture, used only so a held note schedules a real
+/// `NoteOff`. No sound quality is claimed here.
+const SF2: &[u8] = include_bytes!("../../../docs/spikes/sampled-instrument/fixtures/mechanics.sf2");
+
+/// One held-instrument note plus one one-shot per pad 1–4. One event per pad
+/// lets the mixer's own meter stand in for that `EventId`'s dispatch count.
+const MAPPINGS: &str = r#"{"version":1,"mappings":[
+    {"type":"note","channel":0,"pitch":60,"target":{"type":"held","instrument":"1"}},
+    {"type":"note","channel":0,"pitch":72,"target":{"type":"held","instrument":"1"}},
+    {"type":"note","channel":1,"pitch":62,"target":{"type":"one_shot","pad":1}},
+    {"type":"note","channel":1,"pitch":64,"target":{"type":"one_shot","pad":2}},
+    {"type":"note","channel":1,"pitch":65,"target":{"type":"one_shot","pad":3}},
+    {"type":"note","channel":1,"pitch":67,"target":{"type":"one_shot","pad":4}}
+]}"#;
+
+fn mount_instrument(rt: &mut Runtime<State>) {
+    let font = Font::prepare(SF2, None).unwrap();
+    let document = describe(
+        INSTRUMENT,
+        "mechanics",
+        AssetId::of(SF2),
+        font.preset(),
+        DEFAULT_GAIN,
+    );
+    rt.state.instrument.restore(Some((document, Ok(font))));
+    rt.frame(0.0);
+    assert!(rt.state.instrument.plays(Target::Instrument(INSTRUMENT)));
+}
+
+/// Record one pass from the MIDI fixture. The fixture anchors its first packet
+/// on the running pass, so packet times are take-relative.
+fn record_fixture(rt: &mut Runtime<State>, packets: &[(u64, &[u8])]) -> TakeId {
+    let midi = rt.state.midi.clone();
+    ui::midi::fixture(&midi, SourceId(9), MAPPINGS, packets);
+    record(&mut rt.state);
+    rt.frame(0.0);
+    assert!(
+        rt.state.transport.pass.is_some(),
+        "the fixture fills a pass"
+    );
+    run_until(rt, |s| s.transport.pass.is_none());
+    assert_eq!(live(&rt.state), [TakeId(1)]);
+    TakeId(1)
+}
+
+/// The pad each one-shot event owns. One event per pad lets the mixer's own
+/// live voice meter stand in for that `EventId`'s dispatches.
+fn event_pads(rt: &Runtime<State>, take: TakeId) -> BTreeMap<EventId, usize> {
+    rt.state
+        .takes
+        .take(take)
+        .expect("a committed take")
+        .notes()
+        .iter()
+        .filter_map(|note| match note.on().target {
+            Target::Pad(pad) => Some((note.on().id, pad.index())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Frame until `done`, counting each pad's silent → sounding rise. A pad has
+/// at most one voice per hit and a hit outlasts the gap to the next cycle, so
+/// each rise is one dispatch of that pad's `EventId` reaching the mixer.
+fn watch(rt: &mut Runtime<State>, done: impl Fn(&State) -> bool) -> [u32; 16] {
+    let mut rises = [0; 16];
+    let mut counts = rt.state.output.meters.counts();
+    for _ in 0..1_000 {
+        if done(&rt.state) {
+            return rises;
+        }
+        rt.frame(0.01);
+        let next = rt.state.output.meters.counts();
+        for (pad, rise) in rises.iter_mut().enumerate() {
+            if counts[pad] == 0 && next[pad] > 0 {
+                *rise += 1;
+            }
+        }
+        counts = next;
+    }
+    panic!("condition never reached: {}", status(&rt.state));
+}
+
+/// Fill the bounded scheduler to capacity, so the next replay pass is refused.
+fn saturate(rt: &mut Runtime<State>) {
+    let slot = crate::ui_test_support::slot(&rt.state, 0);
+    let mut sequence = 0;
+    loop {
+        let epoch = rt.state.output.scheduler().epoch();
+        let frame = rt.state.output.scheduler().frame() + 44_100;
+        let event = ScheduledEvent {
+            epoch,
+            frame,
+            original_time: OriginalTime::default(),
+            // Never a release: a refused filler must not request the panic
+            // the transport is meant to observe from its own replay.
+            action: ScheduledAction::NoteOn {
+                id: EventId {
+                    take: TakeId(u128::MAX - 3),
+                    sequence,
+                },
+                trigger: Trigger {
+                    pad: 0,
+                    slot,
+                    group: 0,
+                    velocity: 0.0,
+                    gain: 1.0,
+                    pan: 0.0,
+                    semitones: 0.0,
+                },
+            },
+        };
+        if rt.state.output.schedule(event).outcome != ScheduleOutcome::Accepted {
+            break;
+        }
+        sequence += 1;
+    }
+    assert_eq!(rt.state.output.schedule_counters().outstanding, 256);
+}
+
+#[test]
+fn a_scheduler_recovery_rebuilds_the_cycle_without_playing_anything_twice() {
+    let mut rt = runtime();
+    one_bar(&mut rt);
+    mount_instrument(&mut rt);
+    let take = record_fixture(
+        &mut rt,
+        &[
+            (0, &[0x90, 60, 100][..]),
+            (0, &[0x90, 72, 100][..]),
+            (400_000, &[0x91, 62, 100][..]),
+            (550_000, &[0x91, 64, 100][..]),
+            (560_000, &[0x91, 65, 100][..]),
+            (570_000, &[0x91, 67, 100][..]),
+            (600_000, &[0x80, 60, 0][..]),
+            (600_000, &[0x80, 72, 0][..]),
+        ],
+    );
+    let owned = event_pads(&rt, take);
+    assert_eq!(
+        owned.values().copied().collect::<BTreeSet<_>>(),
+        BTreeSet::from([1, 2, 3, 4]),
+        "one pad per event"
+    );
+    let origin = rt.state.transport.playing.unwrap();
+    let cycle = loop_nanos(&rt.state.takes);
+    // Two cycles of steady replay, then fill the queue in the frame before the
+    // held notes' releases enter the 500 ms window.
+    run_until(&mut rt, |s| app_nanos(s) - origin >= 2 * cycle + 90_000_000);
+    let played = engine(&rt).dispatched;
+    let sent = rt.state.transport.counters.scheduled;
+    saturate(&mut rt);
+    rt.frame(0.01);
+    assert_eq!(
+        rt.state.transport.counters.schedule_lost, 2,
+        "both replay releases were refused"
+    );
+    assert_eq!(
+        rt.state.transport.counters.recovery_requested, 2,
+        "both refused releases asked for the bounded panic"
+    );
+    assert_eq!(rt.state.output.schedule_counters().recovery_requests, 2);
+    rt.frame(0.01);
+    let recovered = engine(&rt);
+    assert_eq!(
+        (recovered.recoveries, recovered.cancelled),
+        (1, 256),
+        "requests coalesce into one panic that cancels the accepted work"
+    );
+    assert_eq!(rt.state.transport.counters.recovered, 1);
+    // The rest of the cycle is rebuilt and each event reaches the mixer once.
+    let rises = watch(&mut rt, |s| {
+        app_nanos(s) - origin >= 2 * cycle + 650_000_000
+    });
+    for (id, pad) in &owned {
+        assert_eq!(rises[*pad], 1, "event {id:?} dispatched exactly once");
+    }
+    assert_eq!(rises[0], 0, "refused filler work never sounded");
+    assert_eq!(engine(&rt).late, 0, "no dispatched event was retriggered");
+    assert_eq!(
+        engine(&rt).dispatched - played,
+        6,
+        "the two rebuilt releases and four pad hits"
+    );
+    assert_eq!(
+        rt.state.transport.counters.scheduled - sent,
+        6,
+        "rebuilt once, never replayed"
+    );
+    let status = label(&rt, "transport-status");
+    assert!(status.contains("LOSS 2"), "{status}");
+    assert!(status.contains("RECOVERED 1 · CANCELLED 256"), "{status}");
+    let sent_now = rt.state.transport.counters.scheduled;
+    assert!(
+        status.contains(&format!("REPLAY {sent_now} SENT · ")),
+        "{status}"
+    );
+    assert!(status.contains(" PLAYED"), "{status}");
+    // Nothing is left in the window: one report, no retry loop.
+    let sent = rt.state.transport.counters.scheduled;
+    run_until(&mut rt, |s| {
+        app_nanos(s) - origin >= 2 * cycle + 1_500_000_000
+    });
+    assert_eq!(
+        rt.state.transport.counters.scheduled, sent,
+        "a quiet window is not re-sent"
+    );
+    assert_eq!(engine(&rt).recoveries, 1);
+    // STOP still panics the engine and clears the window bookkeeping.
+    tap(&mut rt, "transport-play");
+    assert!(!rt.state.transport.playing());
+    assert!(rt.state.transport.anchor.is_none());
+    let stopped = engine(&rt).dispatched;
+    run(&mut rt, 2.5);
+    assert_eq!(engine(&rt).dispatched, stopped, "STOP cancelled replay");
+    // A later PLAY re-arms from a fresh anchor.
+    tap(&mut rt, "transport-play");
+    run(&mut rt, 0.05);
+    assert!(rt.state.transport.playing());
+    assert!(rt.state.transport.anchor.is_some());
+    assert!(
+        rt.state.transport.counters.scheduled >= sent,
+        "PLAY re-arms the next window"
+    );
+}
+
+#[test]
+fn a_recovery_with_no_remaining_work_reports_once_and_stops() {
+    let mut rt = runtime();
+    one_bar(&mut rt);
+    mount_instrument(&mut rt);
+    let take = record_fixture(
+        &mut rt,
+        &[(0, &[0x90, 60, 100][..]), (300_000, &[0x80, 60, 0][..])],
+    );
+    assert_eq!(rt.state.takes.take(take).unwrap().notes().len(), 1);
+    let origin = rt.state.transport.playing.unwrap();
+    let cycle = loop_nanos(&rt.state.takes);
+    // A quiet stretch: this take sounds only at 0 and 300 ms of each cycle.
+    run_until(&mut rt, |s| {
+        app_nanos(s) - origin >= 2 * cycle + 900_000_000
+    });
+    let sent = rt.state.transport.counters.scheduled;
+    let played = engine(&rt).dispatched;
+    saturate(&mut rt);
+    let epoch = rt.state.output.scheduler().epoch();
+    let frame = rt.state.output.scheduler().frame();
+    let refused = rt.state.output.schedule(ScheduledEvent {
+        epoch,
+        frame,
+        original_time: OriginalTime::default(),
+        action: ScheduledAction::NoteOff {
+            id: EventId {
+                take: TakeId(u128::MAX - 4),
+                sequence: 0,
+            },
+        },
+    });
+    assert_eq!(refused.outcome, ScheduleOutcome::Full);
+    assert!(refused.release_recovery_requested);
+    rt.frame(0.01);
+    let engine_now = engine(&rt);
+    assert_eq!((engine_now.recoveries, engine_now.cancelled), (1, 256));
+    assert_eq!(rt.state.transport.counters.recovered, 1);
+    assert_eq!(
+        rt.state.transport.counters.recovery_requested, 0,
+        "another producer asked for this panic, not the transport"
+    );
+    assert_eq!(
+        rt.state.transport.counters.scheduled, sent,
+        "an empty window is not re-sent"
+    );
+    let status = label(&rt, "transport-status");
+    assert!(status.contains("RECOVERED 1 · CANCELLED 256"), "{status}");
+    // The rest of the cycle sends nothing and never repeats the report.
+    run_until(&mut rt, |s| {
+        app_nanos(s) - origin >= 2 * cycle + 1_500_000_000
+    });
+    assert_eq!(
+        rt.state.transport.counters.scheduled, sent,
+        "a quiet window is not re-sent"
+    );
+    assert_eq!(engine(&rt).recoveries, 1);
+    assert_eq!(engine(&rt).dispatched, played);
+    // The loop still replays its next cycle normally.
+    run_until(&mut rt, |s| {
+        app_nanos(s) - origin >= 3 * cycle + 350_000_000
+    });
+    assert_eq!(engine(&rt).dispatched, played + 2, "the next start and end");
+    assert_eq!(engine(&rt).recoveries, 1);
+}
+
+#[test]
+fn a_replaced_stream_during_a_recovery_reanchors_instead_of_replaying() {
+    let mut rt = runtime();
+    one_bar(&mut rt);
+    mount_instrument(&mut rt);
+    let take = record_fixture(
+        &mut rt,
+        &[
+            (0, &[0x90, 60, 100][..]),
+            (550_000, &[0x91, 62, 100][..]),
+            (600_000, &[0x80, 60, 0][..]),
+        ],
+    );
+    let origin = rt.state.transport.playing.unwrap();
+    let cycle = loop_nanos(&rt.state.takes);
+    run_until(&mut rt, |s| app_nanos(s) - origin >= 2 * cycle + 90_000_000);
+    let old = rt.state.output.scheduler().epoch();
+    saturate(&mut rt);
+    rt.frame(0.01);
+    assert_eq!(rt.state.transport.counters.schedule_lost, 1);
+    // Reopen the stream before the callback reaches its panic boundary.
+    let slots = rt.state.assets.slots().clone();
+    rt.state.install_output(Output::virtual_driver(
+        slots,
+        "reopened stream".into(),
+        false,
+    ));
+    let epoch = rt.state.output.scheduler().epoch();
+    assert_ne!(epoch, old, "a reopen is a fresh stream");
+    rt.frame(0.01);
+    assert_eq!(
+        rt.state.transport.anchor.map(|anchor| anchor.epoch),
+        Some(epoch),
+        "re-anchored on the new stream"
+    );
+    assert_eq!(engine(&rt).stale_epoch, 0, "no old window replayed");
+    assert_eq!(
+        engine(&rt).recoveries,
+        0,
+        "the replaced stream never ran the panic"
+    );
+    assert_eq!(rt.state.transport.counters.recovered, 0);
+    let status = label(&rt, "transport-status");
+    assert!(!status.contains("RECOVERED"), "{status}");
+    // The rest of the cycle is rebuilt against the new clock and plays once.
+    let owned = event_pads(&rt, take);
+    let rises = watch(&mut rt, |s| {
+        app_nanos(s) - origin >= 2 * cycle + 700_000_000
+    });
+    for (id, pad) in &owned {
+        assert_eq!(rises[*pad], 1, "event {id:?} played once after reopen");
+    }
+    assert_eq!(engine(&rt).dispatched, 2, "the rebuilt hit and its release");
 }

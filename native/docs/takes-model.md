@@ -79,9 +79,16 @@ second registry.
   disconnect or refresh reconciliation ends them at the reconcile time.
 - Replay sends the edit layer's effective notes (D13/D15) through
   `Output::schedule` with a 500 ms lookahead, re-anchoring when the output
-  stream changes. The status shows sends, the mixer's own dispatched count and
-  any refused events (`LOSS`). STOP/panic sends the engine panic, which also
-  cancels pending scheduled hits.
+  stream changes. The status shows accepted sends, the mixer's own dispatched
+  count and refused events (`LOSS`). A refused release makes the callback run
+  its bounded recovery; the transport observes each coalesced panic once,
+  forgets the bookings that panic cancelled and re-sends only what the loop
+  still wants from the current boundary, so work the engine already dispatched
+  is never retriggered. The status reports that separately as
+  `RECOVERED {recoveries} · CANCELLED {cancelled}` and, when an event was
+  reached behind its deadline, `LATE {late}`. These are the engine's
+  independent counters, not a sound acknowledgement. STOP/panic sends the
+  engine panic, which also cancels pending scheduled hits.
 - Held notes sound and replay through the sampled instrument when one is
   loaded (see `sampled-instrument.md`). Without one, they are captured, saved
   and shown with their durations, and the status reports

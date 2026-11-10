@@ -6,7 +6,11 @@
 //! pass start (D9); nothing is quantized at capture. A pass always starts on a
 //! loop boundary and records one loop cycle, so overdubs line up with replay.
 //! Replay schedules committed, effective notes through the existing bounded
-//! scheduler (`Output::schedule`), never through ad-hoc triggers.
+//! scheduler (`Output::schedule`), never through ad-hoc triggers. Queue
+//! admission is not a sound acknowledgement: a refused send is reported, and
+//! a bounded scheduler recovery (a refused release panics the callback and
+//! cancels queued/pending work) is observed once per coalesced panic so the
+//! rest of the loop cycle can be rebuilt instead of going silent.
 //!
 //! One-shot pads ignore release (as live), so they are stored as zero-length
 //! notes and replayed without a note-off. Held-instrument notes keep their
@@ -69,6 +73,12 @@ pub struct Counters {
     pub scheduled: u64,
     /// Replay events the scheduler refused (full, too far, stale stream).
     pub schedule_lost: u64,
+    /// Refused releases that reported `release_recovery_requested`, so the
+    /// callback will panic. Each stream coalesces these into one recovery.
+    pub recovery_requested: u64,
+    /// Coalesced scheduler recoveries this transport observed. The engine's
+    /// own `recoveries` / `cancelled` counters are what the status line shows.
+    pub recovered: u64,
 }
 
 #[derive(Default)]
@@ -88,6 +98,10 @@ pub struct Transport {
     /// Controller held-note IDs captured into the current pass.
     held: BTreeMap<EventId, u64>,
     pub counters: Counters,
+    /// The stream and `recoveries` count already accounted for. Each coalesced
+    /// panic is observed once, whatever number of releases requested it, and a
+    /// replaced stream starts its own count.
+    seen: Option<(StreamEpoch, u64)>,
     pub notice: Option<String>,
     pub error: Option<String>,
     /// Why the open pass is closing early (stop, panic), kept for its notice.
@@ -485,15 +499,33 @@ pub fn poll(s: &mut State) -> bool {
     }
     let was = s.transport.pass.is_some();
     finish(s);
-    schedule(s, now);
+    let recovered = recoveries(s);
+    schedule(s, now, recovered);
     let beat = position(s, now).map(|(bar, beat, _)| (bar, beat));
     let shown = std::mem::replace(&mut s.transport.shown, beat) != beat;
     shown
+        || recovered
         || was != s.transport.pass.is_some()
         || before != (s.transport.counters, s.transport.pass.map(|p| p.started))
 }
 
-fn schedule(s: &mut State, now: u64) {
+/// Count recoveries the callback performed since the previous poll, one per
+/// coalesced panic however many releases requested it. A replaced output is a
+/// fresh stream whose counters restart at zero, so its count is its own.
+fn recoveries(s: &mut State) -> bool {
+    let epoch = s.output.scheduler().epoch();
+    let performed = s.output.schedule_counters().recoveries;
+    let t = &mut s.transport;
+    let fresh = match t.seen {
+        Some((seen, count)) if seen == epoch => performed > count,
+        _ => performed > 0,
+    };
+    t.seen = Some((epoch, performed));
+    t.counters.recovered += u64::from(fresh);
+    fresh
+}
+
+fn schedule(s: &mut State, now: u64, recovered: bool) {
     let Some(origin) = s.transport.playing else {
         return;
     };
@@ -517,6 +549,16 @@ fn schedule(s: &mut State, now: u64) {
             anchor
         }
     };
+    if recovered {
+        // The coalesced panic cancelled every accepted event the callback had
+        // not dispatched, so none of the recorded entries is still scheduled.
+        // Forget them: this pass rebuilds whatever the loop still wants from
+        // the new `now` boundary. Entries whose deadline has already passed
+        // are outside that window, so dispatched work is never retriggered.
+        s.transport.scheduled.clear();
+        s.transport.ends.clear();
+        s.transport.clips.clear();
+    }
     let notes = match s.edit.model.effective_notes(&s.takes) {
         Ok(notes) => notes,
         Err(error) => {
@@ -573,7 +615,9 @@ fn schedule(s: &mut State, now: u64) {
                 velocity: 1.0,
                 gain: 1.0,
             };
-            replay(s, anchor, epoch, at, OriginalTime::default(), action);
+            if !replay(s, anchor, epoch, at, OriginalTime::default(), action) {
+                s.transport.clips.remove(&(at, *take));
+            }
         }
     }
     let mut unsounded = 0;
@@ -614,13 +658,17 @@ fn schedule(s: &mut State, now: u64) {
                         pitch: note.key.pitch.value(),
                         velocity: note.velocity.value(),
                     };
-                    replay(s, anchor, epoch, at, original, action);
+                    if !replay(s, anchor, epoch, at, original, action) {
+                        s.transport.scheduled.remove(&(at, note.id));
+                    }
                 }
             }
             for at in cycle_times(origin, length, offset + duration, from, horizon) {
                 if s.transport.ends.insert((at, note.id)) {
                     let action = ScheduledAction::NoteOff { id: note.id };
-                    replay(s, anchor, epoch, at, original, action);
+                    if !replay(s, anchor, epoch, at, original, action) {
+                        s.transport.ends.remove(&(at, note.id));
+                    }
                 }
             }
             continue;
@@ -649,7 +697,9 @@ fn schedule(s: &mut State, now: u64) {
                 },
             };
             let original = original_time(s, note.id);
-            replay(s, anchor, epoch, at, original, action);
+            if !replay(s, anchor, epoch, at, original, action) {
+                s.transport.scheduled.remove(&(at, note.id));
+            }
         }
     }
     s.transport.unsounded = unsounded;
@@ -678,6 +728,8 @@ fn cycle_times(
         .filter(move |at| (from..horizon).contains(at))
 }
 
+/// Submit one replay event. Acceptance is not a sound acknowledgement; a
+/// refusal is counted and reported so the caller drops its bookkeeping entry.
 fn replay(
     s: &mut State,
     anchor: Anchor,
@@ -685,7 +737,7 @@ fn replay(
     at: u64,
     original: OriginalTime,
     action: ScheduledAction,
-) {
+) -> bool {
     let delta = u128::from(at.saturating_sub(anchor.app)) * u128::from(anchor.rate) / NANOS;
     let result = s.output.schedule(ScheduledEvent {
         epoch,
@@ -695,8 +747,11 @@ fn replay(
     });
     if result.outcome == ScheduleOutcome::Accepted {
         s.transport.counters.scheduled += 1;
+        true
     } else {
         s.transport.counters.schedule_lost += 1;
+        s.transport.counters.recovery_requested += u64::from(result.release_recovery_requested);
+        false
     }
 }
 
@@ -716,7 +771,8 @@ fn position(s: &State, now: u64) -> Option<(u64, u64, bool)> {
     Some((index / 4 + 1, index % 4 + 1, false))
 }
 
-/// The status line: phase, loop position, take summary and loss.
+/// The status line: phase, loop position, take summary, refused sends and the
+/// engine's recovered/cancelled/late observations.
 pub fn status(s: &State) -> String {
     let t = &s.transport;
     let now = app_nanos(s);
@@ -762,6 +818,18 @@ pub fn status(s: &State) -> String {
     }
     if t.counters.schedule_lost > 0 {
         parts.push(format!("LOSS {}", t.counters.schedule_lost));
+    }
+    // The engine's own recovery/loss counters, separate from refused sends:
+    // one `RECOVERED` per coalesced panic, `CANCELLED` for the accepted work it
+    // removed before dispatch, `LATE` for events it reached behind their frame.
+    if engine.recoveries > 0 {
+        parts.push(format!(
+            "RECOVERED {} · CANCELLED {}",
+            engine.recoveries, engine.cancelled
+        ));
+    }
+    if engine.late > 0 {
+        parts.push(format!("LATE {}", engine.late));
     }
     if let Some(take) = s.takes.selected().and_then(|id| s.takes.take(id)) {
         let held: Vec<String> = take
