@@ -3,12 +3,14 @@
 import io
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
 import wave
+from unittest import mock
 
 sys.dont_write_bytecode = True
 import package_macos as package
@@ -34,6 +36,54 @@ class PackageTests(unittest.TestCase):
                     self.assertEqual((wav.getnchannels(), wav.getsampwidth(),
                                       wav.getframerate(), wav.getnframes()), (1, 2, 44100, 44100))
                     self.assertNotEqual(wav.readframes(44100), bytes(88200))
+
+    def test_generated_tones_pass_the_recording_boundary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "kit"
+            package.tone_kit(root)  # Raises if a generated tone matches a recording.
+            recorded = package.recorded_hashes()
+            self.assertTrue(recorded)
+            for file in root.iterdir():
+                self.assertNotIn(package.digest(file), recorded)
+
+    def test_declaration_names_every_repository_recording(self):
+        self.assertEqual(sorted(package.declared_recordings()),
+                         sorted(path.name for path in package.audio_files(package.RECORDINGS)))
+
+    def test_kit_with_a_real_recording_replaced_by_copy_is_refused(self):
+        real = package.RECORDINGS / "fart_dry.wav"
+        self.assertTrue(real.is_file())
+        generated_tones = package.tones
+
+        def real_recording_instead_of_tones(directory):
+            generated_tones(directory)
+            shutil.copy2(real, directory / "fart_dry.wav")
+
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.object(package, "tones", real_recording_instead_of_tones):
+                with self.assertRaisesRegex(
+                        package.UndeclaredRecording,
+                        r"fart_dry\.wav.*recordings/fart_dry\.wav"):
+                    package.tone_kit(Path(temp) / "resources/recordings")
+
+    def test_copying_recordings_without_a_naming_declaration_is_refused(self):
+        real = package.RECORDINGS / "fart_dry.wav"
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = temp / "recordings"
+            source.mkdir()
+            shutil.copy2(real, source / "fart_dry.wav")
+            with self.assertRaisesRegex(package.UndeclaredRecording, "PROVENANCE.md is missing"):
+                package.bundle_recordings([source / "fart_dry.wav"], temp / "unpacked", source)
+            self.assertFalse((temp / "unpacked").exists())
+            (source / "PROVENANCE.md").write_text("Nothing is declared here.\n")
+            with self.assertRaisesRegex(package.UndeclaredRecording, "does not name it"):
+                package.bundle_recordings([source / "fart_dry.wav"], temp / "unpacked", source)
+            self.assertFalse((temp / "unpacked").exists())
+            (source / "PROVENANCE.md").write_text("fart_dry.wav\n")
+            package.bundle_recordings([source / "fart_dry.wav"], temp / "unpacked", source)
+            self.assertEqual((temp / "unpacked" / "fart_dry.wav").read_bytes(),
+                             real.read_bytes())
 
     def test_extract_rejects_escape_and_symlink_before_writing(self):
         with tempfile.TemporaryDirectory() as temp:

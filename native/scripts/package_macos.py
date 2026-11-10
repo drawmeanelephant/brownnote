@@ -52,6 +52,67 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+class UndeclaredRecording(RuntimeError):
+    """A repository recording would enter the artifact without a decision."""
+
+
+RECORDINGS = ROOT / "recordings"
+AUDIO_SUFFIXES = {".wav", ".m4a", ".mp3", ".aif", ".aiff", ".flac", ".ogg", ".opus"}
+
+
+def audio_files(directory):
+    return sorted(path for path in Path(directory).rglob("*")
+                  if path.is_file() and path.suffix.lower() in AUDIO_SUFFIXES)
+
+
+def recorded_hashes(directory=RECORDINGS):
+    return {digest(path): path.name for path in audio_files(directory)}
+
+
+def declared_recordings(directory=RECORDINGS):
+    """Names from the declaration, not from whatever files happen to exist."""
+    declaration = Path(directory) / "PROVENANCE.md"
+    text = declaration.read_text() if declaration.is_file() else ""
+    return {path.name for path in audio_files(directory) if path.name in text}
+
+
+def refuse_recordings(directory, source=RECORDINGS):
+    """Refuse any bundled audio byte-identical to a recording in the repository."""
+    recorded = recorded_hashes(source)
+    for path in audio_files(directory):
+        name = recorded.get(digest(path))
+        if name:
+            raise UndeclaredRecording(
+                f"Refusing to bundle {path.name}: its SHA-256 matches {source.name}/{name}. "
+                "This artifact ships generated tones only; a recording kit needs its own "
+                "reviewed distribution decision recorded in recordings/PROVENANCE.md.")
+
+
+def bundle_recordings(sources, destination, source=RECORDINGS):
+    """Copy recordings only when the declaration names every file being copied."""
+    sources = [Path(path) for path in sources]
+    declared = declared_recordings(source)
+    unnamed = [path.name for path in sources if path.name not in declared]
+    if unnamed:
+        reason = ("is missing" if not (Path(source) / "PROVENANCE.md").is_file()
+                  else "does not name it")
+        raise UndeclaredRecording(
+            f"Refusing to copy {', '.join(unnamed)}: {Path(source).name}/PROVENANCE.md {reason}. "
+            "Every copied recording needs its provenance and the maintainer's rights "
+            "decision recorded before packaging.")
+    destination = Path(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    for path in sources:
+        shutil.copy2(path, destination / path.name)
+    return destination
+
+
+def tone_kit(directory):
+    """Generate the shipped test tones, then prove none is a repository recording."""
+    tones(directory)
+    refuse_recordings(directory)
+
+
 def mac_arm():
     require(platform.system() == "Darwin" and platform.machine() == "arm64",
             "Only native macOS arm64 packaging/smoke is supported.")
@@ -164,7 +225,7 @@ def package(destination):
         shutil.copy2(binary, layout / "brownnote-native")
         # Apple silicon toolchains may emit an ad-hoc signature. There is no
         # Developer ID signature, notarization, installer, or Gatekeeper claim.
-        tones(layout / "resources/recordings")
+        tone_kit(layout / "resources/recordings")
         shutil.copy2(ROOT / "native/docs/macos-test-package.md", layout / "README.md")
         shutil.copy2(ROOT / "native/docs/distribution-inventory.md", layout / "DISTRIBUTION.md")
         shutil.copy2(ROOT / "native/Cargo.lock", layout / "Cargo.lock")
