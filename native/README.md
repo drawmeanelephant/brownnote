@@ -194,6 +194,11 @@ From the repository root:
 ```sh
 make native-test
 make test  # Existing C workflow, independent of the native app.
+
+# Render deadline stress: the three render deadline/signal fixtures three times
+# each, in fresh processes, with and without a slow `dirname` on PATH. Rebuilds
+# first, so it is not part of `native-test`.
+make native-render-timeout
 ```
 
 For individual Rust checks and binary probes:
@@ -267,7 +272,10 @@ bench and `build/brownnote` first. It sets `BROWNNOTE_REQUIRE_BENCH=1`, which
 turns a missing-bench skip in `tests/pedals_live.rs` into a failure, so the
 catalog and render tests really ran against upstream GuitarPedal. Without that
 variable they print the reason and pass, which is what happens on a machine
-with no bench.
+with no bench. The same job runs `make native-render-timeout` in the
+`Required render deadline stress` step, so a timing regression in the render
+deadline, ready-handler or SIGKILL path turns CI red instead of waiting for
+someone to run the script by hand.
 
 ## Look showcase
 
