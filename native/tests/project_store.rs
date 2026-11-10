@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use brownnote_native::{
     engine::{Command, Slots},
-    import::{MediaPublisher, SessionMedia},
+    import::{MediaPublisher, ProjectMedia, SessionMedia},
     kit,
     output::Output,
     pedals::render::{Chain, Stage},
@@ -9,7 +9,10 @@ use brownnote_native::{
         Asset, AssetId, AssetRef, Document, DocumentError, MediaKind, SampleAssignment, media,
         recovery::OpenChoice,
         session::{self, Snapshot},
-        store::{CommitState, FileSystem, GenerationId, MediaSource, Store, StoreError, SystemFs},
+        store::{
+            CommitState, FileSystem, GenerationId, MediaSource, RetentionPolicy, Store, StoreError,
+            SystemFs, UnconfirmedSnapshots,
+        },
     },
 };
 use std::{
@@ -281,6 +284,7 @@ impl FileSystem for FaultFs {
     path_operation!(lock, File);
     path_operation!(list, Vec<PathBuf>);
     path_operation!(read, Vec<u8>);
+    path_operation!(size, u64);
     path_operation!(sync_existing, ());
     path_operation!(sync_dir, ());
     path_operation!(remove, ());
@@ -845,7 +849,7 @@ fn every_open_and_recovery_read_fault_preserves_active_project_and_source_bytes(
             assert!(
                 fs.events
                     .iter()
-                    .all(|e| ["check_dir", "list", "read"].contains(&e.kind))
+                    .all(|e| ["check_dir", "list", "read", "size"].contains(&e.kind))
             );
             assert_eq!(tree(&fixture.root), before);
             cases += 1;
@@ -1473,4 +1477,657 @@ fn recovery_copy_with_missing_or_corrupt_media_is_rejected_not_offered() {
             .unwrap();
         assert_eq!(opened.document(), &fixture.a);
     }
+}
+
+fn evidence_path(root: &Path, generation: GenerationId) -> PathBuf {
+    root.join(".brownnote-store/committed")
+        .join(generation.to_string())
+}
+
+/// Every evidence marker still has the snapshot it witnesses.
+fn assert_evidence_has_snapshot(root: &Path) {
+    let committed = root.join(".brownnote-store/committed");
+    let Ok(entries) = fs::read_dir(&committed) else {
+        return;
+    };
+    for entry in entries {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        assert!(
+            root.join(".brownnote-store/versions")
+                .join(format!("{name}.json"))
+                .exists(),
+            "evidence without a snapshot: {name}"
+        );
+    }
+}
+
+#[test]
+fn retention_plan_is_read_only_and_collects_only_unreferenced_media() {
+    let fixture = Fixture::new();
+    let first = fixture.seed();
+    let second = Store::new(fixture.root.clone())
+        .save(&fixture.b, &fixture.sources_b)
+        .unwrap()
+        .generation;
+
+    // Two publishes stand in for imports: one is never referenced, one is
+    // referenced by the next retained document.
+    let orphan = wav(4_444);
+    let orphan_ref = AssetRef::of(&orphan);
+    ProjectMedia::new(fixture.root.clone())
+        .publish(&orphan_ref, &orphan)
+        .unwrap();
+    let kept = wav(5_555);
+    let kept_ref = AssetRef::of(&kept);
+    ProjectMedia::new(fixture.root.clone())
+        .publish(&kept_ref, &kept)
+        .unwrap();
+    let mut with_import = fixture.b.clone();
+    with_import.assets.push(Asset {
+        reference: kept_ref.clone(),
+        kind: MediaKind::RetainedRender,
+    });
+    let current = Store::new(fixture.root.clone())
+        .save(&with_import, &[])
+        .unwrap()
+        .generation;
+
+    fs::write(fixture.root.join("notes.txt"), b"keep root note").unwrap();
+    fs::create_dir(fixture.root.join("media/sub")).unwrap();
+    fs::write(fixture.root.join("media/notes.txt"), b"keep media note").unwrap();
+    fs::write(
+        fixture.root.join("media/not-a-hash.wav"),
+        b"keep media bytes",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("media/.import-1-2"),
+        b"keep import staging",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join(".brownnote-store/versions/user.json"),
+        b"keep version note",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join(".brownnote-store/committed/not-a-hash"),
+        b"keep evidence note",
+    )
+    .unwrap();
+
+    let before = tree(&fixture.root);
+    let policy = RetentionPolicy::default();
+    let plan = Store::new(fixture.root.clone())
+        .retention_plan(&policy)
+        .unwrap();
+    let again = Store::new(fixture.root.clone())
+        .retention_plan(&policy)
+        .unwrap();
+    assert_eq!(plan, again, "planning must be repeatable");
+    assert_eq!(tree(&fixture.root), before, "planning must be read-only");
+
+    assert_eq!(plan.usage.snapshots, 3);
+    assert_eq!(plan.usage.evidence, 3);
+    assert_eq!(plan.usage.media, 5);
+    assert_eq!(plan.unknown.len(), 7);
+    assert!(plan.evidence.is_empty());
+    assert!(plan.snapshots.is_empty());
+    assert_eq!(plan.media.len(), 1);
+    assert_eq!(
+        plan.media[0].path,
+        fixture.root.join(orphan_ref.id.relative_path())
+    );
+    assert_eq!(plan.reclaimable_bytes, orphan.len() as u64);
+    assert!(!plan.over_budget);
+    assert!(!plan.media_refused);
+    assert_eq!(plan.retained.len(), 3);
+    assert!(plan.retained.contains(&first));
+    assert!(plan.retained.contains(&second));
+    assert!(plan.retained.contains(&current));
+    assert!(fixture.root.join(kept_ref.id.relative_path()).exists());
+    assert!(
+        !plan
+            .media
+            .iter()
+            .any(|removal| removal.path.ends_with("project.json"))
+    );
+
+    let receipt = Store::new(fixture.root.clone()).collect(&policy).unwrap();
+    assert_eq!(receipt.removed_media, 1);
+    assert_eq!(receipt.removed_evidence, 0);
+    assert_eq!(receipt.removed_snapshots, 0);
+    assert_eq!(receipt.bytes, orphan.len() as u64);
+    assert!(!receipt.over_budget);
+    assert!(!receipt.media_refused);
+    assert!(!fixture.root.join(orphan_ref.id.relative_path()).exists());
+    assert!(fixture.root.join(kept_ref.id.relative_path()).exists());
+    assert_eq!(
+        fs::read(fixture.root.join("notes.txt")).unwrap(),
+        b"keep root note"
+    );
+    assert_eq!(
+        fs::read(fixture.root.join("media/not-a-hash.wav")).unwrap(),
+        b"keep media bytes"
+    );
+    assert_eq!(
+        fs::read(fixture.root.join(".brownnote-store/committed/not-a-hash")).unwrap(),
+        b"keep evidence note"
+    );
+    assert!(fixture.root.join("media/sub").is_dir());
+    for id in [first, second, current] {
+        assert!(
+            Store::new(fixture.root.clone())
+                .open(OpenChoice::Committed(id))
+                .is_ok()
+        );
+    }
+
+    let converged = Store::new(fixture.root.clone())
+        .retention_plan(&policy)
+        .unwrap();
+    assert_eq!(converged.reclaimable_bytes, 0);
+    assert!(converged.media.is_empty());
+    let second_run = Store::new(fixture.root.clone()).collect(&policy).unwrap();
+    assert_eq!(second_run.bytes, 0);
+    assert_eq!(second_run.removed_media, 0);
+}
+
+#[test]
+fn retention_removes_stale_evidence_and_a_pruned_snapshot_with_its_evidence() {
+    // Evidence whose snapshot is missing is stale and is removed alone.
+    let fixture = Fixture::new();
+    let first = fixture.seed();
+    let current = Store::new(fixture.root.clone())
+        .save(&fixture.b, &fixture.sources_b)
+        .unwrap()
+        .generation;
+    fs::remove_file(fixture.root.join(first.relative_path())).unwrap();
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .inspect_committed()
+            .unwrap()
+            .unwrap()
+            .generation,
+        current
+    );
+    let before = tree(&fixture.root);
+    let policy = RetentionPolicy::default();
+    let plan = Store::new(fixture.root.clone())
+        .retention_plan(&policy)
+        .unwrap();
+    assert_eq!(plan.evidence.len(), 1);
+    assert_eq!(plan.evidence[0].path, evidence_path(&fixture.root, first));
+    assert!(plan.snapshots.is_empty());
+    assert_eq!(tree(&fixture.root), before);
+    let receipt = Store::new(fixture.root.clone()).collect(&policy).unwrap();
+    assert_eq!(receipt.removed_evidence, 1);
+    assert!(!evidence_path(&fixture.root, first).exists());
+    assert_evidence_has_snapshot(&fixture.root);
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .open(OpenChoice::Current)
+            .unwrap()
+            .document(),
+        &fixture.b
+    );
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .retention_plan(&policy)
+            .unwrap()
+            .reclaimable_bytes,
+        0
+    );
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .collect(&policy)
+            .unwrap()
+            .bytes,
+        0
+    );
+
+    // A bounded plan retires a validated generation's evidence and snapshot
+    // together; the evidence is deleted first.
+    let fixture = Fixture::new();
+    let first = fixture.seed();
+    let current = Store::new(fixture.root.clone())
+        .save(&fixture.b, &fixture.sources_b)
+        .unwrap()
+        .generation;
+    let bounded = RetentionPolicy {
+        history_bytes: 0,
+        ..RetentionPolicy::default()
+    };
+    let plan = Store::new(fixture.root.clone())
+        .retention_plan(&bounded)
+        .unwrap();
+    assert!(
+        plan.snapshots
+            .iter()
+            .any(|r| r.path == fixture.root.join(first.relative_path()))
+    );
+    assert!(
+        plan.evidence
+            .iter()
+            .any(|r| r.path == evidence_path(&fixture.root, first))
+    );
+    let receipt = Store::new(fixture.root.clone()).collect(&bounded).unwrap();
+    assert!(receipt.removed_evidence >= 1);
+    assert!(receipt.removed_snapshots >= 1);
+    assert!(!fixture.root.join(first.relative_path()).exists());
+    assert!(!evidence_path(&fixture.root, first).exists());
+    assert_evidence_has_snapshot(&fixture.root);
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .open(OpenChoice::Committed(current))
+            .unwrap()
+            .document(),
+        &fixture.b
+    );
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .retention_plan(&bounded)
+            .unwrap()
+            .reclaimable_bytes,
+        0
+    );
+}
+
+#[test]
+fn interrupted_collection_leaves_the_current_project_and_evidence_consistent() {
+    let policy = RetentionPolicy {
+        history_bytes: 0,
+        ..RetentionPolicy::default()
+    };
+    let prepare = || {
+        let fixture = Fixture::new();
+        fixture.seed();
+        let current = Store::new(fixture.root.clone())
+            .save(&fixture.b, &fixture.sources_b)
+            .unwrap()
+            .generation;
+        let orphan = wav(4_444);
+        let orphan_ref = AssetRef::of(&orphan);
+        ProjectMedia::new(fixture.root.clone())
+            .publish(&orphan_ref, &orphan)
+            .unwrap();
+        (fixture, current)
+    };
+
+    let (fixture, _) = prepare();
+    let mut baseline = Store::with_fs(fixture.root.clone(), FaultFs::default());
+    baseline.collect(&policy).unwrap();
+    let events = baseline.into_fs().events;
+    let removes: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.kind == "remove")
+        .map(|(index, _)| index)
+        .collect();
+    assert!(removes.len() >= 2, "fixture must exercise several removals");
+
+    for index in removes {
+        for moment in [Moment::Before, Moment::After] {
+            let (fixture, current) = prepare();
+            let current_bytes = fs::read(fixture.root.join("project.json")).unwrap();
+            let mut store = Store::with_fs(fixture.root.clone(), FaultFs::failing(index, moment));
+            assert!(store.collect(&policy).is_err());
+            let fs = store.into_fs();
+            assert!(fs.fired);
+            assert_eq!(
+                fs::read(fixture.root.join("project.json")).unwrap(),
+                current_bytes
+            );
+            let opened = Store::new(fixture.root.clone())
+                .open(OpenChoice::Current)
+                .unwrap();
+            assert_eq!(opened.document(), &fixture.b);
+            assert!(
+                media::verify_all(&fixture.root, &opened.inspection().document.assets).is_empty()
+            );
+            assert_evidence_has_snapshot(&fixture.root);
+            assert!(
+                Store::new(fixture.root.clone())
+                    .open(OpenChoice::Committed(current))
+                    .is_ok()
+            );
+
+            // Retrying on the same directory is safe and the project still opens.
+            Store::new(fixture.root.clone())
+                .collect(&RetentionPolicy {
+                    unconfirmed: UnconfirmedSnapshots::Remove,
+                    ..policy
+                })
+                .unwrap();
+            assert_eq!(
+                Store::new(fixture.root.clone())
+                    .open(OpenChoice::Current)
+                    .unwrap()
+                    .document(),
+                &fixture.b
+            );
+            assert_evidence_has_snapshot(&fixture.root);
+        }
+    }
+}
+
+#[test]
+fn retention_keeps_unconfirmed_snapshots_by_default_and_refuses_an_unmet_bound() {
+    let fixture = Fixture::new();
+    fixture.seed();
+    let mut failed = Store::with_fs(
+        fixture.root.clone(),
+        FaultFs {
+            fault: Some(Fault::Publish),
+            ..FaultFs::default()
+        },
+    );
+    let CommitState::Unknown(candidate) = failed
+        .save(&fixture.b, &fixture.sources_b)
+        .unwrap_err()
+        .commit
+    else {
+        panic!("fixture must fail just before publish")
+    };
+    assert!(fixture.root.join(candidate.relative_path()).exists());
+
+    let policy = RetentionPolicy {
+        history_bytes: 0,
+        ..RetentionPolicy::default()
+    };
+    let plan = Store::new(fixture.root.clone())
+        .retention_plan(&policy)
+        .unwrap();
+    assert!(plan.over_budget);
+    assert!(plan.retained.contains(&candidate));
+    assert!(
+        !plan
+            .snapshots
+            .iter()
+            .any(|r| r.path == fixture.root.join(candidate.relative_path()))
+    );
+    assert!(plan.media.is_empty(), "kept legacy media stays protected");
+    let before = tree(&fixture.root);
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .collect(&RetentionPolicy {
+                require_bound: true,
+                ..policy
+            })
+            .unwrap_err(),
+        StoreError::RetentionBoundUnmet
+    );
+    assert_eq!(tree(&fixture.root), before);
+    let receipt = Store::new(fixture.root.clone()).collect(&policy).unwrap();
+    assert_eq!(receipt.bytes, 0);
+    assert!(receipt.over_budget);
+    assert!(fixture.root.join(candidate.relative_path()).exists());
+
+    // The explicit decision permits removing the unconfirmed snapshot and its
+    // exclusively referenced media; the current document is untouched.
+    let remove = RetentionPolicy {
+        unconfirmed: UnconfirmedSnapshots::Remove,
+        ..policy
+    };
+    let plan = Store::new(fixture.root.clone())
+        .retention_plan(&remove)
+        .unwrap();
+    assert!(!plan.over_budget);
+    assert!(
+        plan.snapshots
+            .iter()
+            .any(|r| r.path == fixture.root.join(candidate.relative_path()))
+    );
+    let receipt = Store::new(fixture.root.clone()).collect(&remove).unwrap();
+    assert!(receipt.removed_snapshots >= 1);
+    assert!(!fixture.root.join(candidate.relative_path()).exists());
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .open(OpenChoice::Current)
+            .unwrap()
+            .document(),
+        &fixture.a
+    );
+}
+
+#[test]
+fn retention_protects_the_d6_recovery_root_and_its_record() {
+    let fixture = Fixture::new();
+    let saved = fixture.seed();
+    let base = fixture.base.join("recovery");
+    fs::create_dir(&base).unwrap();
+    let mut first_edit = fixture.a.clone();
+    first_edit.pads[0].gain = 0.21;
+    let first = session::autosave_copy(
+        &base,
+        &fixture.root,
+        saved,
+        recovery_snapshot(first_edit.clone(), &fixture.sources_a),
+    )
+    .unwrap();
+    let mut second_edit = fixture.a.clone();
+    second_edit.pads[0].gain = 0.22;
+    let second = session::autosave_copy(
+        &base,
+        &fixture.root,
+        saved,
+        recovery_snapshot(second_edit.clone(), &fixture.sources_a),
+    )
+    .unwrap();
+    let copy_root = session::recovery_copy_root(&base, &fixture.root).unwrap();
+    let copy_before = tree(&copy_root);
+    let saved_before = tree(&fixture.root);
+
+    // Collection on the saved project never reaches the machine copy root.
+    let receipt = Store::new(fixture.root.clone())
+        .collect(&RetentionPolicy::default())
+        .unwrap();
+    assert_eq!(receipt.bytes, 0);
+    assert_eq!(tree(&copy_root), copy_before);
+    assert_eq!(tree(&fixture.root), saved_before);
+
+    // The copy root is a store of its own: its current copy and autosave record
+    // survive, while older autosave generations are bounded.
+    let bounded = RetentionPolicy {
+        history_bytes: 0,
+        ..RetentionPolicy::default()
+    };
+    let plan = Store::new(copy_root.clone())
+        .retention_plan(&bounded)
+        .unwrap();
+    assert!(plan.retained.contains(&second.generation));
+    assert!(!plan.retained.contains(&first.generation));
+    assert!(
+        plan.snapshots
+            .iter()
+            .any(|r| r.path == copy_root.join(first.generation.relative_path()))
+    );
+    assert!(
+        !plan
+            .snapshots
+            .iter()
+            .any(|r| r.path == copy_root.join(second.generation.relative_path()))
+    );
+    assert!(
+        plan.unknown
+            .iter()
+            .any(|path| path == &copy_root.join(session::AUTOSAVE_FILE))
+    );
+    let receipt = Store::new(copy_root.clone()).collect(&bounded).unwrap();
+    assert!(receipt.removed_snapshots >= 1);
+    assert!(copy_root.join(session::AUTOSAVE_FILE).exists());
+    assert_eq!(
+        Store::new(copy_root.clone())
+            .inspect_committed()
+            .unwrap()
+            .unwrap()
+            .generation,
+        second.generation
+    );
+    let offer = session::recovery_copy(&base, &fixture.root, saved)
+        .unwrap()
+        .unwrap();
+    assert_eq!(offer.offered, Some(second.generation));
+    assert_eq!(tree(&fixture.root), saved_before);
+}
+
+#[test]
+fn collection_is_refused_while_the_writer_lock_is_held() {
+    let fixture = Fixture::new();
+    let first = fixture.seed();
+    let mut fs = SystemFs;
+    let lock = fs
+        .lock(&fixture.root.join(".brownnote-store/lock"))
+        .unwrap();
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .collect(&RetentionPolicy::default())
+            .unwrap_err(),
+        StoreError::Io(io::ErrorKind::WouldBlock)
+    );
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .inspect_committed()
+            .unwrap()
+            .unwrap()
+            .generation,
+        first
+    );
+    drop(lock);
+    let receipt = Store::new(fixture.root.clone())
+        .collect(&RetentionPolicy::default())
+        .unwrap();
+    assert_eq!(receipt.bytes, 0);
+}
+
+fn take_completion(job: &session::Job) -> Result<session::Completion, session::Error> {
+    loop {
+        if let Some(result) = job.take() {
+            return result;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn project_worker_reports_the_retention_plan_and_reclaimed_bytes() {
+    let fixture = Fixture::new();
+    fixture.seed();
+    Store::new(fixture.root.clone())
+        .save(&fixture.b, &fixture.sources_b)
+        .unwrap();
+    let orphan = wav(4_444);
+    let orphan_ref = AssetRef::of(&orphan);
+    ProjectMedia::new(fixture.root.clone())
+        .publish(&orphan_ref, &orphan)
+        .unwrap();
+
+    let service = session::Service::new().unwrap();
+    let policy = RetentionPolicy::default();
+    let job = service
+        .start(session::Request::Retention {
+            root: fixture.root.clone(),
+            policy,
+            apply: false,
+        })
+        .unwrap();
+    let session::Completion::Retained { plan, receipt } = take_completion(&job).unwrap() else {
+        panic!("unexpected completion")
+    };
+    assert!(receipt.is_none());
+    assert_eq!(plan.reclaimable_bytes, orphan.len() as u64);
+
+    let job = service
+        .start(session::Request::Retention {
+            root: fixture.root.clone(),
+            policy,
+            apply: true,
+        })
+        .unwrap();
+    let session::Completion::Retained { receipt, .. } = take_completion(&job).unwrap() else {
+        panic!("unexpected completion")
+    };
+    let receipt = receipt.unwrap();
+    assert_eq!(receipt.bytes, orphan.len() as u64);
+    assert!(!fixture.root.join(orphan_ref.id.relative_path()).exists());
+}
+
+#[test]
+fn retention_keeps_every_offered_generation_openable_and_retires_only_the_rest() {
+    let fixture = Fixture::new();
+    let first = fixture.seed();
+    let second = Store::new(fixture.root.clone())
+        .save(&fixture.b, &fixture.sources_b)
+        .unwrap()
+        .generation;
+    let mut third_document = fixture.b.clone();
+    third_document.pads[0].gain = 0.42;
+    let third = Store::new(fixture.root.clone())
+        .save(&third_document, &[])
+        .unwrap()
+        .generation;
+
+    let policy = RetentionPolicy::default();
+    let options = Store::new(fixture.root.clone())
+        .recovery_options_with(&policy)
+        .unwrap();
+    let mut expected = vec![first, second, third];
+    expected.sort_by_key(ToString::to_string);
+    assert_eq!(options.recoverable, expected);
+    let plan = Store::new(fixture.root.clone())
+        .retention_plan(&policy)
+        .unwrap();
+    assert!(plan.media.is_empty(), "every byte is referenced");
+    assert_eq!(plan.reclaimable_bytes, 0);
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .collect(&policy)
+            .unwrap()
+            .bytes,
+        0
+    );
+    for id in &options.recoverable {
+        assert!(
+            Store::new(fixture.root.clone())
+                .open(OpenChoice::Committed(*id))
+                .is_ok()
+        );
+    }
+
+    let bounded = RetentionPolicy {
+        history_bytes: 0,
+        ..RetentionPolicy::default()
+    };
+    let offered = Store::new(fixture.root.clone())
+        .recovery_options_with(&bounded)
+        .unwrap();
+    assert_eq!(offered.recoverable, vec![third]);
+    let plan = Store::new(fixture.root.clone())
+        .retention_plan(&bounded)
+        .unwrap();
+    assert!(
+        plan.snapshots
+            .iter()
+            .any(|r| r.path == fixture.root.join(first.relative_path()))
+    );
+    assert!(
+        plan.snapshots
+            .iter()
+            .any(|r| r.path == fixture.root.join(second.relative_path()))
+    );
+    let receipt = Store::new(fixture.root.clone()).collect(&bounded).unwrap();
+    assert!(receipt.removed_snapshots >= 2);
+    assert_evidence_has_snapshot(&fixture.root);
+    for id in &offered.recoverable {
+        assert!(
+            Store::new(fixture.root.clone())
+                .open(OpenChoice::Committed(*id))
+                .is_ok()
+        );
+    }
+    assert!(
+        Store::new(fixture.root.clone())
+            .open(OpenChoice::Current)
+            .is_ok()
+    );
 }

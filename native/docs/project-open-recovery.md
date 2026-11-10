@@ -71,7 +71,10 @@ When current open fails, call `store.recovery_options()`. Its result separates:
 Errors reading the directory/history itself are returned as errors. Per-project
 and per-generation failures remain in the report, not discarded. Lists use
 stable hash order, **not chronological order**. No generation is recommended
-or applied automatically. All history is retained in this slice.
+or applied automatically. History is bounded by
+[`project-retention.md`](project-retention.md): the listing and collection use
+the same policy, so every offered generation is protected. Unconfirmed
+snapshots stay unoffered and are kept by default.
 
 After the user chooses a listed identity, call:
 
@@ -193,8 +196,10 @@ directory sync, hard links, and same-filesystem rename. It does **not** prove
 OS power-loss durability, drive-cache flush, or behavior on other filesystems.
 No physical output or listening claim is made.
 
-Outstanding gates remain bounded retention/collection of old recovery
-generations, and manual listening after real application save/reopen/relocation
-and after recovering a D6 copy. The save/open/recovery UI, its atomic runtime
-replacement, and D6's separate 60-second recovery root are implemented (see
-`project-session.md`).
+Bounded retention and collection of old recovery generations are implemented
+by the store API in [`project-retention.md`](project-retention.md); the
+application worker exposes that plan and apply result, and a user-facing sweep
+control remains optional. The outstanding gate is manual listening after real
+application save/reopen/relocation and after recovering a D6 copy. The
+save/open/recovery UI, its atomic runtime replacement, and D6's separate
+60-second recovery root are implemented (see `project-session.md`).

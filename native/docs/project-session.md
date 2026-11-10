@@ -2,8 +2,9 @@
 
 Refs #100 and #196. This slice supplies `project::session` and
 `ui/projects.rs`, under D3–D5, D7 and D8. It does **not** close #100. Manual
-save/reopen/relocation listening and recovery/media collection policy remain
-open. D6 autosave is implemented here.
+save/reopen/relocation listening remains open. D6 autosave is implemented here.
+Bounded retention and media collection are specified in
+[`project-retention.md`](project-retention.md) and run on this same worker.
 
 ## Application controls
 
@@ -159,6 +160,13 @@ Recovered content must be saved to a new, nonexistent directory; the worker
 rejects existing destinations, including aliases of the original root. The
 original root is not silently overwritten. Corrupt current documents are
 independently rejected by the store even without a preceding recovery open.
+
+`Request::Retention { root, policy, apply }` runs `Store::retention_plan` or
+`Store::collect` on the same worker and returns
+`Completion::Retained { plan, receipt }`. The caller can report reclaimed bytes
+without blocking the UI or audio thread. Collection recomputes its plan under
+the store's exclusive writer lock; `open` and recovery listing remain
+read-only. No user-facing sweep control is required in this slice.
 
 ## Reproducible verification
 

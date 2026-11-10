@@ -2,7 +2,10 @@
 use super::{
     Asset, AssetId, AssetRef, Document, LiveInstrumentDocument, MediaKind, PAD_COUNT, Pad, PadId,
     recovery::{OpenChoice, PreparedProject, RecoveryOptions},
-    store::{GenerationId, SaveFailure, SaveReceipt, Store, StoreError},
+    store::{
+        CollectionReceipt, GenerationId, RetentionPlan, RetentionPolicy, SaveFailure, SaveReceipt,
+        Store, StoreError,
+    },
 };
 use crate::performance::TakeId;
 use crate::{
@@ -785,6 +788,13 @@ pub enum Request {
         base: PathBuf,
         snapshot: Box<Snapshot>,
     },
+    /// Plan or apply bounded retention on the project worker. The store lock
+    /// still excludes a concurrent save; the worker serializes open/list.
+    Retention {
+        root: PathBuf,
+        policy: RetentionPolicy,
+        apply: bool,
+    },
 }
 
 pub enum Completion {
@@ -797,6 +807,11 @@ pub enum Completion {
     Opened(Box<Prepared>),
     Recovery(RecoveryOptions),
     Autosaved(AutosaveReceipt),
+    /// `receipt` is present only when the request asked to apply the plan.
+    Retained {
+        plan: RetentionPlan,
+        receipt: Option<CollectionReceipt>,
+    },
 }
 
 pub struct Job(Receiver<Result<Completion, Error>>);
@@ -841,9 +856,10 @@ impl Service {
 
 fn execute(request: Request) -> Result<Completion, Error> {
     let root = match &request {
-        Request::Save { root, .. } | Request::Open { root, .. } | Request::Recovery { root } => {
-            root
-        }
+        Request::Save { root, .. }
+        | Request::Open { root, .. }
+        | Request::Recovery { root }
+        | Request::Retention { root, .. } => root,
         Request::Autosave { project, base, .. } => {
             if !project.is_absolute() || !base.is_absolute() {
                 return Err(Error::InvalidPath);
@@ -923,6 +939,20 @@ fn execute(request: Request) -> Result<Completion, Error> {
             .recovery_options()
             .map(Completion::Recovery)
             .map_err(Error::Store),
+        Request::Retention {
+            root,
+            policy,
+            apply,
+        } => {
+            let mut store = Store::new(root);
+            let plan = store.retention_plan(&policy).map_err(Error::Store)?;
+            let receipt = if apply {
+                Some(store.collect(&policy).map_err(Error::Store)?)
+            } else {
+                None
+            };
+            Ok(Completion::Retained { plan, receipt })
+        }
     }
 }
 
