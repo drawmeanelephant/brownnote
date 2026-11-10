@@ -1,0 +1,70 @@
+{
+  "app_exit": 0,
+  "app_exit_source": "process::App::finish requires a successful exit status for both no-audio GUI runs; convert returns only after both quit cleanly",
+  "binaries": {
+    "SoundCraft": {
+      "matches_pin": true,
+      "sha256": "9f6d84732fc70144fdacb51e65721ce69ee979b4b7e93d3d5d65f68138d6fa3c"
+    },
+    "soundcraft-cli": {
+      "matches_pin": true,
+      "sha256": "c240115d0a2794688939d2f7b20f1530d4f0e523555858a830ca142550394d8f"
+    }
+  },
+  "bundle": {
+    "assets": 10,
+    "events": 3,
+    "losses": 8,
+    "manifest_version": 3,
+    "parts": 3
+  },
+  "check": "manifest v3 live-instrument take and pad hit through the pinned app",
+  "date": "2026-11-09",
+  "launch": [
+    "SoundCraft",
+    "--no-audio",
+    "--control",
+    "0"
+  ],
+  "listening": "none: no audio device was opened",
+  "live_notes": {
+    "events": 1,
+    "imported_as_midi": false,
+    "plugin": {
+      "abi": "clap-1.2",
+      "artifact": "3cf1e0100b6c20e2e7b8ade93935da59b898b8e06dcdf638a415d1468cf8bc59",
+      "backend": "clap",
+      "id": "org.brownnote.fixture.live",
+      "version": "0.4.0"
+    },
+    "record": "1 live instrument note(s) kept in the manifest for clap plugin \"org.brownnote.fixture.live\" (0.4.0 clap-1.2, artifact 3cf1e0100b6c…); this target cannot load that plugin or carry its identity into a track, so the notes are not imported as MIDI. The take's retained audio is the fallback."
+  },
+  "pad_hit": {
+    "clip": 6,
+    "length": 36000,
+    "start": 21600,
+    "track": 5
+  },
+  "pin": {
+    "commit": "04878f8fda885c95f8be5893bbfe4ea4e062a814",
+    "tag": "v0.19.0",
+    "version": "0.19.0"
+  },
+  "report": {
+    "audio_clips": 2,
+    "midi_parts": 0,
+    "record_kinds": [
+      "boundary",
+      "fallback",
+      "unsupported"
+    ],
+    "soundcraft_commit": "04878f8fda885c95f8be5893bbfe4ea4e062a814",
+    "soundcraft_version": "0.19.0"
+  },
+  "retained_take": {
+    "clip": 3,
+    "length": 2400,
+    "start": 0,
+    "track": 2
+  }
+}
