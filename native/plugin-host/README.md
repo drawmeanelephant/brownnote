@@ -169,6 +169,20 @@ The bundle is Airwindows Consolidated 1.2026.313, executable SHA-256
 - That reloading the saved state still changes the output, which is why
   rendered audio has to be retained.
 
+The live instrument helper (`brownnote-clap-live`) is the required
+`make native-clap-live-test` lane. Its one test that opens the default output
+device is opt-in, because a CI runner has no guaranteed audio device:
+
+```sh
+make native-clap-live-cpal-test
+```
+
+That sets `BROWNNOTE_LIVE_CPAL=1` and runs exactly
+`cpal_device_callback_timing_with_the_live_instrument`. The required lanes
+exclude it by name, and under `BROWNNOTE_REQUIRE_CLAP=1` an unset
+`BROWNNOTE_LIVE_CPAL` fails with a message naming this target, so it can never
+be counted as passed without having run.
+
 ## Not covered
 
 - Plugin GUIs, host extensions (thread-check, log, params rescan) and

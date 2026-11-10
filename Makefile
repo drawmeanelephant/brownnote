@@ -90,10 +90,16 @@ native-plugin-host:
 	$(CARGO) clippy --locked --manifest-path $(PLUGIN_HOST) --workspace --all-targets -- -D warnings
 	$(CARGO) build --locked --manifest-path $(PLUGIN_HOST) --workspace
 
+# `cpal_device_callback_timing_with_the_live_instrument` is skipped by name:
+# it opens the default output device and fails under BROWNNOTE_REQUIRE_CLAP=1
+# unless BROWNNOTE_LIVE_CPAL=1, so it runs only through
+# `make native-clap-live-cpal-test` on a machine with audio hardware.
+CPAL_DEVICE_TEST = cpal_device_callback_timing_with_the_live_instrument
+
 native-test: native-plugin-host
 	$(CARGO) fmt --manifest-path native/Cargo.toml --check
 	$(CARGO) clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
-	$(CLAP_TEST_ENV) $(LADSPA_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored --skip pinned_app_recipe_and_adapter
+	$(CLAP_TEST_ENV) $(LADSPA_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored --skip pinned_app_recipe_and_adapter --skip $(CPAL_DEVICE_TEST)
 
 # Explicit opt-in: requires the pinned Airwindows Consolidated bundle in
 # BROWNNOTE_CLAP_EFFECT (see native/plugin-host/README.md).
@@ -109,9 +115,23 @@ native-plugin-workflow-test: native-plugin-host
 # fault fixture is missing. The mounted app live lane (recall, retained take
 # audio, reopen-disabled, export) runs here too, so its tests cannot silently
 # skip in CI.
+#
+# The real output device test is excluded by name, not passed: CI has no
+# audio hardware, and BROWNNOTE_REQUIRE_CLAP=1 makes an unset
+# BROWNNOTE_LIVE_CPAL a failure instead of a skip. The callback's allocation
+# behaviour is already covered device-free by
+# `engine_callback_with_the_live_instrument_allocates_and_frees_nothing`
+# here, and its timing math by tests/output_timing.rs in `make native-test`.
+# The device measurement itself is `make native-clap-live-cpal-test`.
 native-clap-live-test: native-plugin-host
-	$(CLAP_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml --test clap_live -- --nocapture
+	$(CLAP_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml --test clap_live -- --nocapture --skip $(CPAL_DEVICE_TEST)
 	$(CLAP_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml --bin brownnote-native ui::live::tests:: -- --nocapture
+
+# Explicit opt-in: opens the default output device and measures the composed
+# callback against its real period (BROWNNOTE_LIVE_CPAL=1). Needs audio
+# hardware, so it is not part of any required lane.
+native-clap-live-cpal-test: native-plugin-host
+	$(CLAP_TEST_ENV) BROWNNOTE_LIVE_CPAL=1 $(CARGO) test --manifest-path native/Cargo.toml --test clap_live -- $(CPAL_DEVICE_TEST) --exact --nocapture
 
 # Explicit opt-in: provisions and verifies the pinned CAPS 0.9.26 library
 # (native/plugin-host/caps/provision.py, hard hash failures, nothing bundled).
@@ -131,4 +151,4 @@ native-ladspa-workflow-test: native-plugin-host
 native-soundcraft-test:
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_recipe_and_adapter -- --ignored --exact
 
-.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-soundcraft-test native-plugin-host native-clap-effect-test native-plugin-workflow-test native-clap-live-test native-ladspa-plate-test native-ladspa-workflow-test
+.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-soundcraft-test native-plugin-host native-clap-effect-test native-plugin-workflow-test native-clap-live-test native-clap-live-cpal-test native-ladspa-plate-test native-ladspa-workflow-test

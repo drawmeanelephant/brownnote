@@ -245,6 +245,23 @@ tests locally, where a Metal adapter exists. Run them by hand with
 `cargo test -- --include-ignored`, or just one with
 `cargo test --test headless -- --ignored`.
 
+Tests that need hardware the CI runner does not guarantee are opt-in and
+excluded by name from `make native-test`, never reported as passed:
+
+```sh
+# Opens the default output device and measures the composed live callback
+# against its real period. Needs audio hardware.
+make native-clap-live-cpal-test
+```
+
+`make native-clap-live-test` (the required lane CI runs) excludes
+`cpal_device_callback_timing_with_the_live_instrument` by name. Under
+`BROWNNOTE_REQUIRE_CLAP=1`, which those lanes set, an unset
+`BROWNNOTE_LIVE_CPAL` makes that test fail instead of skip, so an accidental
+inclusion is loud rather than a silent pass. The device-free coverage stays in
+the required lane: `engine_callback_with_the_live_instrument_allocates_and_frees_nothing`
+for the callback, and `tests/output_timing.rs` for the timing arithmetic.
+
 The `native` job in `.github/workflows/ci.yml` runs on macOS and builds the
 bench and `build/brownnote` first. It sets `BROWNNOTE_REQUIRE_BENCH=1`, which
 turns a missing-bench skip in `tests/pedals_live.rs` into a failure, so the
