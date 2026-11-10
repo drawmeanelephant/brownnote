@@ -168,3 +168,32 @@ audio clip.
 documents and identity-vs-hint rules. The callback allocation test
 (`native/tests/rt_alloc.rs`) is unchanged because this slice adds no callback
 work.
+
+## Tests
+
+`make native-clap-live-test` is the required lane and runs
+`native/tests/clap_live.rs` and `native/src/ui/live/tests.rs` with
+`BROWNNOTE_REQUIRE_CLAP=1`, so a missing helper or fixture is a failure rather
+than a skip.
+
+Real output hardware is not something a CI runner guarantees, so the one test
+that opens the default output device,
+`cpal_device_callback_timing_with_the_live_instrument`, is excluded by name
+from both `make native-clap-live-test` and `make native-test`. It is not
+counted as passed there; it does not run. Under `BROWNNOTE_REQUIRE_CLAP=1`, an
+unset `BROWNNOTE_LIVE_CPAL` is a panic naming the opt-in target, so a lane that
+forgets the exclusion fails loudly instead of reporting a silent pass.
+
+Run it where audio exists:
+
+```sh
+make native-clap-live-cpal-test
+```
+
+It sets `BROWNNOTE_LIVE_CPAL=1` and runs exactly that test against the
+composed callback on the default device. The device-free coverage that must
+stay in every lane is
+`engine_callback_with_the_live_instrument_allocates_and_frees_nothing` (zero
+allocations and frees on the composed callback) and `native/tests/output_timing.rs`
+(callback frames, CPAL instants and restart identity).
+

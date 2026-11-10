@@ -890,12 +890,27 @@ fn engine_callback_with_the_live_instrument_allocates_and_frees_nothing() {
 /// output device through CPAL. It measures callback duration against the
 /// device period and counts underruns. The device receives silence: the
 /// callback renders into its buffer, measures, then zeroes it.
+///
+/// The required lanes never run this test: they need audio hardware, so
+/// `make native-test` and `make native-clap-live-test` exclude it by name and
+/// `make native-clap-live-cpal-test` sets `BROWNNOTE_LIVE_CPAL=1`. Under
+/// `BROWNNOTE_REQUIRE_CLAP=1` an unset `BROWNNOTE_LIVE_CPAL` is a failure, not
+/// a skip, so an accidental inclusion cannot report a pass.
 #[test]
 fn cpal_device_callback_timing_with_the_live_instrument() {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
     if std::env::var("BROWNNOTE_LIVE_CPAL").as_deref() != Ok("1") {
-        eprintln!("skipping: set BROWNNOTE_LIVE_CPAL=1 to open the default output device");
+        assert!(
+            std::env::var("BROWNNOTE_REQUIRE_CLAP").as_deref() != Ok("1"),
+            "BROWNNOTE_REQUIRE_CLAP=1 but BROWNNOTE_LIVE_CPAL is unset: this test opens \
+             the default output device and is opt-in. Run `make native-clap-live-cpal-test`, \
+             or exclude it by name from a hardware-free lane."
+        );
+        eprintln!(
+            "skipping: set BROWNNOTE_LIVE_CPAL=1 (make native-clap-live-cpal-test) to \
+             open the default output device"
+        );
         return;
     }
     let Some(env) = env() else { return };
