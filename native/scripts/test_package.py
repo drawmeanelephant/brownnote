@@ -24,6 +24,54 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("usage:", result.stdout)
 
+    def test_crate_version_names_the_artifact_beside_the_commit(self):
+        version = package.crate_version()
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+        head = "0123456789abcdef" + "0" * 24
+        self.assertEqual(
+            package.artifact_name(version, head),
+            f"brownnote-native-macos-arm64-{version}-0123456789ab-unsigned-test.tar.gz")
+
+    def test_dirty_working_tree_is_refused(self):
+        package.require_clean("")
+        with self.assertRaisesRegex(RuntimeError, r"Refusing to package a dirty working tree"):
+            package.require_clean(" M native/src/main.rs\n?? scratch.txt\n")
+
+    def test_package_refuses_a_dirty_tree_before_writing_an_artifact(self):
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "packages"
+            responses = iter(["a" * 40, "?? scratch.txt\n"])
+            with mock.patch.object(package, "mac_arm"), \
+                    mock.patch.object(package, "output", side_effect=lambda args: next(responses)):
+                with self.assertRaisesRegex(RuntimeError, "dirty working tree"):
+                    package.package(destination)
+            self.assertFalse(destination.exists())
+
+    def test_commit_other_than_the_tagged_commit_is_refused(self):
+        package.require_commit("a" * 40, None)
+        package.require_commit("a" * 40, "a" * 40)
+        with self.assertRaisesRegex(RuntimeError, "Refusing to package commit") as raised:
+            package.require_commit("a" * 40, "b" * 40)
+        self.assertIn("a" * 40, str(raised.exception))
+        self.assertIn("b" * 40, str(raised.exception))
+
+    def test_package_refuses_a_tag_commit_that_is_not_head(self):
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "packages"
+            responses = iter(["a" * 40, ""])
+            with mock.patch.object(package, "mac_arm"), \
+                    mock.patch.object(package, "output", side_effect=lambda args: next(responses)):
+                with self.assertRaisesRegex(RuntimeError, "the tagged commit is"):
+                    package.package(destination, expected_commit="b" * 40)
+            self.assertFalse(destination.exists())
+
+    def test_release_tag_must_be_the_crate_version(self):
+        package.require_tag(None, "0.1.0")
+        package.require_tag("v0.1.0", "0.1.0")
+        for tag in ["0.1.0", "v0.2.0", "v0.1"]:
+            with self.assertRaisesRegex(RuntimeError, "Refusing tag"):
+                package.require_tag(tag, "0.1.0")
+
     def test_generated_kit_contains_five_decodable_non_silent_tones(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "tones"

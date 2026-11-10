@@ -21,6 +21,7 @@ struct Options {
     no_audio: bool,
     check_audio: bool,
     list_pedals: bool,
+    version: bool,
     brownnote: PathBuf,
     pedal_cache: PathBuf,
 }
@@ -31,6 +32,7 @@ fn options(args: Vec<String>) -> Result<Options, String> {
         no_audio: false,
         check_audio: false,
         list_pedals: false,
+        version: false,
         brownnote: DEFAULT_BIN.into(),
         pedal_cache: brownnote_native::paths::DEFAULT_CACHE.into(),
     };
@@ -47,10 +49,27 @@ fn options(args: Vec<String>) -> Result<Options, String> {
             "--no-audio" => options.no_audio = true,
             "--check-audio" => options.check_audio = true,
             "--list-pedals" => options.list_pedals = true,
+            "--version" => options.version = true,
             _ => return Err(format!("Unknown app option: {arg}")),
         }
     }
     Ok(options)
+}
+
+/// The identity `--version` prints: crate version, then the full commit this executable
+/// was built from, marked `dirty` only when that build had uncommitted changes.
+fn version_text(version: &str, commit: &str, dirty: bool) -> String {
+    let marker = if dirty { " (dirty)" } else { "" };
+    format!("brownnote-native {version}\ncommit {commit}{marker}")
+}
+
+/// The identity compiled in by `build.rs`, so `--version` needs no repository or network.
+fn build_version() -> String {
+    version_text(
+        env!("CARGO_PKG_VERSION"),
+        env!("BROWNNOTE_SOURCE_COMMIT"),
+        matches!(env!("BROWNNOTE_SOURCE_DIRTY"), "1"),
+    )
 }
 
 fn print_catalog(catalog: &Catalog) {
@@ -84,6 +103,12 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // Identity first, before any kit, device or window work: a downloaded binary must
+    // report what it is even when its resources are missing or it has no display.
+    if options.version {
+        println!("{}", build_version());
+        return;
+    }
     let kit = Kit::load(&options.samples);
     if options.list_pedals {
         if rune::is_headless() || options.no_audio {
@@ -170,5 +195,61 @@ mod option_tests {
         assert_eq!(selected.samples, PathBuf::from("/chosen/samples"));
         assert_eq!(selected.brownnote, PathBuf::from("/chosen/brownnote"));
         assert_eq!(selected.pedal_cache, PathBuf::from("/chosen/cache"));
+    }
+
+    #[test]
+    fn version_flag_is_recognized_and_off_by_default() {
+        let defaults = options(Vec::new()).unwrap_or_else(|error| panic!("{error}"));
+        assert!(!defaults.version);
+        let selected =
+            options(vec!["--version".to_owned()]).unwrap_or_else(|error| panic!("{error}"));
+        assert!(selected.version);
+        let shared = options(vec![
+            "--version".to_owned(),
+            "--samples".to_owned(),
+            "/other".to_owned(),
+        ])
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert!(shared.version);
+        assert_eq!(shared.samples, PathBuf::from("/other"));
+    }
+
+    #[test]
+    fn version_text_marks_only_a_dirty_build() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            super::version_text("0.1.0", commit, false),
+            format!("brownnote-native 0.1.0\ncommit {commit}")
+        );
+        let dirty = super::version_text("0.1.0", commit, true);
+        assert_eq!(
+            dirty,
+            format!("brownnote-native 0.1.0\ncommit {commit} (dirty)")
+        );
+        assert!(!super::version_text("0.1.0", commit, false).contains("dirty"));
+    }
+
+    #[test]
+    fn built_version_prints_crate_version_and_full_commit() {
+        let text = super::build_version();
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some(concat!("brownnote-native ", env!("CARGO_PKG_VERSION")))
+        );
+        let commit = lines
+            .next()
+            .and_then(|line| line.strip_prefix("commit "))
+            .unwrap_or_else(|| panic!("no commit line: {text}"));
+        let commit = commit.strip_suffix(" (dirty)").unwrap_or(commit);
+        assert!(
+            commit == "unknown"
+                || (commit.len() == 40
+                    && commit
+                        .chars()
+                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())),
+            "not a full lower-case source commit: {commit:?}"
+        );
+        assert_eq!(lines.next(), None);
     }
 }
