@@ -17,30 +17,76 @@ workstation, or DAW.
 The personality stays. The work ahead is to make the instrument dependable,
 expand what you can play, and preserve the music when you leave brownnote.
 
-> This is a proposed roadmap, not a list of available features or promised
-> release dates. All milestones below are planned. Integration choices need
-> working demonstrations before we claim compatibility.
+> This is a proposed roadmap, not a promise of release dates. The
+> milestones below are plans; **What exists today** lists only work that
+> has landed and cites the issue that delivered it. Integration choices
+> need working demonstrations before we claim compatibility.
 >
-> Last reviewed: 8 November 2026.
+> Last reviewed: 10 November 2026.
 
 ## What exists today
 
 The C command-line tool processes WAV or raw audio through the real
 [GuitarPedal](https://github.com/torvalds/GuitarPedal) bench.
-The native Rust and Rune app has playable sample pads, gain, pan, pitch,
-and per-pad pedal chains rendered in the background. Native settings and
-chains currently reset when you quit.
 
-The [[guides/studio|browser studio]] has more of the music workflow:
-sequencing, mixing, layered loop recording, Web MIDI pad input, microphone
-recording, saved patches, and mix export. That does not make those features
-available in the native app. Its loop capture and export also discard some
-performance detail.
+The native Rust and Rune app runs on macOS on Apple silicon with built-in
+audio. It can:
 
-Native is the main product direction. The browser studio remains useful
-and provides a reference for the workflows we bring into native. The goal
-is one native music workflow, not two independent full studios. The
-existing command-line pipeline does not need a rewrite.
+- Import WAV samples into the sixteen pads and shape each pad with gain,
+  pan, pitch, and an ordered GuitarPedal pedal chain (#80–#85, #99).
+- Keep that kit in a portable project directory. Samples, pad settings,
+  chains, takes, edits, MIDI mappings, and instrument configuration are
+  project data, and SAVE and OPEN move the whole set between directories
+  and machines (#98, #100).
+- Validate the document, its settings, and every media hash before OPEN
+  replaces the active kit. A failed save leaves the previous generation
+  intact and usable, and a corrupt original is not overwritten (#100).
+- Record takes against a 1, 2, 4, or 8 bar loop, replay and overdub them,
+  and mute or remove them (#106).
+- Quantize a take to sixteenth notes, nudge or delete a hit, change its
+  velocity, and undo. Turning quantization off restores the original
+  timing (#107).
+- Learn MIDI notes and continuous controllers, assign them to pads and
+  controls, and keep the mappings with the project (#145, #148).
+- Play one sampled SF2 instrument from MIDI with held notes, record its
+  notes, and keep a frozen render of each distinct note as project media
+  (#108).
+- Host one live CLAP instrument with saved parameters and opaque state,
+  recall it when the project opens, and export the notes it recorded
+  (#112, #171).
+- Render pad sounds offline through CLAP effects and through the selected
+  LADSPA effect as pad pedal stages, retaining the wet audio (#113, #114).
+- Export a DAW-neutral bundle of clips, MIDI notes, retained audio, and a
+  manifest (#109), then turn that bundle into an editable session in a
+  pinned SoundCraft build with the `brownnote-soundcraft` tool (#110,
+  #111).
+
+Project data survives a quit only through an explicit SAVE and a later
+OPEN. Unsaved changes are not recovered, and autosave is not implemented
+(#100).
+
+These paths are proven by automated tests and a packaged smoke run that
+uses a silent mixer. Audible output, physical device loss, and a named
+MIDI controller are still unproven and appear under **Still open**.
+
+The [[guides/studio|browser studio]] has sequencing, mixing, layered loop
+recording, Web MIDI pad input, microphone recording, saved patches, and
+mix export. It remains useful and is a reference for the workflows the
+native app brings across, but it is not a second studio to grow in
+parallel. Native is the main product direction, the goal is one native
+music workflow, and the existing command-line pipeline does not need a
+rewrite.
+
+## Still open
+
+- Audio device selection and recovery from device loss (#101).
+- Mix overload reporting and click-resistant voice stealing (#102).
+- A named physical MIDI controller. Learn and input have run through a
+  virtual MIDI port only (#105).
+- MIDI clock output to external instruments (#115) and recording the
+  audio they return (#116).
+- One unusual controller and the Open Instrument assessment (#117),
+  parked until that hardware is available.
 
 ## The goals
 
@@ -184,61 +230,68 @@ only after testing the actual release build and audio path.
 ## Milestones in order
 
 The sequence favors a complete musician workflow before a large catalog
-of integrations. Release checks grow with every milestone.
+of integrations. M1 to M4 have landed; M5 and the hardware research are
+still ahead. Release checks grow with every milestone.
 
 ### First, test the integration assumptions {#feasibility}
 
-Use small fixtures to prove a SoundCraft session with separate audio hits
-and a MIDI part, a CLAP instrument's note and state lifecycle, and one
-LADSPA render. SoundCraft's own app must open the fixture.
-
-These checks can accompany project work. Their results inform the export
-and hosting designs before we commit to a large implementation.
+Small fixtures proved a SoundCraft session with separate audio hits and a
+MIDI part, a CLAP instrument's note and state lifecycle, and one LADSPA
+render, and SoundCraft's own app opened the fixture (#95, #96, #97).
 
 ### M1. My native kit survives quitting {#m1-kit}
 
-Load a custom sample, edit a pedal chain, save the kit, and reopen it
-outside the original checkout. Establish the project format and asset
-handling for G1, with the first failure checks from G8.
+**Landed (#98, #99, #100, #103).** A custom sample can be imported, edited
+into a pedal chain, saved, and reopened outside the original checkout. The
+project format and asset handling for G1 exist, with the first failure
+checks from G8.
+
+The M1 items still open are audio device selection and device loss (#101)
+and overload reporting with click-resistant voice stealing (#102).
 
 ### M2. My native loop keeps what I played {#m2-loop}
 
-Add faithful capture, loop playback, overdub, and take controls from G2.
-Bring in controller input from G3 through the same event path. Save and
-reopen overlapping hits and note durations without flattening them into
+**Landed (#104, #106, #107).** Faithful capture, loop playback, overdub,
+and take controls from G2 use the controller event path from G3. Saved
+overlapping hits and note durations reopen without being flattened into
 the sequencer grid.
+
+Controller input keeps one hardware gate (#105), listed under
+**Still open**.
 
 ### M3. My loop becomes an editable SoundCraft session {#m3-soundcraft}
 
-Add one existing sampled instrument so the take has real notes to edit.
-Export an actual native take, not only a fixture. Verify clip positions,
-note data, and media references in the tested SoundCraft version. Complete
-the edit, save, and reopen demonstration from G6.
+**Landed (#108, #109, #110, #111).** One existing sampled instrument gives
+the take real notes to edit. An actual native take, not only a fixture, is
+exported and verified for clip positions, note data, and media references
+in the pinned SoundCraft version, completing the edit, save, and reopen
+demonstration from G6.
 
 ### M4. My kit includes other instruments and plugins {#m4-instruments}
 
-Expand G4 and G5 using the feasibility results. Deliver LADSPA pad
-rendering, CLAP effects, and live CLAP instruments in separately testable
-steps. Every step keeps project recall and export working.
+**Landed (#112, #113, #114, #171).** LADSPA pad rendering, CLAP effects,
+and a live CLAP instrument arrived in separately testable steps, and every
+step keeps project recall and export working.
 
 ### M5. My external instruments join the session {#m5-external}
 
-Extend G3 with MIDI output, synchronization, and audio-return recording.
-Measure timing through the real devices. Preserve both the performance
-data and the captured audio.
+**Open (#115, #116).** This extends G3 with MIDI output, synchronization,
+and audio-return recording. Timing is measured through real devices, and
+both the performance data and the captured audio are preserved.
 
-G7 can proceed as an independent experiment once the controller event
-path exists. G8 applies throughout, rather than waiting for a final
-packaging milestone.
+G7 (#117) stays parked until unusual hardware is available. G8 applies
+throughout, rather than waiting for a final packaging milestone.
 
-## Decisions still open
+## Decisions we made
 
-- Which existing sampled-instrument backend gives us a useful first
-  instrument without creating another engine to maintain?
-- Which SoundCraft commands preserve the required editing behavior, and
-  which processing needs per-hit audio or stem fallbacks?
-- How should live plugins run so that a failed plugin does not lose a
-  project or leave the instrument unusable?
+- The first instrument is one SF2 preset played by RustySynth 1.3.8, with
+  the source file kept as project media (#108).
+- The SoundCraft adapter uses that build's public clip and note commands at
+  960 PPQ and imports each event asset onto its own track. Audio that
+  differs from the full asset is reported, not silently trimmed (#110).
+- A live CLAP instrument is recalled by identity and opaque state through a
+  bounded helper, and its takes stay playable when the plugin is gone
+  (#112, #171).
 
 Full plugin editor hosting, brownnote as a plugin, AAF, OMF, DAWproject,
 other DAW adapters, mobile, and cloud collaboration are outside the

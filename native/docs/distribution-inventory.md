@@ -1,7 +1,8 @@
 # Unsigned test artifact distribution inventory
 
 This inventory covers the flat macOS arm64 **base-pad-only test artifact**,
-not a release or a claim that all repository assets can ship. Refs #103.
+not a release or a claim that all repository assets can ship. Packaging
+landed under #103; the clean-machine and Gatekeeper review stays open.
 Review this inventory again when the lockfile, Rune revision, kit, or bundled
 tools change. The package generator rejects unreviewed license identifiers
 and missing notices. This is an engineering inventory, not legal advice.
