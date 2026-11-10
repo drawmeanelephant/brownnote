@@ -146,7 +146,7 @@ library `paths` tests exercise production writable-path resolution separately.
 | Custom import → save → quit → move → reopen | Required packaged UI smoke after relocation; silent mixer only, listening **Open** |
 | Failed save / recovery / missing project media | Required packaged UI smoke (read-only save, missing media, malformed document); power loss and autosave not covered |
 | Clean-machine downloaded installation / Gatekeeper | **Open**, no clean-machine or signing evidence |
-| Recording asset rights / final distribution review | **Open**, only generated test tones ship |
+| Recording asset rights / final distribution review | **Open**, only generated test tones ship; [`recordings/PROVENANCE.md`](../../recordings/PROVENANCE.md) records provenance, while rights holder, permission and obligations stay undecided. The packager refuses repository recordings |
 | Intel macOS, Linux, Windows, external audio hardware | Not supported by this artifact |
 
 Packaging landed under #103 and that issue is closed. The **Open** rows
