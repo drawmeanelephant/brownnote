@@ -382,6 +382,9 @@ pub struct CallbackProbe {
 
 pub struct CallbackMeasurements {
     pub stream_id: StreamId,
+    /// The opened stream's rate, recorded once off-thread so the consumer can
+    /// derive each observation's deadline without the callback carrying it.
+    sample_rate: NonZeroU32,
     receiver: rtrb::Consumer<CallbackMeasurement>,
     dropped: Arc<AtomicU64>,
 }
@@ -395,7 +398,7 @@ impl CallbackMeasurements {
 }
 
 impl CallbackProbe {
-    pub fn new(stream_id: StreamId) -> (Self, CallbackMeasurements) {
+    pub fn new(stream_id: StreamId, sample_rate: NonZeroU32) -> (Self, CallbackMeasurements) {
         let (sender, receiver) = rtrb::RingBuffer::new(PROBE_CAPACITY);
         let dropped = Arc::new(AtomicU64::new(0));
         (
@@ -407,6 +410,7 @@ impl CallbackProbe {
             },
             CallbackMeasurements {
                 stream_id,
+                sample_rate,
                 receiver,
                 dropped,
             },
@@ -445,32 +449,32 @@ fn presentation_lead(timestamp: OutputStreamTimestamp) -> Option<Duration> {
 const SUMMARY_CAPACITY: usize = 4096;
 
 #[derive(Default)]
-struct Distribution {
-    values: Vec<u64>,
+struct Distribution<T> {
+    values: Vec<T>,
     total: u64,
-    min: u64,
-    max: u64,
+    min: T,
+    max: T,
 }
 
-impl Distribution {
-    fn add(&mut self, nanos: u64) {
+impl<T: Copy + Ord> Distribution<T> {
+    fn add(&mut self, value: T) {
         if self.total == 0 {
-            self.min = nanos;
-            self.max = nanos;
+            self.min = value;
+            self.max = value;
         } else {
-            self.min = self.min.min(nanos);
-            self.max = self.max.max(nanos);
+            self.min = self.min.min(value);
+            self.max = self.max.max(value);
         }
         self.total += 1;
         if self.values.len() < SUMMARY_CAPACITY {
-            self.values.push(nanos);
+            self.values.push(value);
         }
     }
 
-    /// Nearest-rank p50 and p95 over the kept observations, in nanos, sorting
-    /// once. No interpolation, so the same observations always report the same
-    /// numbers. None when nothing was observed.
-    fn percentiles(&self) -> Option<(u64, u64)> {
+    /// Nearest-rank p50 and p95 over the kept observations, sorting once. No
+    /// interpolation, so the same observations always report the same numbers.
+    /// None when nothing was observed.
+    fn percentiles(&self) -> Option<(T, T)> {
         if self.values.is_empty() {
             return None;
         }
@@ -487,10 +491,30 @@ impl Distribution {
     }
 }
 
+/// One callback's deadline in whole nanoseconds, truncated: the frames CPAL
+/// actually delivered divided by the opened stream rate. Deriving it from this
+/// observation's own `frames` keeps a variable buffer length honest; using
+/// `frames_min` would flatter a run whose buffer shrank.
+fn budget_nanos(frames: u64, sample_rate: NonZeroU32) -> u64 {
+    u64::try_from(u128::from(frames) * 1_000_000_000 / u128::from(sample_rate.get()))
+        .unwrap_or(u64::MAX)
+}
+
+/// Signed deadline headroom in nanoseconds, negative for an overrun. A duration
+/// exactly equal to the budget is a zero headroom, not an overrun; only a
+/// strictly greater duration adds to the overrun count.
+fn headroom_nanos(budget: u64, duration: u64) -> i64 {
+    i64::try_from(budget)
+        .unwrap_or(i64::MAX)
+        .saturating_sub(i64::try_from(duration).unwrap_or(i64::MAX))
+}
+
 /// Off-thread summary of [`CallbackMeasurement`]s for one stream.
 /// [`CallbackSummary::absorb`] drains the bounded queue on the consumer thread;
 /// percentiles interpolate nothing, so a report is reproducible from the same
-/// observations.
+/// observations. Each observation also gets its own deadline from the stream
+/// rate and that callback's delivered frames, so the summary can report how
+/// much headroom was left or how far a callback overran it.
 #[derive(Default)]
 pub struct CallbackSummary {
     stream_id: Option<StreamId>,
@@ -501,8 +525,11 @@ pub struct CallbackSummary {
     inverted_lead: u64,
     frames_min: u64,
     frames_max: u64,
-    durations: Distribution,
-    leads: Distribution,
+    durations: Distribution<u64>,
+    leads: Distribution<u64>,
+    headrooms: Distribution<i64>,
+    deadline_overruns: u64,
+    worst_overrun: u64,
 }
 
 impl CallbackSummary {
@@ -511,15 +538,16 @@ impl CallbackSummary {
     /// a replayed or reordered queue cannot invent a measurement.
     pub fn absorb(&mut self, measurements: &mut CallbackMeasurements) {
         self.dropped = measurements.dropped();
+        let sample_rate = measurements.sample_rate;
         for _ in 0..PROBE_CAPACITY {
             let Ok(item) = measurements.receiver.pop() else {
                 break;
             };
-            self.observe(item);
+            self.observe(item, sample_rate);
         }
     }
 
-    fn observe(&mut self, item: CallbackMeasurement) {
+    fn observe(&mut self, item: CallbackMeasurement, sample_rate: NonZeroU32) {
         let same_stream = match self.stream_id {
             None => {
                 self.stream_id = Some(item.stream_id);
@@ -542,6 +570,15 @@ impl CallbackSummary {
             self.frames_max = self.frames_max.max(frames);
         }
         self.durations.add(nanos(item.duration));
+        let budget = budget_nanos(frames, sample_rate);
+        let duration = nanos(item.duration);
+        // Equal duration and budget is a zero-headroom callback, not an
+        // overrun: the count and worst excess only move on a strict excess.
+        if duration > budget {
+            self.deadline_overruns += 1;
+            self.worst_overrun = self.worst_overrun.max(duration - budget);
+        }
+        self.headrooms.add(headroom_nanos(budget, duration));
         match item.lead {
             Some(lead) => self.leads.add(nanos(lead)),
             None => self.inverted_lead += 1,
@@ -559,7 +596,14 @@ fn micros(nanos: u64) -> u64 {
     nanos.saturating_add(500) / 1_000
 }
 
-fn summary(distribution: &Distribution) -> String {
+/// Signed whole microseconds, with the magnitude rounded so an overrun keeps
+/// its sign instead of reporting an unsigned or positive headroom.
+fn signed_micros(nanos: i64) -> i64 {
+    let rounded = (i128::from(nanos) + if nanos < 0 { -500 } else { 500 }) / 1_000;
+    i64::try_from(rounded).unwrap_or(if nanos < 0 { i64::MIN } else { i64::MAX })
+}
+
+fn summary(distribution: &Distribution<u64>) -> String {
     match distribution.percentiles() {
         Some((p50, p95)) => format!(
             "min={}, p50={}, p95={}, n={}",
@@ -593,6 +637,25 @@ impl fmt::Display for CallbackSummary {
             )?;
         }
         writeln!(f, "presentation_lead_us={}", summary(&self.leads))?;
+        match self.headrooms.percentiles() {
+            Some((p50, p95)) => writeln!(
+                f,
+                "callback_headroom_us=min={}, p50={}, p95={}, n={}, \
+                 deadline_overruns={}, worst_overrun_us={}",
+                signed_micros(self.headrooms.min),
+                signed_micros(p50),
+                signed_micros(p95),
+                self.headrooms.total,
+                self.deadline_overruns,
+                micros(self.worst_overrun)
+            )?,
+            None => writeln!(
+                f,
+                "callback_headroom_us=min=none, p50=none, p95=none, n=0, \
+                 deadline_overruns={}, worst_overrun_us=none",
+                self.deadline_overruns
+            )?,
+        }
         write!(
             f,
             "round_trip_latency=unmeasured (output-only callback and presentation \
@@ -842,7 +905,7 @@ impl Output {
             NonZeroU32::new(config.sample_rate).ok_or(AudioError::UnsupportedConfiguration)?;
         let (clock, timestamps) = PlaybackClock::new(rate);
         let (probe, measurements) = if probing {
-            let (probe, measurements) = CallbackProbe::new(timestamps.stream_id);
+            let (probe, measurements) = CallbackProbe::new(timestamps.stream_id, rate);
             (Some(probe), Some(measurements))
         } else {
             (None, None)
@@ -1193,6 +1256,7 @@ mod tests {
         let (_clock, observations) = PlaybackClock::new(NonZeroU32::new(48_000).unwrap());
         let stream_id = observations.stream_id;
         let foreign = StreamId(stream_id.0 ^ 1);
+        let rate = NonZeroU32::new(48_000).unwrap();
         let measurement = |sequence: u64, stream_id: StreamId| CallbackMeasurement {
             stream_id,
             sequence,
@@ -1201,17 +1265,19 @@ mod tests {
             lead: Some(Duration::from_millis(4)),
         };
         let mut summary = CallbackSummary::default();
-        summary.observe(measurement(0, stream_id));
-        summary.observe(measurement(0, stream_id)); // Replayed sequence.
-        summary.observe(measurement(2, stream_id)); // Queue overflow skipped 1.
-        summary.observe(measurement(1, stream_id)); // Out of order.
-        summary.observe(measurement(3, foreign)); // Another stream entirely.
+        summary.observe(measurement(0, stream_id), rate);
+        summary.observe(measurement(0, stream_id), rate); // Replayed sequence.
+        summary.observe(measurement(2, stream_id), rate); // Queue overflow skipped 1.
+        summary.observe(measurement(1, stream_id), rate); // Out of order.
+        summary.observe(measurement(3, foreign), rate); // Another stream entirely.
         assert_eq!(
             summary.to_string(),
             "callbacks=2, dropped=0, rejected=3, inverted_lead=0\n\
              callback_duration_us=min=500, p50=500, p95=500, n=2\n\
              callback_frames=min=128, max=128, n=2\n\
              presentation_lead_us=min=4000, p50=4000, p95=4000, n=2\n\
+             callback_headroom_us=min=2167, p50=2167, p95=2167, n=2, \
+             deadline_overruns=0, worst_overrun_us=0\n\
              round_trip_latency=unmeasured (output-only callback and presentation \
              instants cannot derive it)"
         );

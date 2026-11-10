@@ -104,8 +104,35 @@ fn queue_overflow_never_blocks_allocates_or_loses_frame_identity() {
 
 /// The probe's own bounded queue, one per stream, with no device involved.
 fn probe_queue(rate: u32) -> (CallbackProbe, CallbackMeasurements) {
-    let (_clock, observations) = PlaybackClock::new(NonZeroU32::new(rate).unwrap());
-    CallbackProbe::new(observations.stream_id)
+    let rate = NonZeroU32::new(rate).unwrap();
+    let (_clock, observations) = PlaybackClock::new(rate);
+    CallbackProbe::new(observations.stream_id, rate)
+}
+
+/// One summary over synthesized observations of this stream, so every printed
+/// number derives from the fixtures rather than from wall time.
+fn report(rate: u32, observations: &[(usize, Duration)]) -> String {
+    let (mut probe, mut measurements) = probe_queue(rate);
+    for (index, (frames, duration)) in observations.iter().enumerate() {
+        let callback = index as u64 * 10_000_000;
+        probe.publish(
+            *duration,
+            *frames,
+            timestamp(callback, callback + 5_000_000),
+        );
+    }
+    let mut summary = CallbackSummary::default();
+    summary.absorb(&mut measurements);
+    summary.to_string()
+}
+
+/// The stable deadline line, the only reported distribution that can be
+/// negative.
+fn headroom(report: &str) -> &str {
+    report
+        .lines()
+        .find(|line| line.starts_with("callback_headroom_us="))
+        .unwrap_or("<missing callback_headroom_us line>")
 }
 
 #[test]
@@ -128,6 +155,8 @@ fn callback_cost_and_presentation_lead_summarize_minimum_median_and_p95() {
          callback_duration_us=min=1000, p50=10000, p95=19000, n=20\n\
          callback_frames=min=256, max=512, n=20\n\
          presentation_lead_us=min=500, p50=5000, p95=9500, n=20\n\
+         callback_headroom_us=min=-14667, p50=-5667, p95=8667, n=20, \
+         deadline_overruns=11, worst_overrun_us=14667\n\
          round_trip_latency=unmeasured (output-only callback and presentation \
          instants cannot derive it)"
     );
@@ -144,6 +173,8 @@ fn zero_and_one_observation_report_placeholders_not_invented_numbers() {
          callback_duration_us=min=none, p50=none, p95=none, n=0\n\
          callback_frames=min=none, max=none, n=0\n\
          presentation_lead_us=min=none, p50=none, p95=none, n=0\n\
+         callback_headroom_us=min=none, p50=none, p95=none, n=0, \
+         deadline_overruns=0, worst_overrun_us=none\n\
          round_trip_latency=unmeasured (output-only callback and presentation \
          instants cannot derive it)"
     );
@@ -162,6 +193,8 @@ fn zero_and_one_observation_report_placeholders_not_invented_numbers() {
          callback_duration_us=min=2500, p50=2500, p95=2500, n=1\n\
          callback_frames=min=512, max=512, n=1\n\
          presentation_lead_us=min=1200, p50=1200, p95=1200, n=1\n\
+         callback_headroom_us=min=9110, p50=9110, p95=9110, n=1, \
+         deadline_overruns=0, worst_overrun_us=0\n\
          round_trip_latency=unmeasured (output-only callback and presentation \
          instants cannot derive it)"
     );
@@ -190,16 +223,112 @@ fn a_prediction_at_or_before_its_callback_is_counted_not_invented() {
          callback_duration_us=min=800, p50=800, p95=900, n=2\n\
          callback_frames=min=128, max=128, n=2\n\
          presentation_lead_us=min=0, p50=0, p95=0, n=1\n\
+         callback_headroom_us=min=1767, p50=1767, p95=1867, n=2, \
+         deadline_overruns=0, worst_overrun_us=0\n\
          round_trip_latency=unmeasured (output-only callback and presentation \
          instants cannot derive it)"
     );
 }
 
+#[test]
+fn observations_inside_their_own_budget_report_no_overruns_and_positive_headroom() {
+    // 480 frames at 48 kHz is exactly a 10 ms deadline, so 1..5 ms callbacks
+    // leave 9..5 ms of headroom and none of them overruns.
+    let inside = report(
+        48_000,
+        &[
+            (480, Duration::from_millis(1)),
+            (480, Duration::from_millis(2)),
+            (480, Duration::from_millis(3)),
+            (480, Duration::from_millis(4)),
+            (480, Duration::from_millis(5)),
+        ],
+    );
+    assert_eq!(
+        headroom(&inside),
+        "callback_headroom_us=min=5000, p50=7000, p95=9000, n=5, \
+         deadline_overruns=0, worst_overrun_us=0"
+    );
+}
+
+#[test]
+fn a_duration_equal_to_its_budget_is_not_an_overrun_but_a_longer_one_is_counted() {
+    let equal = report(48_000, &[(480, Duration::from_micros(10_000))]);
+    assert_eq!(
+        headroom(&equal),
+        "callback_headroom_us=min=0, p50=0, p95=0, n=1, deadline_overruns=0, \
+         worst_overrun_us=0"
+    );
+    let past = report(48_000, &[(480, Duration::from_micros(10_250))]);
+    assert_eq!(
+        headroom(&past),
+        "callback_headroom_us=min=-250, p50=-250, p95=-250, n=1, \
+         deadline_overruns=1, worst_overrun_us=250"
+    );
+    // The overrun is reported plainly; the block still makes no latency claim.
+    assert!(
+        past.starts_with("callbacks=1, dropped=0, rejected=0, inverted_lead=0\n"),
+        "{past}"
+    );
+    assert!(past.ends_with("instants cannot derive it)"), "{past}");
+    // Equal and one overrun in the same run: the boundary adds no overrun.
+    let both = report(
+        48_000,
+        &[
+            (480, Duration::from_micros(10_000)),
+            (480, Duration::from_micros(10_250)),
+        ],
+    );
+    assert_eq!(
+        headroom(&both),
+        "callback_headroom_us=min=-250, p50=-250, p95=0, n=2, \
+         deadline_overruns=1, worst_overrun_us=250"
+    );
+}
+
+#[test]
+fn each_observation_uses_its_own_frames_and_stream_rate() {
+    // 441 frames is exactly 10 ms at 44.1 kHz but 9.1875 ms at 48 kHz, so the
+    // same 9.9 ms callback fits one stream's budget and overruns the other's.
+    let slow = report(44_100, &[(441, Duration::from_micros(9_900))]);
+    assert_eq!(
+        headroom(&slow),
+        "callback_headroom_us=min=100, p50=100, p95=100, n=1, \
+         deadline_overruns=0, worst_overrun_us=0"
+    );
+    let fast = report(48_000, &[(441, Duration::from_micros(9_900))]);
+    assert_eq!(
+        headroom(&fast),
+        "callback_headroom_us=min=-713, p50=-713, p95=-713, n=1, \
+         deadline_overruns=1, worst_overrun_us=713"
+    );
+    // At one rate the delivered length decides: 240 frames is a 5 ms deadline
+    // and 480 frames a 10 ms deadline, so 7.5 ms overruns only the short one.
+    let varied = report(
+        48_000,
+        &[
+            (240, Duration::from_micros(7_500)),
+            (480, Duration::from_micros(7_500)),
+        ],
+    );
+    assert_eq!(
+        headroom(&varied),
+        "callback_headroom_us=min=-2500, p50=-2500, p95=2500, n=2, \
+         deadline_overruns=1, worst_overrun_us=2500"
+    );
+}
+
 fn probed_callback(rate: u32) -> (Callback, CallbackMeasurements) {
-    let (clock, observations) = PlaybackClock::new(NonZeroU32::new(rate).unwrap());
-    let (probe, measurements) = CallbackProbe::new(observations.stream_id);
+    let rate = NonZeroU32::new(rate).unwrap();
+    let (clock, observations) = PlaybackClock::new(rate);
+    let (probe, measurements) = CallbackProbe::new(observations.stream_id, rate);
     let (retired, _returns) = rtrb::RingBuffer::new(SLOTS);
-    let mixer = Mixer::new(Slots::empty(), rate, Arc::new(Meters::default()), retired);
+    let mixer = Mixer::new(
+        Slots::empty(),
+        rate.get(),
+        Arc::new(Meters::default()),
+        retired,
+    );
     let (_send, commands) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
     let mut callback = Callback::new(clock, mixer, commands, 2);
     callback.set_probe(probe);
@@ -244,5 +373,10 @@ fn the_measured_callback_allocates_nothing_and_counts_a_full_queue() {
         report.contains("\npresentation_lead_us=min=8000, p50=8000, p95=8000, n=64\n"),
         "{report}"
     );
+    // Wall durations are whatever this machine measured, so the headroom
+    // values are not pinned; the line, its count and the overrun accounting
+    // must still be present.
+    assert!(report.contains("\ncallback_headroom_us=min="), "{report}");
+    assert!(report.contains(", n=64, deadline_overruns="), "{report}");
     assert!(report.ends_with("instants cannot derive it)"), "{report}");
 }

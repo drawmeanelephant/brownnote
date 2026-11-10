@@ -58,9 +58,11 @@ not round-trip latency.
 `CallbackProbe` and `CallbackMeasurements` are the sibling of the timestamp
 queue, with the same shape and guarantees: constructed off-thread, moved into
 the callback, a bounded 64-observation SPSC queue, and an atomic overflow
-counter. `Callback::set_probe` attaches one before the stream starts; the
-normal app open never attaches one, so the app's callback path is unchanged.
-None of this reaches the application handle.
+counter. Construction records the stream's opened sample rate on the
+measurement side only, so the callback copies nothing extra. `Callback::set_probe`
+attaches one before the stream starts; the normal app open never attaches one,
+so the app's callback path is unchanged. None of this reaches the application
+handle.
 
 When a probe is attached the callback measures, outside every lock:
 
@@ -71,14 +73,21 @@ When a probe is attached the callback measures, outside every lock:
   or unavailable when the prediction does not follow the callback instant.
 
 `CallbackSummary::absorb` drains the queue on the consumer thread and computes
-nearest-rank p50/p95, keeping at most 4096 values per distribution, so the
-audio thread stores nothing and a long run stays bounded. It rejects replayed,
-reordered and foreign observations instead of merging them, and counts
-unavailable predictions rather than reporting a zero lead. `--check-audio`
-prints that summary as a stable block; round-trip latency stays explicitly
-unmeasured because output-only timestamps cannot derive it. Those printed
-numbers describe one machine's run; nothing here is a latency guarantee, and no
-device test depends on a probe.
+nearest-rank p50/p95 for duration, presentation lead and headroom, keeping at
+most 4096 values per distribution, so the audio thread stores nothing and a
+long run stays bounded. It rejects replayed, reordered and foreign
+observations instead of merging them, and counts unavailable predictions rather
+than reporting a zero lead. For each accepted observation it also derives that
+callback's deadline from its own delivered `frames` and the stream rate on the
+measurement side, then records the signed headroom (deadline minus duration).
+A callback overruns only when its duration is strictly greater than its own
+budget; the summary counts those and keeps the worst excess, so equal duration
+and budget is zero headroom, not an overrun. `--check-audio` prints that
+summary as a stable block; round-trip latency stays explicitly unmeasured
+because output-only timestamps cannot derive it. A non-zero overrun count is
+reported plainly, without failing the probe. Those printed numbers describe one
+machine's run; nothing here is a latency guarantee, and no device test depends
+on a probe.
 
 ## Reproduce
 
@@ -123,7 +132,8 @@ lifecycle, and verifies real callback timestamps and fresh stream identities. It
 fails if either rate is unsupported. It prints neither device IDs nor names.
 Per rate it prints the identity line and then the same stable measurement block
 `--check-audio` prints (`callbacks`, `callback_duration_us`, `callback_frames`,
-`presentation_lead_us` and `round_trip_latency=unmeasured`), folded from a
+`presentation_lead_us`, `callback_headroom_us` and
+`round_trip_latency=unmeasured`), folded from a
 bounded half-second drain of `output.measurements()` that polls every 10 ms like
 the binary probe. The binary probe plays pad 0, checks frames and signal, and
 prints that same summary. Neither measures round-trip latency or listening
