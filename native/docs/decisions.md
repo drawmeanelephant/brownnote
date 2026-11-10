@@ -108,6 +108,18 @@ An entry marked **Revisit** names the evidence that should reopen it.
 - **D20. Plugin research timing.** CLAP (#96) and LADSPA (#97) research
   waits until M1 lands, unless D18 is reversed in favor of a CLAP sampler.
   LADSPA stays a goal and is not deferred silently.
+- **D21. Live-take export identity.** A retained live instrument take
+  exports its audio clip, which is the authoritative fallback (D4), and —
+  when it has instrument notes — a manifest v3 `live_instrument_notes` part
+  naming the external plugin by backend, ID, artifact SHA-256, ABI and
+  version. No companion identity file is written, and the machine path is
+  never exported. These notes never enter `notes.mid`, because an SMF track
+  cannot carry the plugin identity and would claim a sound the bundle cannot
+  promise; a destination that cannot load the plugin reports the mapping as
+  unsupported rather than dropping the notes. Pad or sample hits recorded in
+  the same pass export as their normal pad or sample parts: the retained clip
+  holds only the plugin's own output, so this duplicates no audio. No plugin
+  state is claimed portable, and there is no reverse import (#171, PR #176).
 
 ## How lanes plug into the app
 
