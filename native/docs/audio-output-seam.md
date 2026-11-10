@@ -19,6 +19,15 @@ persistent preferences, or the complete recovery UI.
   The callback length remains authoritative, not the requested fixed size.
 - `Output::open` remains the system-default wrapper used by native startup
   and showcase. It deliberately does not read machine preferences.
+- `check_audio(samples, &selection, source)` is the release probe. It opens
+  through `open_selected_probed` with either `OutputSelection::default()` or
+  the machine's saved selection, so the measured callback is unchanged. The
+  printed block adds `selection_source=saved` or `selection_source=system-default`
+  beside the `Output:` status; the status already names the device label, so no
+  ID or serial is printed. The saved selection is read by the panel's
+  preference reader and validated before any stream opens; a missing file,
+  corrupt JSON, another version, a malformed or stale ID, or an unsupported
+  saved rate/buffer is an error, never a fallback to the default (D16).
 - Every open makes a fresh mixer at the validated rate. Replacing or dropping
   the old output stops its voices. `retry` reports that voices stopped, retries
   the remembered selection, and preserves it in a failed silent mixer.
@@ -124,7 +133,18 @@ On a Mac with a physical default output:
 ```sh
 cargo run --manifest-path native/Cargo.toml --example output_probe
 cargo run --release --manifest-path native/Cargo.toml -- --check-audio
+BROWNNOTE_PREFERENCES=/tmp/owned-probe-root \
+  cargo run --release --manifest-path native/Cargo.toml -- --check-audio --selection saved
 ```
+
+The first binary run probes the system default and prints
+`selection_source=system-default`. The saved run loads the same
+`audio-output.json` the panel reads, and prints `selection_source=saved` beside
+the opened status. It exits non-zero with the panel's reason and opens no stream
+for a missing file, corrupt JSON, an unsupported version, a malformed or stale
+ID, or a saved rate or buffer the device rejects. It never probes the default
+in place of a saved choice (D16). Neither run changes what the callback
+measures, and neither is a round-trip latency claim.
 
 The example opens the current default by its explicit CPAL ID at 44.1 and
 48 kHz with `Output::open_selected_probed`, uses a silent sample to check voice

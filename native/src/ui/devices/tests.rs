@@ -304,6 +304,55 @@ fn corrupt_invalid_version_and_invalid_ids_stay_silent_without_overwriting_file(
 }
 
 #[test]
+fn saved_probe_reader_refuses_missing_corrupt_unsupported_stale_and_zero_preferences() {
+    let root = Root::new();
+    // Startup treats an absent file as the system default; the probe must not.
+    assert_eq!(
+        preferences::load(&root.0).unwrap(),
+        OutputSelection::default()
+    );
+    let missing = preferences::load_saved(&root.0).unwrap_err();
+    assert!(
+        missing.contains("No saved output selection"),
+        "unexpected reason: {missing}"
+    );
+
+    for (content, reason) in [
+        ("{broken", "Corrupt machine output preferences"),
+        (
+            r#"{"version":2,"device_id":null,"sample_rate":null,"channels":null,"buffer_frames":null}"#,
+            "Unsupported machine output preference version",
+        ),
+        (
+            r#"{"version":1,"device_id":"invalid","sample_rate":null,"channels":null,"buffer_frames":null}"#,
+            "Invalid saved output device ID",
+        ),
+        (
+            r#"{"version":1,"device_id":null,"sample_rate":0,"channels":null,"buffer_frames":null}"#,
+            "Invalid saved output configuration",
+        ),
+        (
+            r#"{"version":1,"device_id":null,"sample_rate":null,"channels":null,"buffer_frames":0}"#,
+            "Invalid saved output configuration",
+        ),
+    ] {
+        fs::write(root.0.join("audio-output.json"), content).unwrap();
+        let error = preferences::load_saved(&root.0).unwrap_err();
+        assert!(error.contains(reason), "{content}: {error}");
+    }
+
+    let selection = OutputSelection {
+        device_id: Some(id("fixture-a")),
+        sample_rate: Some(48_000),
+        channels: Some(2),
+        buffer_size: BufferSize::Fixed(256),
+    };
+    preferences::save(&root.0, &selection).unwrap();
+    assert_eq!(preferences::load_saved(&root.0).unwrap(), selection);
+    assert_eq!(preferences::load(&root.0).unwrap(), selection);
+}
+
+#[test]
 fn failed_preference_save_does_not_hide_stream_failure_or_forget_retry_selection() {
     let root = Root::new();
     let blocked = root.0.join("not-a-directory");

@@ -23,11 +23,19 @@ struct Preference {
 }
 
 pub fn load(root: &Path) -> Result<OutputSelection, String> {
+    Ok(read(root)?.unwrap_or_default())
+}
+
+/// The release probe's loader. `--selection saved` asked for the saved choice,
+/// so an absent file is an error instead of an implicit system default (D16).
+pub fn load_saved(root: &Path) -> Result<OutputSelection, String> {
+    read(root)?.ok_or_else(|| "No saved output selection; choose an output in AUDIO OUTPUT".into())
+}
+
+fn read(root: &Path) -> Result<Option<OutputSelection>, String> {
     let file = match File::open(root.join(FILE)) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(OutputSelection::default());
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err("Cannot read machine output preferences".into()),
     };
     let mut bytes = Vec::new();
@@ -54,14 +62,14 @@ pub fn load(root: &Path) -> Result<OutputSelection, String> {
     if saved.sample_rate == Some(0) || saved.channels == Some(0) || saved.buffer_frames == Some(0) {
         return Err("Invalid saved output configuration".into());
     }
-    Ok(OutputSelection {
+    Ok(Some(OutputSelection {
         device_id,
         sample_rate: saved.sample_rate,
         channels: saved.channels,
         buffer_size: saved
             .buffer_frames
             .map_or(BufferSize::Default, BufferSize::Fixed),
-    })
+    }))
 }
 
 pub fn save(root: &Path, selection: &OutputSelection) -> Result<(), String> {
