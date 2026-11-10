@@ -93,7 +93,9 @@ real controller and dispatch path): overlapping held notes on one key, and a
 1/127 velocity flam on a mapped pad. `scripts/transport.json` records, replays
 and panics a keyboard take. Both run in `tests/headless.rs`. This is
 deterministic software evidence only. A named-controller hardware check is
-still required before #105 can close, and listening checks remain manual.
+still required before #105 can close, and listening checks remain manual. Run
+the [named-controller input runbook](midi-named-controller-runbook.md) for that
+check; it is `NOT EXECUTED` until a physical controller is tested by name.
 
 ## Save and reopen
 
