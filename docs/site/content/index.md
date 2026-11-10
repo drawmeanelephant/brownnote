@@ -64,13 +64,19 @@ propagate unchanged.
 - [[guides/index|Guides]] for the file pipeline, live rooms, [[guides/studio|preset songs and 16-step Studio UI]], and the recorded evidence.
 - [[reference/index|Reference]] for flags, effects, formats, and exit codes.
 
-## Where brownnote goes next
+## Native today, and what comes next
 
-The [[roadmap|public roadmap]] sets a native-first direction: portable
-projects, faithful loop recording, playable instruments, LADSPA and CLAP
-plugins, and editable sessions in SoundCraft. It separates proposed goals
-from today's features and lays out the milestones needed to prove them.
-Feedback from musicians and contributors is welcome.
+The native app already saves and reopens portable projects, records and
+overdubs takes with reversible quantization and undo, learns MIDI
+controllers, plays a sampled instrument and a live CLAP instrument, and
+renders CLAP and LADSPA pedal effects. Its export bundle opens as an
+editable session in a pinned SoundCraft build. Each item is on the
+[[roadmap|public roadmap]], with the issue that delivered it.
+
+Still open: audio device selection and device loss, overload reporting and
+voice stealing, a named physical MIDI controller, external MIDI and audio
+returns, and one unusual controller. Feedback from musicians and
+contributors is welcome.
 
 No tracking, remote fonts, or application framework. This manual is compiled
 to static files by [Boris](https://github.com/drawmeanelephant/boris).

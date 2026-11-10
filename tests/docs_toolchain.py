@@ -3,6 +3,7 @@
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -10,6 +11,36 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def shipped_feature_bullets(markdown):
+    """Return the bullets under the roadmap's "What exists today" heading."""
+    heading = re.search(r"^## What exists today[ \t]*$", markdown, re.MULTILINE)
+    if heading is None:
+        raise AssertionError("roadmap has no '## What exists today' section")
+    rest = markdown[heading.end():]
+    following = re.search(r"^## ", rest, re.MULTILINE)
+    section = rest[: following.start()] if following else rest
+    bullets = []
+    current = None
+    for line in section.splitlines():
+        if line.startswith("- "):
+            if current is not None:
+                bullets.append(current)
+            current = line
+        elif current is not None and line.startswith("  ") and line.strip():
+            current = current + " " + line.strip()
+        elif current is not None:
+            bullets.append(current)
+            current = None
+    if current is not None:
+        bullets.append(current)
+    return bullets
+
+
+def uncited_bullets(bullets):
+    """Return bullets that do not name a #<number> issue or PR."""
+    return [bullet for bullet in bullets if not re.search(r"#\d+", bullet)]
 
 
 class DocsToolchainTests(unittest.TestCase):
@@ -75,6 +106,29 @@ class DocsToolchainTests(unittest.TestCase):
     def test_malformed_pin_is_rejected(self):
         (self.root / ".zigversion").write_text("0.17.1; echo unexpected\n")
         self.assertIn("invalid Zig version pin", self.build(self.expected))
+
+    def test_shipped_features_cite_a_tracking_reference(self):
+        page = (ROOT / "docs/site/content/roadmap.md").read_text()
+        bullets = shipped_feature_bullets(page)
+        self.assertTrue(bullets, "What exists today must list shipped features")
+        self.assertEqual(
+            [],
+            uncited_bullets(bullets),
+            "every What exists today bullet must cite the issue or PR that delivered it",
+        )
+
+    def test_uncited_shipped_feature_fails(self):
+        markdown = (
+            "## What exists today\n\n"
+            "- Pads play samples.\n"
+            "- Takes record and overdub (#106).\n"
+            "\n## Still open\n\n"
+            "- Something else (#101).\n"
+        )
+        self.assertEqual(
+            ["- Pads play samples."],
+            uncited_bullets(shipped_feature_bullets(markdown)),
+        )
 
 
 if __name__ == "__main__":

@@ -149,8 +149,12 @@ library `paths` tests exercise production writable-path resolution separately.
 | Recording asset rights / final distribution review | **Open**, only generated test tones ship |
 | Intel macOS, Linux, Windows, external audio hardware | Not supported by this artifact |
 
-Issue #103 stays open. No signing/notarization route or roadmap decision
-changes here. Before closing it, record the exact artifact hash and head
-for the clean-machine, device and listening checks, and play the reopened
-project audibly. Manual listening must confirm that pads start/stop, panic and device
-changes behave correctly; an agent cannot infer this from meter values.
+Packaging landed under #103 and that issue is closed. The **Open** rows
+above stay with the maintainer, including clean-machine downloaded
+installation and Gatekeeper. No signing/notarization route or roadmap
+decision changes here. Before treating the packaging work as
+release-ready, record the exact artifact hash and head for the
+clean-machine, device and listening checks, and play the reopened project
+audibly. Manual listening must confirm that pads start/stop, panic and
+device changes behave correctly; an agent cannot infer this from meter
+values.
