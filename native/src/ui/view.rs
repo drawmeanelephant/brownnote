@@ -1,7 +1,7 @@
 use super::{
     State, Tab, accent, button, caption,
     control::{Control, slider},
-    devices, edit, edit_access, edit_read,
+    devices, edit, edit_access, edit_read, export,
     graphics::{led, logo, meter, waveform},
     ink, instrument, live,
     media::controls as import,
@@ -130,11 +130,14 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                         .gap(12.0)
                         .center_y()
                         .child(projects::header(s))
+                        .child(export::header(s))
                         .child(caption("HIT HIGHER. GO LOUDER.")),
                 ),
         )
         .children(if s.projects.visible {
             vec![projects::panel(s)]
+        } else if s.export.visible {
+            vec![export::panel(s)]
         } else if s.media.controls.visible {
             vec![import::panel(s)]
         } else if s.devices.visible {
@@ -158,6 +161,8 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .child(
                     caption(if s.projects.visible {
                         "PROJECT FILES     ·     ESC TO PADS"
+                    } else if s.export.visible {
+                        "BUNDLE EXPORT     ·     ESC TO PADS"
                     } else {
                         "1–4 / QWER / ASDF / ZXCV     ·     ESC TO VENT"
                     })

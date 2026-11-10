@@ -128,6 +128,12 @@ impl Projects {
         self.pending.is_some()
     }
 
+    /// The root of the last successful save or open. Export (#198) refuses a
+    /// destination inside it; nothing else reads it.
+    pub(crate) fn saved_root(&self) -> Option<&std::path::Path> {
+        self.saved.as_ref().map(|saved| saved.root.as_path())
+    }
+
     fn arm(&mut self, at: Option<Instant>, wake: Option<rune::Waker>) {
         match (at, wake) {
             (Some(at), Some(wake)) => self.timer.arm(at, wake),
@@ -230,7 +236,7 @@ fn spawn_timer(
         .ok()
 }
 
-fn recoverable_documents(s: &State) -> Result<Snapshot, Error> {
+pub(crate) fn recoverable_documents(s: &State) -> Result<Snapshot, Error> {
     // Tentative capture never saves (D12): say so before the generic busy
     // reason, so a skipped autosave names the armed pass.
     if s.takes.has_pass() {

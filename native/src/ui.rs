@@ -2,6 +2,7 @@ mod audio;
 mod control;
 pub(crate) mod devices;
 mod edit;
+pub(crate) mod export;
 mod graphics;
 #[cfg(test)]
 #[path = "ui_import_tests.rs"]
@@ -42,6 +43,8 @@ pub struct State {
     pub assets: AssetRegistry,
     pub media: media::Media,
     pub projects: projects::Projects,
+    /// The neutral-bundle export action (#198): its own panel slot.
+    pub export: export::Export,
     pub settings: [Settings; 16],
     pub selected: usize,
     pub master: f32,
@@ -133,6 +136,7 @@ impl State {
             assets,
             media,
             projects: projects::Projects::default(),
+            export: export::Export::default(),
             settings: std::array::from_fn(|i| Settings {
                 gain: 1.0,
                 pan: 0.0,
@@ -225,6 +229,9 @@ pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if projects::on_key(s, event, tx) {
         return true;
     }
+    if export::on_key(s, event, tx) {
+        return true;
+    }
     if instrument::on_key(s, event, tx) {
         return true;
     }
@@ -272,6 +279,10 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     if s.projects.busy() {
         tx.wake_after(Duration::from_millis(10));
     }
+    let export_changed = export::poll(s);
+    if export::wants_wake(s) {
+        tx.wake_after(Duration::from_millis(10));
+    }
     let elapsed = (clock - s.now).max(0.0);
     let was_lit = s.flashes.map(|until| until > s.now);
     s.now = clock;
@@ -309,6 +320,7 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let clip_changed = meter::poll(s, clock);
     let lit = s.flashes.map(|until| until > clock);
     let changed = projects_changed
+        || export_changed
         || devices_changed
         || midi_changed
         || live_changed
@@ -346,6 +358,10 @@ pub const SCENES: &[Scene] = &[
     ("project-error", |s| {
         s.projects.visible = true;
         s.projects.error = Some("Project could not be opened. Active kit unchanged.".into());
+    }),
+    ("export-panel", |s| {
+        s.export.visible = true;
+        s.export.destination = rune::TextEdit::new("/exports/brownnote bundle");
     }),
     ("import-path", |s| {
         media::controls::scene(s, media::controls::SceneKind::Path)
