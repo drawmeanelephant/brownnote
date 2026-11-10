@@ -1,8 +1,10 @@
 //! Read-only open preparation and explicit, evidenced recovery.
 //! No caller state or on-disk document is changed, including on success.
+//! The listing's recovered set uses the same retention bound as collection;
+//! see `native/docs/project-retention.md`.
 use super::{
     AssetId, Document,
-    store::{FileSystem, GenerationId, Inspection, Store, StoreError},
+    store::{FileSystem, GenerationId, Inspection, RetentionPolicy, Store, StoreError},
 };
 use std::{collections::BTreeMap, io, path::Path, sync::Arc};
 
@@ -74,6 +76,15 @@ impl<F: FileSystem> Store<F> {
     }
 
     pub fn recovery_options(&mut self) -> Result<RecoveryOptions, StoreError> {
+        self.recovery_options_with(&RetentionPolicy::default())
+    }
+
+    /// The recovery listing and a bounded collection must agree. Callers that
+    /// collect with a custom policy should list with the same policy.
+    pub fn recovery_options_with(
+        &mut self,
+        policy: &RetentionPolicy,
+    ) -> Result<RecoveryOptions, StoreError> {
         let current = self
             .inspect_committed()
             .map(|inspection| inspection.map(|value| value.generation));
@@ -130,6 +141,8 @@ impl<F: FileSystem> Store<F> {
         }
         options.unconfirmed.sort_by_key(ToString::to_string);
         options.unconfirmed.dedup();
+        let current = options.current.as_ref().ok().copied().flatten();
+        options.recoverable = self.retain_history(current, &options.recoverable, policy)?;
         Ok(options)
     }
 

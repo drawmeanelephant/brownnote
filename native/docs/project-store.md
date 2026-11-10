@@ -54,17 +54,17 @@ garbage-collected. A failed precommit save cannot change the committed
 document, its snapshot, or any of its media bytes. After a publish attempt,
 inspection sees complete old or complete new, not mixed media.
 
-All complete snapshots are retained in this first slice, including candidates
-that reached snapshot publication but never committed. Snapshot presence
-therefore does **not** prove a document was ever the user's saved version.
-The follow-up records commit evidence separately; only evidenced, validated
-snapshots are offered as saved recovery choices. No automatic recovery choice
-is made. Keeping all snapshots is conservative;
-bounded retention and media collection need a later policy that protects both
-saved and separate recovery roots. D6's recovery writer (issue #196) calls this
-same transaction API on its separate machine recovery root; it adds only a
-machine-level `autosave.json` beside that root and never changes this layout or
-the project schema.
+Snapshot presence does **not** prove a document was ever the user's saved
+version. The follow-up records commit evidence separately; only evidenced,
+validated snapshots are offered as saved recovery choices. No automatic
+recovery choice is made. The retention and media-collection policy is now
+[`project-retention.md`](project-retention.md): it protects the current
+document, every offered generation in the project root and the D6 recovery
+root, retained renders, and unconfirmed snapshots, and it bounds superseded
+history by a byte budget in stable generation-identity order. D6's recovery
+writer (issue #196) calls this same transaction API on its separate machine
+recovery root; it adds only a machine-level `autosave.json` beside that root
+and never changes this layout or the project schema.
 
 ## Consumer API
 
@@ -119,9 +119,11 @@ After import, call `save(document, &[])` for media already inside this root.
 An injector can implement `store::FileSystem`; no production import types
 are copied here and no import module is edited.
 
-Unassigned or cancelled import media is not collected by this slice. Store
-staging is private to the store, not the importer's staging namespace.
-Both writers must obey immutability. They do not support hostile concurrent
+Unassigned or cancelled import media remains after publication, but it is now
+reachable to the retention plan: `Store::collect` removes a
+`media/<sha256>.wav` only when no retained generation references it. Store
+staging is private to the store, not the importer's staging namespace. Both
+writers must obey immutability. They do not support hostile concurrent
 filesystem mutation, symlink substitution races, or externally replacing a
 lock file. Managed directories and files reject existing symlinks.
 
