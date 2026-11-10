@@ -9,6 +9,7 @@ mod import_tests;
 mod instrument;
 mod live;
 mod media;
+mod meter;
 mod midi;
 pub(crate) mod pedals;
 pub(crate) mod projects;
@@ -47,6 +48,7 @@ pub struct State {
     pub choke: bool,
     pub counts: [u32; 16],
     pub peak: f32,
+    pub meter: meter::Meter,
     pub pedals: pedals::Pedals,
     pub devices: devices::Devices,
     pub midi: midi::Midi,
@@ -141,6 +143,7 @@ impl State {
             choke: true,
             counts: [0; 16],
             peak: 0.0,
+            meter: meter::Meter::default(),
             pedals,
             devices,
             midi,
@@ -303,6 +306,7 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let fresh_peak = f32::from_bits(s.output.meters.peak.swap(0, Relaxed));
     let peak = fresh_peak.max(s.peak * (-elapsed as f32 * 7.0).exp());
     let peak = if peak < 0.001 { 0.0 } else { peak };
+    let clip_changed = meter::poll(s, clock);
     let lit = s.flashes.map(|until| until > clock);
     let changed = projects_changed
         || devices_changed
@@ -317,6 +321,7 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
         || media_changed
         || counts != s.counts
         || peak != s.peak
+        || clip_changed
         || was_lit != lit
         || (elapsed > 0.0 && was_lit.contains(&true));
     s.counts = counts;
@@ -324,6 +329,7 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     if lit.contains(&true)
         || counts.iter().any(|n| *n > 0)
         || peak > 0.0
+        || s.meter.lit()
         || s.assets.has_retirements()
     {
         tx.wake_after(Duration::from_millis(33));
