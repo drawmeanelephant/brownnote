@@ -5,6 +5,32 @@ brownnote_custom_groove.mp3
 *.o
 .DS_Store
 zig-cache/
+
+# Local configuration and secrets. .env.example is the tracked template.
+.env
+.env.*
+!.env.example
+
+# Editor and OS droppings
+.idea/
+.vscode/
+*.swp
+
+# Other toolchains
+node_modules/
+.venv/
+*.class
+
+# Generated reports and coverage
+*.log
+*.gcda
+*.gcno
+*.gcov
+coverage/
+jscpd-report/
+__pycache__/
+*.pyc
+native/plugin-host/target/
 docs/site/dist/
 docs/site/.boris-cache/
 docs/site/.pages-profile.json

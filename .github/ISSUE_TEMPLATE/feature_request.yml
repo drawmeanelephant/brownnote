@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a change in behavior
+labels: ["enhancement", "P2"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can you not do today, and who is affected?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The smallest change that solves it.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - C CLI (brownnote)
+        - Native app (brownnote-native)
+        - Studio (scripts/studio.py)
+        - Docs
+        - Build or CI
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This does not add DSP to brownnote; the GuitarPedal bench stays the signal path.
+          required: true

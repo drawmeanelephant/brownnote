@@ -21,8 +21,8 @@
 
 uint32_t wav_rd32(const unsigned char *p)
 {
-	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-	       ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+	       ((uint32_t)p[3] << 24);
 }
 
 uint16_t wav_rd16(const unsigned char *p)
@@ -32,12 +32,16 @@ uint16_t wav_rd16(const unsigned char *p)
 
 void wav_wr32(unsigned char *p, uint32_t v)
 {
-	p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24;
+	p[0] = v;
+	p[1] = v >> 8;
+	p[2] = v >> 16;
+	p[3] = v >> 24;
 }
 
 void wav_wr16(unsigned char *p, uint16_t v)
 {
-	p[0] = v; p[1] = v >> 8;
+	p[0] = v;
+	p[1] = v >> 8;
 }
 
 /*
@@ -80,7 +84,7 @@ bool parse_wav(const unsigned char *p, size_t len, struct wav_info *w)
 			w->data_len = csz;
 			have_data = true;
 		}
-		pos += 8 + csz + (csz & 1);	/* chunks are word-aligned */
+		pos += 8 + csz + (csz & 1); /* chunks are word-aligned */
 	}
 
 	if (!have_fmt || !have_data) {
@@ -88,22 +92,29 @@ bool parse_wav(const unsigned char *p, size_t len, struct wav_info *w)
 		return false;
 	}
 	if (format != 1 || bits != 16) {
-		fprintf(stderr, "brownnote: WAV must be PCM s16le "
-			"(got format %u, %u bits)\n", format, bits);
+		fprintf(stderr,
+			"brownnote: WAV must be PCM s16le "
+			"(got format %u, %u bits)\n",
+			format, bits);
 		return false;
 	}
 	if (w->channels < 1 || w->channels > 2) {
-		fprintf(stderr, "brownnote: WAV must be mono or stereo "
-			"(got %u channels)\n", w->channels);
+		fprintf(stderr,
+			"brownnote: WAV must be mono or stereo "
+			"(got %u channels)\n",
+			w->channels);
 		return false;
 	}
 	if (w->rate < 8000 || w->rate > 192000) {
-		fprintf(stderr, "brownnote: WAV rate %u out of range "
-			"(8000..192000)\n", w->rate);
+		fprintf(stderr,
+			"brownnote: WAV rate %u out of range "
+			"(8000..192000)\n",
+			w->rate);
 		return false;
 	}
 	if (w->data_len % (2 * w->channels)) {
-		fprintf(stderr, "brownnote: WAV data length not frame-aligned\n");
+		fprintf(stderr,
+			"brownnote: WAV data length not frame-aligned\n");
 		return false;
 	}
 	return true;
@@ -119,11 +130,16 @@ bool parse_wav(const unsigned char *p, size_t len, struct wav_info *w)
  * the common convention — and commented here so nobody "fixes" it:
  * round-tripping is not identity, it is bounded by one LSB.
  */
-float s16_to_f(int16_t v) { return (float)v / 32768.0f; }
+float s16_to_f(int16_t v)
+{
+	return (float)v / 32768.0f;
+}
 int16_t f_to_s16(float v)
 {
-	if (v >= 1.0f) return 32767;
-	if (v <= -1.0f) return -32767;
+	if (v >= 1.0f)
+		return 32767;
+	if (v <= -1.0f)
+		return -32767;
 	return (int16_t)lroundf(v * 32767.0f);
 }
 
@@ -149,11 +165,11 @@ int16_t f_to_s16(float v)
  * frame.  Transport plumbing, same as the resampler itself — the
  * minimum that keeps the round trip honest, not a DSP statement.
  */
-#define AA_BETA		8.6	/* Kaiser: ~-70 dB nominal stopband */
-#define AA_CUTOFF	0.475	/* of out_rate, in input samples */
-#define AA_MIN_TAPS	65	/* odd, so the kernel is centred */
-#define AA_MAX_TAPS	2049
-#define AA_BASE_TAPS	65	/* taps scale with in_rate/out_rate */
+#define AA_BETA 8.6	/* Kaiser: ~-70 dB nominal stopband */
+#define AA_CUTOFF 0.475 /* of out_rate, in input samples */
+#define AA_MIN_TAPS 65	/* odd, so the kernel is centred */
+#define AA_MAX_TAPS 2049
+#define AA_BASE_TAPS 65 /* taps scale with in_rate/out_rate */
 
 static double sinc(double x)
 {
@@ -224,8 +240,8 @@ static void decimate_frame(const float *in, size_t sub, size_t total,
 
 	if (frac != *h_frac) {
 		for (size_t n = 0; n < taps; n++) {
-			double u = (double)((long)n -
-				(long)(taps - 1) / 2) - frac;
+			double u =
+				(double)((long)n - (long)(taps - 1) / 2) - frac;
 			h[n] = aa_kernel(u, half, fc);
 			norm += h[n];
 		}
@@ -242,10 +258,11 @@ static void decimate_frame(const float *in, size_t sub, size_t total,
 			long i = centre - (long)(taps - 1) / 2 + (long)n;
 
 			if (i < 0)
-				i = 0;	/* clamp to the edge sample */
+				i = 0; /* clamp to the edge sample */
 			if (i >= (long)total)
 				i = (long)total - 1;
-			acc += h[n] * in[(size_t)(i - (long)sub) * channels + c];
+			acc += h[n] *
+			       in[(size_t)(i - (long)sub) * channels + c];
 		}
 		out[c] = (float)(acc / norm);
 	}
@@ -259,20 +276,20 @@ static void decimate_frame(const float *in, size_t sub, size_t total,
  * Writes into out, which the caller sized for out_frames*channels.
  */
 static void decimate(const float *in, size_t in_frames, unsigned channels,
-		     unsigned in_rate, unsigned out_rate,
-		     size_t out_frames, float *out)
+		     unsigned in_rate, unsigned out_rate, size_t out_frames,
+		     float *out)
 {
 	const size_t taps = aa_taps(in_rate, out_rate);
 	const double half = (taps - 1) / 2.0;
 	const double fc = AA_CUTOFF * (double)out_rate / (double)in_rate;
 	double h[AA_MAX_TAPS];
-	double h_frac = -1.0;	/* frac the cached kernel was built for */
+	double h_frac = -1.0; /* frac the cached kernel was built for */
 
 	for (size_t j = 0; j < out_frames; j++) {
 		double p = (double)j * (double)in_rate / (double)out_rate;
 
-		decimate_frame(in, 0, in_frames, channels, taps, half, fc,
-			       p, h, &h_frac, out + j * channels);
+		decimate_frame(in, 0, in_frames, channels, taps, half, fc, p, h,
+			       &h_frac, out + j * channels);
 	}
 }
 
@@ -313,18 +330,16 @@ static void cubic_frame(const float *in, size_t sub, size_t total,
  * than folded back into the passband; upsampling needs no filter —
  * interpolation cannot alias.
  */
-size_t resample_frames(const float *in, size_t in_frames,
-		       unsigned channels,
-		       unsigned in_rate, unsigned out_rate,
-		       float **out_p)
+size_t resample_frames(const float *in, size_t in_frames, unsigned channels,
+		       unsigned in_rate, unsigned out_rate, float **out_p)
 {
 	if (in_rate == out_rate || in_frames == 0) {
 		*out_p = NULL;
-		return in_frames;	/* caller keeps the input buffer */
+		return in_frames; /* caller keeps the input buffer */
 	}
 
-	size_t out_frames = (size_t)llround(
-		(double)in_frames * (double)out_rate / (double)in_rate);
+	size_t out_frames = (size_t)llround((double)in_frames *
+					    (double)out_rate / (double)in_rate);
 	/*
 	 * out_frames can legitimately be 0 — one 192 kHz frame is less
 	 * than half a 48 kHz frame — and malloc(0) may return NULL.
@@ -336,8 +351,8 @@ size_t resample_frames(const float *in, size_t in_frames,
 	}
 
 	if (in_rate > out_rate) {
-		decimate(in, in_frames, channels, in_rate, out_rate,
-			 out_frames, out);
+		decimate(in, in_frames, channels, in_rate, out_rate, out_frames,
+			 out);
 		*out_p = out;
 		return out_frames;
 	}
@@ -345,8 +360,7 @@ size_t resample_frames(const float *in, size_t in_frames,
 	for (size_t j = 0; j < out_frames; j++) {
 		double p = (double)j * (double)in_rate / (double)out_rate;
 
-		cubic_frame(in, 0, in_frames, channels, p,
-			    out + j * channels);
+		cubic_frame(in, 0, in_frames, channels, p, out + j * channels);
 	}
 	*out_p = out;
 	return out_frames;
@@ -370,29 +384,29 @@ struct wav_resample {
 	wav_emit_fn emit;
 	void *emit_ctx;
 
-	size_t taps;		/* decimation kernel size */
+	size_t taps; /* decimation kernel size */
 	double half, fc;
-	size_t back, ahead;	/* window around floor(p) */
+	size_t back, ahead; /* window around floor(p) */
 
-	float *win;		/* interleaved input from frame `base` */
-	size_t win_cap;		/* capacity, frames */
-	size_t base;		/* input index of win[0] */
-	size_t win_len;		/* frames held: base .. base+win_len */
-	size_t in_seen;		/* total pushed */
-	size_t out_done;	/* emitted so far */
+	float *win;	 /* interleaved input from frame `base` */
+	size_t win_cap;	 /* capacity, frames */
+	size_t base;	 /* input index of win[0] */
+	size_t win_len;	 /* frames held: base .. base+win_len */
+	size_t in_seen;	 /* total pushed */
+	size_t out_done; /* emitted so far */
 
-	float *obuf;		/* emit staging */
+	float *obuf; /* emit staging */
 	size_t obuf_len, obuf_cap;
 
 	double h[AA_MAX_TAPS];
 	double h_frac;
 };
 
-#define RS_EMIT_CHUNK 4096	/* frames per emit callback, at most */
+#define RS_EMIT_CHUNK 4096 /* frames per emit callback, at most */
 
-struct wav_resample *wav_resample_new(unsigned channels,
-				      unsigned in_rate, unsigned out_rate,
-				      wav_emit_fn emit, void *emit_ctx)
+struct wav_resample *wav_resample_new(unsigned channels, unsigned in_rate,
+				      unsigned out_rate, wav_emit_fn emit,
+				      void *emit_ctx)
 {
 	struct wav_resample *rs = calloc(1, sizeof(*rs));
 
@@ -410,8 +424,8 @@ struct wav_resample *wav_resample_new(unsigned channels,
 		rs->fc = AA_CUTOFF * (double)out_rate / (double)in_rate;
 		rs->back = rs->ahead = (rs->taps - 1) / 2;
 	} else if (in_rate < out_rate) {
-		rs->back = 1;	/* the cubic's x0 */
-		rs->ahead = 2;	/* and its x3 */
+		rs->back = 1;  /* the cubic's x0 */
+		rs->ahead = 2; /* and its x3 */
 	}
 	/* equal rates: back/ahead stay 0 and push passes through */
 	rs->obuf = malloc(RS_EMIT_CHUNK * channels * sizeof(float));
@@ -459,17 +473,17 @@ static void rs_emit_frame(struct wav_resample *rs, size_t j)
 
 	if (rs->in_rate > rs->out_rate)
 		decimate_frame(rs->win, rs->base, rs->in_seen, rs->channels,
-			       rs->taps, rs->half, rs->fc, p,
-			       rs->h, &rs->h_frac, dst);
+			       rs->taps, rs->half, rs->fc, p, rs->h,
+			       &rs->h_frac, dst);
 	else
-		cubic_frame(rs->win, rs->base, rs->in_seen, rs->channels,
-			    p, dst);
+		cubic_frame(rs->win, rs->base, rs->in_seen, rs->channels, p,
+			    dst);
 	if (++rs->obuf_len == rs->obuf_cap)
 		rs_flush_obuf(rs);
 }
 
-bool wav_resample_push(struct wav_resample *rs,
-		       const float *in, size_t in_frames)
+bool wav_resample_push(struct wav_resample *rs, const float *in,
+		       size_t in_frames)
 {
 	if (rs->in_rate == rs->out_rate) {
 		/* passthrough: emit the block as-is */
@@ -483,7 +497,7 @@ bool wav_resample_push(struct wav_resample *rs,
 	/* Drop history below the next output's window. */
 	if (rs->win_len) {
 		double p = (double)rs->out_done * (double)rs->in_rate /
-			(double)rs->out_rate;
+			   (double)rs->out_rate;
 		long lo = (long)p - (long)rs->back;
 
 		if (lo > (long)rs->base) {
@@ -493,7 +507,7 @@ bool wav_resample_push(struct wav_resample *rs,
 				drop = rs->win_len;
 			memmove(rs->win, rs->win + drop * rs->channels,
 				(rs->win_len - drop) * rs->channels *
-				sizeof(float));
+					sizeof(float));
 			rs->base += drop;
 			rs->win_len -= drop;
 		}
@@ -529,10 +543,10 @@ void wav_resample_finish(struct wav_resample *rs)
 	size_t out_total;
 
 	if (rs->in_rate == rs->out_rate)
-		return;		/* everything passed through already */
+		return; /* everything passed through already */
 
-	out_total = (size_t)llround((double)rs->in_seen *
-		(double)rs->out_rate / (double)rs->in_rate);
+	out_total = (size_t)llround((double)rs->in_seen * (double)rs->out_rate /
+				    (double)rs->in_rate);
 	while (rs->out_done < out_total) {
 		rs_emit_frame(rs, rs->out_done);
 		rs->out_done++;
@@ -556,8 +570,7 @@ static void wav_parse_fail(struct wav_parse *ps, const char *err)
 	ps->state = WAV_PS_ERR;
 }
 
-size_t wav_parse_feed(struct wav_parse *ps, const unsigned char *p,
-		      size_t n)
+size_t wav_parse_feed(struct wav_parse *ps, const unsigned char *p, size_t n)
 {
 	size_t used = 0;
 
@@ -577,7 +590,7 @@ size_t wav_parse_feed(struct wav_parse *ps, const unsigned char *p,
 				if (memcmp(ps->hdr, "RIFF", 4) ||
 				    memcmp(ps->hdr + 8, "WAVE", 4))
 					wav_parse_fail(ps,
-						"not a RIFF/WAVE file");
+						       "not a RIFF/WAVE file");
 				else {
 					ps->state = WAV_PS_HDR;
 					ps->hdr_have = 0;

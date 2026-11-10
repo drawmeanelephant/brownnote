@@ -16,13 +16,14 @@
 
 static int checks, failures;
 
-#define CHECK(cond) do {						\
-	checks++;							\
-	if (!(cond)) {							\
-		failures++;						\
-		printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);	\
-	}								\
-} while (0)
+#define CHECK(cond)                                                            \
+	do {                                                                   \
+		checks++;                                                      \
+		if (!(cond)) {                                                 \
+			failures++;                                            \
+			printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
+		}                                                              \
+	} while (0)
 
 /* ------------------------------------------------------------------ */
 /* WAV construction helpers.                                           */
@@ -53,7 +54,10 @@ static void put(struct blob *b, const void *src, size_t n)
 	b->len += n;
 }
 
-static void put_id(struct blob *b, const char *id) { put(b, id, 4); }
+static void put_id(struct blob *b, const char *id)
+{
+	put(b, id, 4);
+}
 
 static void put32(struct blob *b, uint32_t v)
 {
@@ -81,8 +85,8 @@ static void fmt_chunk(struct blob *b, uint16_t format, uint16_t channels,
 	wav_wr16(f + 0, format);
 	wav_wr16(f + 2, channels);
 	wav_wr32(f + 4, rate);
-	wav_wr32(f + 8, rate * channels * 2);	/* byte rate, unchecked */
-	wav_wr16(f + 12, (uint16_t)(channels * 2));	/* block align, unchecked */
+	wav_wr32(f + 8, rate * channels * 2);	    /* byte rate, unchecked */
+	wav_wr16(f + 12, (uint16_t)(channels * 2)); /* block align, unchecked */
 	wav_wr16(f + 14, bits);
 	chunk(b, "fmt ", f, sizeof(f));
 }
@@ -111,7 +115,7 @@ static void test_parse_valid(void)
 {
 	struct blob b;
 	struct wav_info w;
-	int16_t pcm[4] = { 1000, -1000, 2000, -2000 };
+	int16_t pcm[4] = {1000, -1000, 2000, -2000};
 
 	wav_begin(&b, 1, 2, 48000, 16);
 	chunk(&b, "data", pcm, sizeof(pcm));
@@ -130,8 +134,8 @@ static void test_parse_chunk_walking(void)
 {
 	struct blob b;
 	struct wav_info w;
-	int16_t pcm[2] = { 111, -222 };
-	const char junk[] = "INFOj";	/* odd body: 5 bytes + pad */
+	int16_t pcm[2] = {111, -222};
+	const char junk[] = "INFOj"; /* odd body: 5 bytes + pad */
 
 	/* a LIST chunk with an odd body must be skipped whole, pad and
 	 * all, so the data chunk after it is found where it belongs */
@@ -151,7 +155,7 @@ static void test_parse_clamps_oversized_data(void)
 {
 	struct blob b;
 	struct wav_info w;
-	int16_t pcm[2] = { 5, -5 };
+	int16_t pcm[2] = {5, -5};
 
 	/* the 0xFFFFFFFF of streaming writers: runs to EOF, clamped */
 	wav_begin(&b, 1, 1, 44100, 16);
@@ -185,7 +189,7 @@ static void test_parse_rejections(void)
 {
 	struct blob b;
 	struct wav_info w;
-	int16_t pcm[2] = { 1, -1 };
+	int16_t pcm[2] = {1, -1};
 
 	/* wrong magic */
 	wav_begin(&b, 1, 1, 44100, 16);
@@ -289,10 +293,9 @@ static size_t feed_blocked(struct wav_parse *ps, const unsigned char *p,
 {
 	size_t used = 0;
 
-	while (used < n && ps->state != WAV_PS_DATA &&
-	       ps->state != WAV_PS_ERR)
-		used += wav_parse_feed(ps, p + used, n - used < blk ?
-				       n - used : blk);
+	while (used < n && ps->state != WAV_PS_DATA && ps->state != WAV_PS_ERR)
+		used += wav_parse_feed(ps, p + used,
+				       n - used < blk ? n - used : blk);
 	return used;
 }
 
@@ -300,10 +303,10 @@ static void test_parse_streaming(void)
 {
 	struct blob b;
 	struct wav_parse ps;
-	int16_t pcm[4] = { 1000, -1000, 2000, -2000 };
-	const char junk[] = "INFOj";	/* odd body: 5 bytes + pad */
+	int16_t pcm[4] = {1000, -1000, 2000, -2000};
+	const char junk[] = "INFOj"; /* odd body: 5 bytes + pad */
 	size_t used;
-	static const size_t blocks[] = { 1, 3, 7, 4096 };
+	static const size_t blocks[] = {1, 3, 7, 4096};
 
 	/* a plain file, every blocking: same end state and fields */
 	wav_begin(&b, 1, 2, 48000, 16);
@@ -318,7 +321,7 @@ static void test_parse_streaming(void)
 		CHECK(ps.format == 1 && ps.bits == 16);
 		CHECK(ps.w.channels == 2 && ps.w.rate == 48000);
 		CHECK(ps.data_decl == sizeof(pcm));
-		CHECK(used == ps.data_off);	/* caller's audio begins */
+		CHECK(used == ps.data_off); /* caller's audio begins */
 		CHECK(ps.data_off == 12 + 24 + (8 + 5 + 1) + 8);
 	}
 	free(b.p);
@@ -365,7 +368,7 @@ static void test_parse_streaming(void)
 	/* EOF before 44 bytes: "not a RIFF/WAVE", same as the batch */
 	wav_parse_init(&ps);
 	feed_blocked(&ps, b.p = (unsigned char *)"RIFF\x00\x00", 6, 6);
-	CHECK(ps.state != WAV_PS_ERR);	/* mid-header is not an error yet */
+	CHECK(ps.state != WAV_PS_ERR); /* mid-header is not an error yet */
 	CHECK(!wav_parse_eof(&ps));
 	CHECK(ps.err && !strcmp(ps.err, "not a RIFF/WAVE file"));
 
@@ -390,15 +393,15 @@ static void test_conversions(void)
 
 	CHECK(s16_to_f(0) == 0.0f);
 	CHECK(s16_to_f(-32768) == -1.0f);
-	CHECK(s16_to_f(32767) < 1.0f);	/* a hair under full scale */
+	CHECK(s16_to_f(32767) < 1.0f); /* a hair under full scale */
 	CHECK(s16_to_f(32767) > 0.9999f);
 
 	CHECK(f_to_s16(0.0f) == 0);
-	CHECK(f_to_s16(1.0f) == 32767);	/* clamped, not wrapped */
+	CHECK(f_to_s16(1.0f) == 32767); /* clamped, not wrapped */
 	CHECK(f_to_s16(-1.0f) == -32767);
 	CHECK(f_to_s16(2.0f) == 32767);
 	CHECK(f_to_s16(-2.0f) == -32767);
-	CHECK(f_to_s16(0.5f) == 16384);	/* lroundf(16383.5) */
+	CHECK(f_to_s16(0.5f) == 16384); /* lroundf(16383.5) */
 
 	/* round-tripping is bounded by one LSB, for every code */
 	for (int v = -32768; v <= 32767; v++) {
@@ -428,11 +431,11 @@ static double rms(const float *v, size_t n)
 
 static void test_resample_identity(void)
 {
-	float in[8] = { 0, 0.25f, 0.5f, 0.75f, 1.0f, 0.5f, 0.25f, 0 };
-	float *out = (float *)1;	/* poison: the call must set it */
+	float in[8] = {0, 0.25f, 0.5f, 0.75f, 1.0f, 0.5f, 0.25f, 0};
+	float *out = (float *)1; /* poison: the call must set it */
 
 	CHECK(resample_frames(in, 4, 2, 48000, 48000, &out) == 4);
-	CHECK(out == NULL);		/* caller keeps the input buffer */
+	CHECK(out == NULL); /* caller keeps the input buffer */
 
 	out = (float *)1;
 	CHECK(resample_frames(in, 0, 2, 44100, 48000, &out) == 0);
@@ -445,7 +448,7 @@ static void test_resample_counts_and_nodes(void)
 	size_t n;
 
 	for (int i = 0; i < 8; i++)
-		in[i] = (float)i;	/* a ramp */
+		in[i] = (float)i; /* a ramp */
 
 	/* up 2x: 4 frames -> 8, and the cubic passes through the
 	 * input samples at the integer positions */
@@ -492,28 +495,28 @@ static void test_resample_interleave(void)
  */
 static void test_antialias(void)
 {
-	enum { N = 4800 };	/* 25 ms at 192 kHz */
+	enum { N = 4800 }; /* 25 ms at 192 kHz */
 	float *in = malloc(N * sizeof(float));
 	float *out = NULL;
 	size_t n;
 
 	for (size_t i = 0; i < N; i++)
-		in[i] = 0.4f * sinf(2.0f * (float)M_PI * 30000.0f *
-				   (float)i / 192000.0f);
+		in[i] = 0.4f * sinf(2.0f * (float)M_PI * 30000.0f * (float)i /
+				    192000.0f);
 	n = resample_frames(in, N, 1, 192000, 48000, &out);
 	CHECK(n == N / 4);
 	CHECK(out != NULL);
-	CHECK(rms(out, n) < 0.1 * rms(in, N));	/* alias suppressed */
+	CHECK(rms(out, n) < 0.1 * rms(in, N)); /* alias suppressed */
 	free(out);
 
 	for (size_t i = 0; i < N; i++)
-		in[i] = 0.4f * sinf(2.0f * (float)M_PI * 10000.0f *
-				   (float)i / 192000.0f);
+		in[i] = 0.4f * sinf(2.0f * (float)M_PI * 10000.0f * (float)i /
+				    192000.0f);
 	out = NULL;
 	n = resample_frames(in, N, 1, 192000, 48000, &out);
 	CHECK(n == N / 4);
 	CHECK(out != NULL);
-	CHECK(rms(out, n) > 0.9 * rms(in, N));	/* passband preserved */
+	CHECK(rms(out, n) > 0.9 * rms(in, N)); /* passband preserved */
 	CHECK(rms(out, n) < 1.1 * rms(in, N));
 	free(out);
 
@@ -550,7 +553,7 @@ static double goertzel_amp(const float *v, size_t n, double f, double rate)
 		s1 = s0;
 	}
 	return 2.0 * sqrt(fmax(s1 * s1 + s2 * s2 - k * s1 * s2, 0.0)) /
-		(double)n;
+	       (double)n;
 }
 
 /*
@@ -565,42 +568,42 @@ static void test_antialias_ratios(void)
 {
 	static const struct {
 		unsigned in_rate, out_rate;
-		double probe;		/* tone frequency, above out Nyq */
-		double fold;		/* where it lands in the output */
+		double probe; /* tone frequency, above out Nyq */
+		double fold;  /* where it lands in the output */
 	} alias_cases[] = {
-		{ 192000, 48000, 25000, 23000 },
-		{ 48000, 44100, 23000, 21100 },
-		{ 48000,  8000,  4500,  3500 },
+		{192000, 48000, 25000, 23000},
+		{48000, 44100, 23000, 21100},
+		{48000, 8000, 4500, 3500},
 	};
 	static const struct {
 		unsigned in_rate, out_rate;
-		double probe;		/* 0.9x output Nyquist */
+		double probe; /* 0.9x output Nyquist */
 	} droop_cases[] = {
-		{ 192000, 48000, 21600 },
-		{ 48000, 44100, 19845 },
-		{ 48000,  8000,  3600 },
+		{192000, 48000, 21600},
+		{48000, 44100, 19845},
+		{48000, 8000, 3600},
 	};
 
 	for (size_t t = 0; t < sizeof(alias_cases) / sizeof(alias_cases[0]);
 	     t++) {
 		unsigned ir = alias_cases[t].in_rate;
 		unsigned orr = alias_cases[t].out_rate;
-		size_t N = ir / 20;	/* 50 ms of input */
+		size_t N = ir / 20; /* 50 ms of input */
 		float *in = malloc(N * sizeof(float));
 		float *out = NULL;
 		size_t n;
 
 		for (size_t i = 0; i < N; i++)
 			in[i] = 0.5f * sinf(2.0f * (float)M_PI *
-				(float)alias_cases[t].probe *
-				(float)i / (float)ir);
+					    (float)alias_cases[t].probe *
+					    (float)i / (float)ir);
 		n = resample_frames(in, N, 1, ir, orr, &out);
 		CHECK(n == (size_t)llround((double)N * orr / ir));
 		CHECK(out != NULL);
 		if (out) {
-			double a = goertzel_amp(out, n, alias_cases[t].fold,
-						orr);
-			CHECK(a <= 0.01);	/* -40 dB of the 0.5 tone */
+			double a =
+				goertzel_amp(out, n, alias_cases[t].fold, orr);
+			CHECK(a <= 0.01); /* -40 dB of the 0.5 tone */
 		}
 		free(out);
 		free(in);
@@ -617,15 +620,15 @@ static void test_antialias_ratios(void)
 
 		for (size_t i = 0; i < N; i++)
 			in[i] = 0.5f * sinf(2.0f * (float)M_PI *
-				(float)droop_cases[t].probe *
-				(float)i / (float)ir);
+					    (float)droop_cases[t].probe *
+					    (float)i / (float)ir);
 		n = resample_frames(in, N, 1, ir, orr, &out);
 		CHECK(n == (size_t)llround((double)N * orr / ir));
 		CHECK(out != NULL);
 		if (out) {
-			double a = goertzel_amp(out, n, droop_cases[t].probe,
-						orr);
-			CHECK(a >= 0.5 * 0.944);/* within 0.5 dB */
+			double a =
+				goertzel_amp(out, n, droop_cases[t].probe, orr);
+			CHECK(a >= 0.5 * 0.944); /* within 0.5 dB */
 		}
 		free(out);
 		free(in);
@@ -639,8 +642,8 @@ static void test_antialias_ratios(void)
  */
 struct collect {
 	float *v;
-	size_t n;		/* frames */
-	size_t cap;		/* floats */
+	size_t n;   /* frames */
+	size_t cap; /* floats */
 	unsigned ch;
 };
 
@@ -667,14 +670,13 @@ static void collect_emit(void *ctx, const float *f, size_t n)
 static void test_resample_streaming(void)
 {
 	static const unsigned rates[][2] = {
-		{ 192000, 48000 },	/* integer-ratio decimation */
-		{ 48000, 44100 },	/* fractional decimation */
-		{ 48000, 8000 },	/* deep decimation */
-		{ 44100, 48000 },	/* upsampling */
-		{ 8000, 48000 },
-		{ 48000, 48000 },	/* passthrough */
+		{192000, 48000},		 /* integer-ratio decimation */
+		{48000, 44100},			 /* fractional decimation */
+		{48000, 8000},			 /* deep decimation */
+		{44100, 48000},			 /* upsampling */
+		{8000, 48000},	 {48000, 48000}, /* passthrough */
 	};
-	static const size_t blocks[] = { 1, 7, 4096, 1 << 20 };
+	static const size_t blocks[] = {1, 7, 4096, 1 << 20};
 	enum { N = 5000, CH = 2 };
 	float in[N * CH];
 
@@ -682,11 +684,11 @@ static void test_resample_streaming(void)
 	for (size_t i = 0; i < N; i++) {
 		double t = (double)i;
 
-		in[2 * i] = (float)(0.4 * sin(2.0 * M_PI * 0.017 * t) +
-				    0.1 * sin(2.0 * M_PI * 0.31 * t) +
-				    0.0001 * t);
-		in[2 * i + 1] = (float)(0.3 * sin(2.0 * M_PI * 0.043 * t) -
-					0.05);
+		in[2 * i] =
+			(float)(0.4 * sin(2.0 * M_PI * 0.017 * t) +
+				0.1 * sin(2.0 * M_PI * 0.31 * t) + 0.0001 * t);
+		in[2 * i + 1] =
+			(float)(0.3 * sin(2.0 * M_PI * 0.043 * t) - 0.05);
 	}
 
 	for (size_t r = 0; r < sizeof(rates) / sizeof(rates[0]); r++) {
@@ -700,18 +702,16 @@ static void test_resample_streaming(void)
 		for (size_t b = 0; b < sizeof(blocks) / sizeof(blocks[0]);
 		     b++) {
 			size_t blk = blocks[b] < N ? blocks[b] : N;
-			struct collect c = { .ch = CH };
+			struct collect c = {.ch = CH};
 			struct wav_resample *rs =
-				wav_resample_new(CH, ir, orr,
-						 collect_emit, &c);
+				wav_resample_new(CH, ir, orr, collect_emit, &c);
 
 			CHECK(rs != NULL);
 			if (!rs)
 				continue;
 			for (size_t off = 0; off < N; off += blk) {
 				size_t n = N - off < blk ? N - off : blk;
-				CHECK(wav_resample_push(rs,
-							in + off * CH, n));
+				CHECK(wav_resample_push(rs, in + off * CH, n));
 			}
 			wav_resample_finish(rs);
 			CHECK(c.n == ref_n);
@@ -727,10 +727,10 @@ static void test_resample_streaming(void)
 	/* tiny inputs: one 192 kHz frame resamples to zero 48 kHz
 	 * frames, and an empty stream finishes empty */
 	{
-		struct collect c = { .ch = 2 };
+		struct collect c = {.ch = 2};
 		struct wav_resample *rs =
 			wav_resample_new(2, 192000, 48000, collect_emit, &c);
-		float one[2] = { 0.5f, -0.5f };
+		float one[2] = {0.5f, -0.5f};
 
 		CHECK(rs != NULL);
 		CHECK(wav_resample_push(rs, one, 1));

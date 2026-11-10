@@ -110,11 +110,14 @@ jobs:
           README.md inside the archive describes installation, relocation and the
           support limits. Do not describe this artifact as validated on a clean machine.
           NOTES
+          # --generate-notes appends the commit list for this tag to the fixed
+          # text above, so the notes are produced by CI from the tagged range.
           gh release create "$GITHUB_REF_NAME" \
             --draft \
             --verify-tag \
             --title "Brownnote Native $version unsigned test build" \
-            --notes-file build/release-notes.md \
+            --notes "$(cat build/release-notes.md)" \
+            --generate-notes \
             "$artifact" \
             "$artifact.sha256" \
             "$artifact.smoke.json" \

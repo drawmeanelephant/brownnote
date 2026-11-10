@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/kucherenko/jscpd/master/packages/jscpd/schema.json",
+  "threshold": 8,
+  "minTokens": 80,
+  "minLines": 12,
+  "reporters": ["console", "json"],
+  "output": "jscpd-report",
+  "absolute": false,
+  "gitignore": true,
+  "ignore": [
+    "**/build/**",
+    "**/native/target/**",
+    "**/native/plugin-host/target/**",
+    "**/docs/site/**",
+    "**/recordings/**",
+    "**/tests/fixtures/**",
+    "**/native/docs/spikes/**/evidence/**",
+    "**/*.gcov",
+    "**/jscpd-report/**",
+    "**/.git/**",
+    "**/audit/**",
+    "**/audit-verify/**",
+    "**/t3-*/**",
+    "**/native/docs/spikes/**/.work/**"
+  ]
+}

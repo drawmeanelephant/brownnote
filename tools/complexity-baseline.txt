@@ -1,0 +1,8 @@
+# Functions that exceeded the CCN<=18 / NLOC<=700 budget when this
+# ratchet was added. They may shrink, never grow; delete the entry
+# once the function fits the default budget. Regenerate with
+# `scripts/check_complexity.py --update`.
+
+src/brownnote.c:main 40 163
+src/brownnote.c:pump_run 60 147
+src/wav.c:wav_parse_feed 22 87

@@ -1,0 +1,13 @@
+# Default owner for every path. Keep the maintainer handle until teams exist.
+* @drawmeanelephant
+
+# The audio signal path and its tests are the highest-risk surface.
+/src/ @drawmeanelephant
+/tests/unit_wav.c @drawmeanelephant
+/native/src/engine/ @drawmeanelephant
+/native/src/live_audio.rs @drawmeanelephant
+/native/plugin-host/ @drawmeanelephant
+
+# CI, release, and security configuration.
+/.github/ @drawmeanelephant
+/SECURITY.md @drawmeanelephant

@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Fast local gate. CI runs the same checks (plus make hygiene) on every PR.
+# Install with: make hooks
+set -u
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+status=0
+
+# 1. Formatting: C via clang-format, Rust via rustfmt.
+c_files=$(printf '%s\n' "$staged" | grep -E '\.(c|h)$' || true)
+if [ -n "$c_files" ]; then
+	if command -v clang-format >/dev/null 2>&1; then
+		while IFS= read -r f; do
+			[ -f "$f" ] || continue
+			clang-format --dry-run --Werror "$f" || status=1
+		done <<< "$c_files"
+	else
+		echo "pre-commit: clang-format not found; CI will check formatting" >&2
+	fi
+fi
+
+rs_files=$(printf '%s\n' "$staged" | grep -E '\.rs$' || true)
+if [ -n "$rs_files" ] && command -v cargo >/dev/null 2>&1; then
+	manifest=""
+	if printf '%s\n' "$rs_files" | grep -q '^native/plugin-host/'; then
+		manifest="native/plugin-host/Cargo.toml"
+	else
+		manifest="native/Cargo.toml"
+	fi
+	cargo fmt --manifest-path "$manifest" -- --check || status=1
+fi
+
+# 2. ShellCheck on changed shell scripts.
+for f in $staged; do
+	case "$f" in
+	*.sh)
+		if command -v shellcheck >/dev/null 2>&1; then
+			shellcheck "$f" || status=1
+		fi
+		;;
+	esac
+done
+
+# 3. Tech-debt markers must name an issue or a person: TODO(#123) / TODO(name).
+if ! scripts/check_todos.sh --staged; then
+	status=1
+fi
+
+# 4. Large files: never commit an unbounded binary or audio blob.
+large=$(printf '%s\n' "$staged" | while IFS= read -r f; do
+	[ -f "$f" ] || continue
+	size=$(wc -c < "$f" | tr -d ' ')
+	[ "$size" -gt 10485760 ] && echo "$f ($size bytes)"
+done)
+if [ -n "$large" ]; then
+	echo "pre-commit: files over 10 MiB:" >&2
+	echo "$large" >&2
+	echo "pre-commit: use recordings/ PROVENANCE rules or Git LFS" >&2
+	status=1
+fi
+
+# 5. No credential-shaped strings in the diff. The two files that spell out
+#    the patterns are excluded so the check does not flag itself.
+if git diff --cached -U0 -- . ':(exclude).githooks/pre-commit' \
+	':(exclude)scripts/check_secrets.py' |
+	grep -nE '(ghp_|gho_|github_pat_|sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY)' >/dev/null; then
+	echo "pre-commit: possible credential in the staged diff" >&2
+	status=1
+fi
+
+exit "$status"

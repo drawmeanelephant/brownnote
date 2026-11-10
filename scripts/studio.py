@@ -80,6 +80,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import uuid
 import wave
 import array
 import zlib
@@ -90,6 +91,118 @@ HOST = os.environ.get("STUDIO_HOST", "127.0.0.1")
 # Serving off-loopback exposes a mutating API to the LAN; it stays
 # refused unless the user opts in with STUDIO_ALLOW_REMOTE=1 (#65).
 ALLOW_REMOTE = os.environ.get("STUDIO_ALLOW_REMOTE") == "1"
+
+# ---- observability and feature flags ---------------------------------
+# One JSON log line per event, Prometheus counters at /metrics, a trace id
+# per request (also returned as X-Request-ID), and a fixed feature-flag
+# registry so a typo is a startup error instead of a silent default.
+
+LOG_LEVEL = os.environ.get("STUDIO_LOG_LEVEL", "info").lower()
+_LOG_LEVELS = {"error": 0, "warn": 1, "info": 2, "debug": 3}
+if LOG_LEVEL not in _LOG_LEVELS:
+    LOG_LEVEL = "info"
+
+FEATURE_DEFAULTS = {
+    "jam": True,              # NINJAM join/leave and the /jam page
+    "upload": True,           # /api/upload-sample and /api/library/intake
+    "library-intake": True,   # automatic intake scan of build/library/
+}
+
+
+def _features_from_env():
+    features = dict(FEATURE_DEFAULTS)
+    spec = os.environ.get("STUDIO_FEATURES", "")
+    for item in (part.strip() for part in spec.split(",")):
+        if not item:
+            continue
+        name, _, value = item.partition("=")
+        name = name.strip()
+        if name not in features:
+            sys.exit(
+                f"unknown STUDIO_FEATURES flag {name!r} "
+                f"(known: {', '.join(sorted(features))})"
+            )
+        features[name] = value.strip().lower() in ("", "1", "on", "true", "yes")
+    return features
+
+
+FEATURES = _features_from_env()
+ANALYTICS = os.environ.get("STUDIO_ANALYTICS") == "1"
+ANALYTICS_DIR = os.path.join(ROOT, "build", "analytics")
+_METRIC_LOCK = threading.Lock()
+_METRICS: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
+_METRIC_SINCE = time.monotonic()
+_SENSITIVE_PARTS = (
+    "pass", "token", "secret", "key", "cookie", "auth", "session", "dsn",
+)
+
+
+def _sensitive(key):
+    key = str(key).lower()
+    return any(part in key for part in _SENSITIVE_PARTS)
+
+
+def log_event(level, event, **fields):
+    """One structured JSON line, with credential-shaped values redacted."""
+    if _LOG_LEVELS.get(level, 2) > _LOG_LEVELS[LOG_LEVEL]:
+        return
+    record = {
+        "ts": round(time.time(), 3),
+        "level": level,
+        "event": event,
+    }
+    for key, value in fields.items():
+        record[key] = "<redacted>" if _sensitive(key) else value
+    sys.stderr.write(json.dumps(record, sort_keys=True) + "\n")
+    sys.stderr.flush()
+
+
+def metric_add(name, value=1, **labels):
+    key = (name, tuple(sorted(labels.items())))
+    with _METRIC_LOCK:
+        _METRICS[key] = _METRICS.get(key, 0.0) + value
+
+
+def metrics_text():
+    lines = [
+        "# HELP studio_requests_total HTTP requests handled, by route and status.",
+        "# TYPE studio_requests_total counter",
+    ]
+    with _METRIC_LOCK:
+        snapshot = dict(_METRICS)
+    for (name, labels), value in sorted(snapshot.items()):
+        if not labels:
+            lines.append(f"{name} {value:g}")
+            continue
+        rendered = ",".join(f'{k}="{v}"' for k, v in labels)
+        lines.append(f"{name}{{{rendered}}} {value:g}")
+    lines.append("# HELP studio_uptime_seconds Seconds since the studio started.")
+    lines.append("# TYPE studio_uptime_seconds gauge")
+    lines.append(f"studio_uptime_seconds {time.monotonic() - _METRIC_SINCE:.1f}")
+    return "\n".join(lines) + "\n"
+
+
+def analytics_event(event, **fields):
+    """Opt-in, local-only feature-usage events (STUDIO_ANALYTICS=1).
+
+    Nothing leaves the machine: the JSONL file under build/analytics/ is
+    what an agent or maintainer reads to see which features are used.
+    """
+    if not ANALYTICS:
+        return
+    record = {"ts": round(time.time(), 3), "event": event}
+    for key, value in fields.items():
+        record[key] = "<redacted>" if _sensitive(key) else value
+    try:
+        os.makedirs(ANALYTICS_DIR, exist_ok=True)
+        with _METRIC_LOCK:
+            with open(os.path.join(ANALYTICS_DIR, "events.jsonl"), "a",
+                      encoding="utf-8") as fh:
+                fh.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError as exc:
+        log_event("warn", "analytics_write_failed", error=str(exc))
+        return
+    metric_add("studio_usage_events_total", event=event)
 
 
 def _is_loopback_host(h):
@@ -1703,7 +1816,44 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=ROOT, **kwargs)
 
     def log_message(self, fmt, *args):
-        sys.stderr.write("[studio] " + (fmt % args) + "\n")
+        # Access lines are debug noise; finish() logs the structured
+        # completion line at info with status and duration.
+        log_event("debug", "http_access",
+                  trace=getattr(self, "request_id", "-"),
+                  message=fmt % args)
+
+    def _start_request(self):
+        rid = (self.headers.get("X-Request-ID") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", rid):
+            rid = uuid.uuid4().hex[:16]
+        self.request_id = rid
+        self._status = 0
+        self._t0 = time.monotonic()
+
+    def send_response(self, code, message=None):
+        self._status = code
+        super().send_response(code, message)
+
+    def finish(self):
+        try:
+            super().finish()
+        except Exception:
+            pass
+        finally:
+            started = getattr(self, "_t0", None)
+            rid = getattr(self, "request_id", None)
+            if rid is not None and started is not None:
+                try:
+                    path = urllib.parse.urlparse(self.path).path
+                except ValueError:
+                    path = "?"
+                elapsed = time.monotonic() - started
+                status = getattr(self, "_status", 0)
+                metric_add("studio_requests_total", 1, path=path,
+                           status=str(status))
+                metric_add("studio_request_seconds_total", elapsed, path=path)
+                log_event("info", "request_done", trace=rid, path=path,
+                          status=status, seconds=round(elapsed, 4))
 
     def end_headers(self):
         # #72: baseline hardening headers on every response,
@@ -1711,6 +1861,9 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Content-Security-Policy", CSP)
+        rid = getattr(self, "request_id", None)
+        if rid:
+            self.send_header("X-Request-ID", rid)
         super().end_headers()
 
     # ---- #63/#65 request gate ---------------------------------------
@@ -1858,7 +2011,17 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_text(self, text, content_type="text/plain; charset=utf-8"):
+        body = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_HEAD(self):
+        self._start_request()
         if self._blocked():
             return
         parsed = urllib.parse.urlparse(self.path)
@@ -1874,9 +2037,17 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        self._start_request()
         if self._blocked():
             return
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/healthz":
+            return self._send_json(200, {"ok": True, "features": FEATURES})
+        if parsed.path == "/metrics":
+            return self._send_text(metrics_text())
+        if parsed.path == "/api/jam" and not FEATURES["jam"]:
+            return self._send_json(404, {
+                "ok": False, "error": "jam is disabled by STUDIO_FEATURES"})
         if parsed.path in ("/", "/index.html"):
             return self._send_html(STUDIO_HTML)
         if parsed.path in EXTRA_PAGES:
@@ -2035,12 +2206,22 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
         return self._send_json(200, {"ok": True, "stem": stem})
 
     def do_POST(self):
+        self._start_request()
         if self._blocked():
             return
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/jam" and not FEATURES["jam"]:
+            return self._send_json(404, {
+                "ok": False, "error": "jam is disabled by STUDIO_FEATURES"})
+        if (parsed.path in ("/api/upload-sample", "/api/library/intake")
+                and not FEATURES["upload"]):
+            return self._send_json(404, {
+                "ok": False, "error": "upload is disabled by STUDIO_FEATURES"})
         if parsed.path == "/api/upload-sample":
+            analytics_event("upload_sample")
             return self._handle_upload_sample(parsed)
         if parsed.path == "/api/library/intake":
+            analytics_event("library_intake")
             return self._handle_library_intake(parsed)
         raw_body, err = self._read_body(
             POST_CAPS.get(parsed.path, BODY_MAX_BYTES))
@@ -2058,6 +2239,7 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
             if parsed.path == "/api/render-sequence":
                 res = render_sequence_to_mp3(payload)
                 res["tracks"] = list_tracks()
+                analytics_event("render_sequence")
                 return self._send_json(200, res)
 
             if parsed.path == "/api/jam":
@@ -2073,6 +2255,7 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                 if not isinstance(name, str) or name not in RENDER_NAMES[mode]:
                     return self._send_json(400, {
                         "ok": False, "error": "unknown preset/genre name"})
+                analytics_event("render_preset", mode=mode, name=name)
                 name = RENDER_NAMES[mode][name]
                 phrase = payload.get("phrase", "")
                 phrase = phrase.strip() if isinstance(phrase, str) else ""
@@ -2135,6 +2318,7 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                     if not os.path.isfile(path):
                         return self._send_json(404, {"ok": False, "error": f"no patch named '{name}'"})
                     os.unlink(path)
+                    analytics_event("patch_delete")
                     return self._send_json(200, {"ok": True, "deleted": name})
                 patch = payload.get("patch")
                 if not isinstance(patch, dict):
@@ -2157,6 +2341,7 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                         return self._send_json(400, {
                             "ok": False, "error": pads_err})
                 save_patch(name, patch)
+                analytics_event("patch_save")
                 return self._send_json(200, {"ok": True, "name": name, "patches": list_patches()})
 
             if parsed.path == "/api/library/rescan":
@@ -6457,6 +6642,8 @@ if __name__ == "__main__":
     if not ALLOW_REMOTE and not _is_loopback_host(HOST):
         sys.exit(f"refusing to bind non-loopback STUDIO_HOST={HOST!r} "
                  "— set STUDIO_ALLOW_REMOTE=1 to opt in")
+    log_event("info", "studio_start", host=HOST, port=PORT,
+              features=FEATURES, analytics=ANALYTICS)
     _sweep_render_tmp()
     try:
         ensure_stems()
@@ -6481,6 +6668,11 @@ if __name__ == "__main__":
     with ReusableTCPServer((HOST, PORT), StudioHandler) as httpd:
         print(f"Brownnote Studio listening on http://{HOST}:{PORT}", flush=True)
         print("  pages: / (seq+mixer)  /mixer (desk)  /pads (MPC)  /library (crates)  /jam (nin)", flush=True)
+        flag_summary = ", ".join(
+            f"{name}={'on' if enabled else 'off'}"
+            for name, enabled in sorted(FEATURES.items()))
+        print(f"  ops:   /healthz  /metrics  features: {flag_summary}",
+              flush=True)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

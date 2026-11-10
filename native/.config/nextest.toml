@@ -1,0 +1,26 @@
+# Per-test timing and flakiness policy for the Rust pad instrument.
+#
+# `cargo nextest run` gives every test its own process and reports how long
+# each one took, so a test that starts getting slow shows up in the JUnit
+# artifact before it becomes a timeout. The `ci` profile adds bounded retries:
+# a test that fails once and then passes is reported as FLAKY and still fails
+# the job, so retries distinguish "flaky" from "broken" without hiding either.
+[profile.default]
+# Anything past 60s in a unit test is a hang, not a slow test.
+slow-timeout = { period = "60s", terminate-after = 2 }
+retries = 0
+fail-fast = false
+failure-output = "immediate"
+success-output = "never"
+
+[profile.ci]
+retries = 2
+slow-timeout = { period = "60s", terminate-after = 2 }
+fail-fast = false
+failure-output = "immediate-final"
+success-output = "never"
+
+[profile.ci.junit]
+path = "junit.xml"
+store-success-output = false
+store-failure-output = true

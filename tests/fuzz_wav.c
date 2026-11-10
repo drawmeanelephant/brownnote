@@ -30,7 +30,7 @@
 
 struct collect {
 	float *v;
-	size_t n, cap;	/* n counts frames */
+	size_t n, cap; /* n counts frames */
 	unsigned ch;
 };
 
@@ -57,14 +57,13 @@ static void collect_emit(void *ctx, const float *frames, size_t n)
 
 /* The streaming resampler must emit exactly resample_frames' output. */
 static void fuzz_resample(const float *f, size_t frames, unsigned ch,
-			  unsigned in_rate, unsigned out_rate,
-			  size_t blk)
+			  unsigned in_rate, unsigned out_rate, size_t blk)
 {
 	float *ref_p = NULL;
-	size_t ref_n = resample_frames(f, frames, ch, in_rate, out_rate,
-				       &ref_p);
+	size_t ref_n =
+		resample_frames(f, frames, ch, in_rate, out_rate, &ref_p);
 	const float *ref = ref_p ? ref_p : f;
-	struct collect c = { .ch = ch };
+	struct collect c = {.ch = ch};
 	struct wav_resample *rs;
 
 	if (ref_n == (size_t)-1)
@@ -84,7 +83,8 @@ static void fuzz_resample(const float *f, size_t frames, unsigned ch,
 	wav_resample_finish(rs);
 	if (c.n != ref_n ||
 	    (c.n && memcmp(c.v, ref, c.n * ch * sizeof(float)))) {
-		fprintf(stderr, "fuzz_wav: stream/batch resample mismatch "
+		fprintf(stderr,
+			"fuzz_wav: stream/batch resample mismatch "
 			"(%zu vs %zu frames, %u->%u Hz)\n",
 			c.n, ref_n, in_rate, out_rate);
 		abort();
@@ -98,7 +98,7 @@ static void wav_fuzz_one(const unsigned char *d, size_t n)
 {
 	struct wav_info w;
 	struct wav_parse ps;
-	static const size_t feeds[] = { 1, 7, 4096 };
+	static const size_t feeds[] = {1, 7, 4096};
 
 	/* the batch parser; on success, resample a bounded slice */
 	memset(&w, 0, sizeof(w));
@@ -115,7 +115,7 @@ static void wav_fuzz_one(const unsigned char *d, size_t n)
 		if (f) {
 			for (size_t i = 0; i < frames * w.channels; i++)
 				f[i] = s16_to_f((int16_t)wav_rd16(
-						d + w.data_off + 2 * i));
+					d + w.data_off + 2 * i));
 			fuzz_resample(f, frames, w.channels, w.rate, 48000, 1);
 			fuzz_resample(f, frames, w.channels, w.rate, 8000, 13);
 			fuzz_resample(f, frames, w.channels, w.rate, 192000, 0);
@@ -181,17 +181,17 @@ static void mutate_and_run(const unsigned char *d, size_t n)
 
 		memcpy(m, d, n);
 		switch (op) {
-		case 0: {	/* 1-4 byte flips at random spots */
+		case 0: { /* 1-4 byte flips at random spots */
 			unsigned flips = 1 + (unsigned)(rng_next() % 4);
 
 			for (unsigned j = 0; j < flips && mn; j++)
 				m[rng_next() % mn] ^= (unsigned char)rng_next();
 			break;
 		}
-		case 1:		/* truncate */
+		case 1: /* truncate */
 			mn = mn ? (size_t)(rng_next() % (uint64_t)mn) : 0;
 			break;
-		default:	/* append a few junk bytes */
+		default: /* append a few junk bytes */
 			for (unsigned j = 0; j < 1 + rng_next() % 8; j++)
 				m[mn++] = (unsigned char)rng_next();
 			break;
