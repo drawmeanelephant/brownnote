@@ -179,8 +179,14 @@ pub trait Sink {
 pub struct Counters {
     /// Raw records drained in `poll`.
     pub received: u64,
-    /// Unparsable or unsupported packets; counted, never reinterpreted.
+    /// Unparsable packets: missing status, wrong length or a data byte with
+    /// a high bit. Counted, never reinterpreted.
     pub malformed: u64,
+    /// Valid MIDI classes the parser does not support (pitch bend, channel
+    /// and polyphonic pressure, program change, real-time bytes, SysEx, ...).
+    /// Kept apart from `malformed` so a healthy controller that emits them
+    /// is distinguishable from corrupt input.
+    pub unsupported: u64,
     /// Well-formed note-on/CC messages with no mapping.
     pub unmapped: u64,
     /// Accepted one-shot triggers.
@@ -350,6 +356,11 @@ impl Controller {
                     continue;
                 }
                 match parser::parse_message(raw.bytes()) {
+                    // Valid but unsupported classes stay distinguishable from
+                    // unparsable bytes; neither is dispatched or retained.
+                    Err(parser::ParseError::UnsupportedStatus(_)) => {
+                        self.counters.unsupported += 1;
+                    }
                     Err(_) => self.counters.malformed += 1,
                     Ok(message) => {
                         let Some(time) = self.original_time(raw.timestamp_us) else {
@@ -1777,7 +1788,7 @@ mod tests {
         controller.attach(consumer);
         controller.begin_connection(SourceId(3), OriginalTime::from_nanos(0));
         for (ts, bytes) in [
-            (10u64, &[0xf8][..]),       // clock: unsupported
+            (10u64, &[0xf8][..]),       // clock: valid but unsupported
             (11, &[0x90, 40][..]),      // wrong length
             (12, &[0x90, 200, 1][..]),  // high data bit
             (13, &[0x91, 40, 100][..]), // valid but unmapped
@@ -1786,10 +1797,95 @@ mod tests {
         }
         let mut sink = VecSink::default();
         controller.poll(&mut sink);
-        assert_eq!(controller.counters().malformed, 3);
+        assert_eq!(
+            controller.counters().unsupported,
+            1,
+            "a clock byte is valid but unsupported"
+        );
+        assert_eq!(
+            controller.counters().malformed,
+            2,
+            "length and data errors stay malformed"
+        );
         assert_eq!(controller.counters().received, 4);
         assert_eq!(controller.counters().unmapped, 1);
         assert!(sink.actions.is_empty());
+    }
+
+    /// The unsupported classes named by #192 are counted on their own and
+    /// never reach mapping, learn, dispatch or retained state.
+    #[test]
+    fn unsupported_classes_count_apart_and_produce_nothing() {
+        let (mut controller, mut producer) = rig(11);
+        controller
+            .set_mapping(Mapping::Note {
+                channel: ch(1),
+                pitch: pitch(40),
+                target: NoteTarget::OneShot(pad(4)),
+            })
+            .unwrap();
+        controller.set_learn(true);
+        let mut sink = VecSink::default();
+        for (ts, bytes) in [
+            (10u64, &[0xe1, 0, 64][..]),   // pitch bend
+            (11, &[0xd1, 64][..]),         // channel pressure
+            (12, &[0xa1, 40, 64][..]),     // polyphonic pressure (poly aftertouch)
+            (13, &[0xc1, 5][..]),          // program change
+            (14, &[0xf8][..]),             // lone real-time clock byte
+            (15, &[0xf0, 0x7e, 0x7f][..]), // SysEx start: also unsupported
+        ] {
+            push(&mut producer, ts, bytes);
+        }
+        controller.poll(&mut sink);
+        assert_eq!(controller.counters().received, 6);
+        assert_eq!(controller.counters().unsupported, 6);
+        assert_eq!(controller.counters().malformed, 0);
+        assert_eq!(
+            controller.counters().unmapped,
+            0,
+            "no unsupported packet reached mapping resolution"
+        );
+        assert_eq!(controller.counters().triggered, 0);
+        assert_eq!(controller.active_held(), 0);
+        assert_eq!(
+            controller.learn_candidate(),
+            None,
+            "learn never captures an unsupported class"
+        );
+        assert!(sink.actions.is_empty());
+    }
+
+    /// Malformed input keeps its own counter, and neither class leaves bytes
+    /// behind for the next packet: a lone real-time byte is not buffered.
+    #[test]
+    fn malformed_input_is_not_merged_with_the_next_packet() {
+        let (mut controller, mut producer) = rig(12);
+        controller
+            .set_mapping(Mapping::Note {
+                channel: ch(1),
+                pitch: pitch(40),
+                target: NoteTarget::OneShot(pad(4)),
+            })
+            .unwrap();
+        let mut sink = VecSink::default();
+        for (ts, bytes) in [
+            (10u64, &[0xf8][..]),       // lone real-time byte
+            (11, &[0x90, 40][..]),      // truncated note
+            (12, &[0x90, 200, 1][..]),  // high data bit
+            (13, &[40, 127][..]),       // missing status
+            (14, &[0x91, 40, 100][..]), // a whole valid packet after them
+        ] {
+            push(&mut producer, ts, bytes);
+        }
+        controller.poll(&mut sink);
+        assert_eq!(controller.counters().unsupported, 1);
+        assert_eq!(controller.counters().malformed, 3);
+        assert_eq!(
+            triggers(&sink),
+            vec![(pad(4), 100)],
+            "the later packet is parsed from its own bytes with its own velocity"
+        );
+        assert_eq!(controller.active_held(), 0);
     }
 
     #[test]

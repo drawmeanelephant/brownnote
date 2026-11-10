@@ -66,10 +66,30 @@ Velocity-zero note on becomes note off before constructing `Velocity`.
 The parser is stateless. Running status, concatenated messages, interleaved
 real-time bytes, and partial chunks are not raw-stream inputs. Length errors,
 high data bits, missing status, and unsupported messages return errors without
-events or retained state. SysEx, pressure, pitch bend, clock, and system reset
-are unsupported. The selected CoreMIDI backend frames callback messages.
-An adapter must count malformed or unsupported callbacks, not reinterpret
-their bytes or claim that truncated input sounded.
+events or retained state. SysEx, pressure, pitch bend, program change, clock,
+and system reset are unsupported. The selected CoreMIDI backend frames callback
+messages.
+
+The adapter keeps those rejection classes apart in `input::Counters`:
+
+- `malformed` counts unparsable packets: a missing status, a wrong length, or
+  a data byte with a high bit.
+- `unsupported` counts a valid MIDI class the parser does not support, from
+  `ParseError::UnsupportedStatus`: pitch bend (`0xE0`), channel pressure
+  (`0xD0`), polyphonic pressure (`0xA0`), program change (`0xC0`), a lone
+  real-time byte (`0xF8`), SysEx and the remaining system messages.
+
+Both classes are counted once per drained packet, and neither produces an
+action, a mapping lookup, a learn candidate or retained state. A real-time
+byte is a whole packet: it is not buffered or merged with the next packet, so
+there is no cross-packet state to unstick. Fixtures feed each unsupported
+class and a malformed-plus-next-valid sequence, and show the next complete
+packet parses from its own bytes at its own velocity. The MIDI status line
+prints `malformed` and `unsupported` beside `received`, `unmapped` and
+`triggered`; the separate `LOSS` group keeps its current fields. A healthy
+controller sending clock or pitch bend therefore reads as unsupported input,
+not as corruption. An adapter must count both classes, not reinterpret their
+bytes or claim that truncated input sounded.
 
 ## Mapping API and lifecycle boundary
 

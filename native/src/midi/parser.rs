@@ -40,11 +40,18 @@ pub enum Message {
     },
 }
 
+/// Why one framed packet became no [`Message`]; no variant retains bytes,
+/// events or cross-packet state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParseError {
+    /// The first byte has no status bit; there is no running status.
     MissingStatus,
+    /// A valid MIDI status outside the supported set. The adapter counts
+    /// this apart from malformed input.
     UnsupportedStatus(u8),
+    /// A supported status without exactly two data bytes.
     WrongLength,
+    /// A data byte with its high bit set, or a value its real type rejects.
     InvalidData,
 }
 

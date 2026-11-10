@@ -374,9 +374,10 @@ pub fn status(_s: &State, midi: &Midi) -> String {
     let counters = input.controller().counters();
     let loss = input.controller().callback_loss();
     text.push_str(&format!(
-        "  ·  received {} · malformed {} · unmapped {} · triggered {} · held {} active",
+        "  ·  received {} · malformed {} · unsupported {} · unmapped {} · triggered {} · held {} active",
         counters.received,
         counters.malformed,
+        counters.unsupported,
         counters.unmapped,
         counters.triggered,
         input.controller().active_held()
@@ -1377,6 +1378,32 @@ mod tests {
     }
 
     #[test]
+    fn the_status_line_separates_unsupported_classes_from_malformed_packets() {
+        let mut app = app();
+        app.state.selected = 2;
+        let mut producer = connected(&mut app, 2);
+        push(&mut producer, 10, &[0xe0, 0, 64]); // pitch bend: valid, unsupported
+        push(&mut producer, 11, &[0xf8]); // real-time clock: valid, unsupported
+        push(&mut producer, 12, &[0x90, 40]); // truncated: malformed
+        push(&mut producer, 13, &[0x91, 40, 100]); // valid and mapped
+        poll(&mut app.state, &app.midi);
+        assert_eq!(counters(&app).unsupported, 2);
+        assert_eq!(counters(&app).malformed, 1);
+        assert_eq!(counters(&app).triggered, 1);
+        let text = status(&app.state, &app.midi);
+        assert!(
+            text.contains(
+                "received 4 · malformed 1 · unsupported 2 · unmapped 0 · triggered 1 · held 0 active"
+            ),
+            "both rejection classes are reported in the status group: {text}"
+        );
+        assert!(
+            !text.contains("LOSS"),
+            "neither rejection class is reported as loss: {text}"
+        );
+    }
+
+    #[test]
     fn learn_captures_then_assigns_a_mapping_to_the_selected_pad() {
         let mut app = app();
         app.state.selected = 9;
@@ -1603,13 +1630,14 @@ mod tests {
             })
         );
         assert_eq!(controller.counters().triggered, 0);
-        // Disconnected scene reports the reconcile and the malformed packet.
+        // Disconnected scene reports the reconcile and the unsupported clock.
         let mut fixture = app();
         scene(&mut fixture.state, &fixture.midi, SceneKind::Disconnected);
         let inner = fixture.midi.inner();
         let controller = inner.input.as_ref().unwrap().controller();
         assert_eq!(controller.counters().disconnects, 1);
-        assert_eq!(controller.counters().malformed, 1);
+        assert_eq!(controller.counters().unsupported, 1);
+        assert_eq!(controller.counters().malformed, 0);
         assert!(inner.connected.is_none());
         assert!(status(&fixture.state, &fixture.midi).contains("DISCONNECTED"));
     }
