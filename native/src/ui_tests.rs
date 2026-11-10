@@ -1,6 +1,7 @@
 use crate::ui::{self, State};
 use brownnote_native::engine::Command;
-use rune::{Env, Key, KeyEvent, Mods, Runtime, Tx};
+use rune::{Color, Env, Key, KeyEvent, Mods, Runtime, Tx};
+use std::sync::atomic::Ordering::Relaxed;
 
 fn runtime() -> Runtime<State> {
     let kit = crate::ui_test_support::kit(0.5, 44_100, 44_100);
@@ -28,6 +29,23 @@ fn tap(rt: &mut Runtime<State>, name: &str) {
     rt.frame(0.0);
     rt.pointer_up(x, y);
     flush(rt);
+}
+
+fn fill(rt: &Runtime<State>, key: &str) -> Color {
+    rt.elements()
+        .iter()
+        .find(|element| element.key.as_deref() == Some(key))
+        .unwrap()
+        .fill
+}
+
+fn key_label(rt: &Runtime<State>, key: &str) -> Option<String> {
+    rt.elements()
+        .iter()
+        .find(|element| element.key.as_deref() == Some(key))
+        .unwrap()
+        .label
+        .clone()
 }
 
 fn stacking(rt: &mut Runtime<State>) {
@@ -335,4 +353,146 @@ fn muted_hits_still_animate_input_feedback_and_stop_redrawing_at_rest() {
         );
     }
     assert!(!ui::poll(&mut rt.state, 3.05, &mut Tx::default()));
+}
+
+/// Drive the virtual mixer past full scale with two overlapping voices.
+fn clipped_overload(rt: &mut Runtime<State>) {
+    rt.state.choke = false;
+    rt.state.output.send(Command::SetChoke(false));
+    rt.state.master = 1.0;
+    rt.state.output.send(Command::SetMaster(1.0));
+    rt.state.settings[0].pan = -1.0;
+    rt.state.settings[0].gain = 2.0;
+    rt.frame(0.02);
+    rt.state.trigger(0, 1.0);
+    rt.state.trigger(0, 1.0);
+    rt.frame(0.02);
+}
+
+#[test]
+fn an_overload_lights_the_clip_lamp_and_every_poll_exchanges_the_engine_flag() {
+    let mut rt = runtime();
+    let unlit = fill(&rt, "clip");
+    clipped_overload(&mut rt);
+    assert!(
+        rt.state.peak > 1.5,
+        "the meter keeps the pre-clamp peak: {}",
+        rt.state.peak
+    );
+    assert!(rt.state.meter.lit());
+    assert!(
+        !rt.state.output.meters.clipped.load(Relaxed),
+        "the poll exchanges the latched engine flag for false"
+    );
+    assert_ne!(fill(&rt, "clip"), unlit, "the lamp visibly changes");
+    let elements = rt.elements();
+    let find = |key: &str| {
+        elements
+            .iter()
+            .find(|element| element.key.as_deref() == Some(key))
+            .unwrap()
+    };
+    assert_eq!(
+        find("output-meter").label.as_deref(),
+        Some("Output peak, clipping"),
+        "the meter names the clip state"
+    );
+    assert_eq!(
+        find("clip-label").text.as_deref(),
+        Some("CLIP"),
+        "clip is not colour alone"
+    );
+    let lamp = find("clip").rect;
+    let db = find("meter").rect;
+    assert!(
+        lamp[0] + lamp[2] <= db[0] + 0.01,
+        "the clip lamp clears the dB readout: {lamp:?} {db:?}"
+    );
+
+    rt.state.output.meters.clipped.store(true, Relaxed);
+    rt.frame(0.02);
+    assert!(
+        !rt.state.output.meters.clipped.load(Relaxed),
+        "a later poll exchanges it too, so no stale true survives"
+    );
+    assert!(rt.state.meter.lit());
+}
+
+#[test]
+fn the_clip_latch_holds_for_1_5_seconds_then_clears_and_relights_on_a_new_overload() {
+    let mut rt = runtime();
+    clipped_overload(&mut rt);
+    assert!(rt.state.meter.lit());
+    key(&mut rt, Key::Escape);
+    for _ in 0..4 {
+        rt.frame(0.1);
+    }
+    assert_eq!(rt.state.counts, [0; 16]);
+
+    rt.state.output.meters.clipped.store(true, Relaxed);
+    rt.frame(0.02);
+    assert!(rt.state.meter.lit(), "a fresh overload lights it");
+    assert!(!rt.state.output.meters.clipped.load(Relaxed));
+    for _ in 0..14 {
+        rt.frame(0.1);
+    }
+    assert!(
+        rt.state.meter.lit(),
+        "still lit 1.4 s after the last overload"
+    );
+    rt.frame(0.11);
+    assert!(
+        !rt.state.meter.lit(),
+        "silence clears the latch without a new overload"
+    );
+
+    rt.frame(0.02);
+    rt.state.output.meters.clipped.store(true, Relaxed);
+    rt.frame(0.02);
+    assert!(rt.state.meter.lit(), "a second overload lights it again");
+    assert!(
+        !rt.state.output.meters.clipped.load(Relaxed),
+        "the exchanged flag cannot stay true"
+    );
+}
+
+#[test]
+fn a_clean_full_scale_peak_never_lights_the_clip_lamp() {
+    let mut rt = runtime();
+    rt.state.choke = false;
+    rt.state.output.send(Command::SetChoke(false));
+    rt.state.master = 1.0;
+    rt.state.output.send(Command::SetMaster(1.0));
+    rt.state.settings[0].pan = -1.0;
+    // The fixture is 0.5 full scale, so 2.0 gain is exactly 1.0, not over.
+    rt.state.settings[0].gain = 2.0;
+    rt.frame(0.02);
+    rt.state.trigger(0, 1.0);
+    rt.frame(0.02);
+    assert!((rt.state.peak - 1.0).abs() < 1e-6, "peak {}", rt.state.peak);
+    assert!(!rt.state.output.meters.clipped.load(Relaxed));
+    assert!(!rt.state.meter.lit());
+    assert_eq!(
+        key_label(&rt, "output-meter").as_deref(),
+        Some("Output peak")
+    );
+}
+
+#[test]
+fn silence_zero_gain_and_a_stopped_voice_light_nothing() {
+    let mut rt = runtime();
+    rt.frame(0.1);
+    assert!(!rt.state.meter.lit(), "a silent mixer lights nothing");
+    rt.state.settings[0].gain = 0.0;
+    rt.state.trigger(0, 1.0);
+    rt.frame(0.02);
+    assert_eq!(rt.state.peak, 0.0);
+    assert!(!rt.state.meter.lit(), "zero pad gain lights nothing");
+    key(&mut rt, Key::Escape);
+    for _ in 0..4 {
+        rt.frame(0.1);
+    }
+    assert_eq!(rt.state.counts, [0; 16]);
+    assert_eq!(rt.state.peak, 0.0);
+    assert!(!rt.state.meter.lit(), "a stopped voice lights nothing");
 }

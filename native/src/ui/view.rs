@@ -253,7 +253,12 @@ fn display(s: &State, tall: bool) -> El {
                         .child(caption(format!("{duration:.2} s")).color(ink("#617c68"))),
                 ),
         )
-        .child(col().w(175.0).center_y().child(meter(s.peak)))
+        .child(
+            col()
+                .w(175.0)
+                .center_y()
+                .child(meter(s.peak, s.meter.lit())),
+        )
 }
 
 fn editor(s: &State) -> El {

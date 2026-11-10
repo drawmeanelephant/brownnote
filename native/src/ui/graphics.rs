@@ -70,7 +70,7 @@ pub(super) fn led(on: bool, color: Color) -> El {
         .a11y_hidden()
 }
 
-pub(super) fn meter(peak: f32) -> El {
+pub(super) fn meter(peak: f32, clip: bool) -> El {
     let db = if peak > 0.0 {
         20.0 * peak.log10()
     } else {
@@ -98,22 +98,45 @@ pub(super) fn meter(peak: f32) -> El {
     col()
         .key("output-meter")
         .role("meter")
-        .label("Output peak")
+        .label(if clip {
+            "Output peak, clipping"
+        } else {
+            "Output peak"
+        })
         .range_value(f64::from(db.max(-60.0)), -60.0, 0.0)
         .gap(6.0)
         .child(
             row()
                 .justify_between()
+                .center_y()
                 .child(caption("OUTPUT / PEAK"))
                 .child(
-                    caption(if peak == 0.0 {
-                        "−∞ dB".into()
-                    } else {
-                        format!("{db:.1} dB")
-                    })
-                    .key("meter")
-                    .a11y_value(format!("{peak:.3}"))
-                    .color(ink("#c8f77b")),
+                    row()
+                        .gap(4.0)
+                        .center_y()
+                        .child(
+                            el().key("clip")
+                                .size(14.0, 6.0)
+                                .radius(2.0)
+                                .fill(if clip { ink("#fa806a") } else { ink("#26352d") })
+                                .shadow(0.0, if clip { 6.0 } else { 0.0 }, ink("#5c2a22"))
+                                .a11y_hidden(),
+                        )
+                        .child(caption("CLIP").key("clip-label").color(if clip {
+                            ink("#fa806a")
+                        } else {
+                            ink("#617c68")
+                        }))
+                        .child(
+                            caption(if peak == 0.0 {
+                                "−∞ dB".into()
+                            } else {
+                                format!("{db:.1} dB")
+                            })
+                            .key("meter")
+                            .a11y_value(format!("{peak:.3}"))
+                            .color(ink("#c8f77b")),
+                        ),
                 ),
         )
         .child(segments)
