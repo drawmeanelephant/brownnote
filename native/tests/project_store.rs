@@ -1,12 +1,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use brownnote_native::{
     engine::{Command, Slots},
+    import::{MediaPublisher, SessionMedia},
     kit,
     output::Output,
     pedals::render::{Chain, Stage},
     project::{
         Asset, AssetId, AssetRef, Document, DocumentError, MediaKind, SampleAssignment, media,
         recovery::OpenChoice,
+        session::{self, Snapshot},
         store::{CommitState, FileSystem, GenerationId, MediaSource, Store, StoreError, SystemFs},
     },
 };
@@ -15,7 +17,10 @@ use std::{
     fs::{self, File},
     io::{self, Cursor},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1212,4 +1217,260 @@ fn symlinked_media_or_private_directories_cannot_escape_or_be_cleaned() {
             .inspect_committed()
             .is_err()
     );
+}
+
+/// An owned capture as the UI worker makes it, without a live registry.
+fn recovery_snapshot(document: Document, sources: &[MediaSource]) -> Snapshot {
+    let media = SessionMedia::default();
+    for source in sources {
+        let bytes = fs::read(&source.path).unwrap();
+        media.publish(&AssetRef::of(&bytes), &bytes).unwrap();
+    }
+    Snapshot {
+        document,
+        media: Arc::new(media),
+        freeze: None,
+    }
+}
+
+#[test]
+fn autosave_copy_uses_a_separate_machine_root_and_leaves_the_saved_store_untouched() {
+    let fixture = Fixture::new();
+    let saved = fixture.seed();
+    let base = fixture.base.join("recovery");
+    fs::create_dir(&base).unwrap();
+    let before = tree(&fixture.root);
+    let mut edited = fixture.a.clone();
+    edited.pads[0].gain = 0.25;
+    let receipt = session::autosave_copy(
+        &base,
+        &fixture.root,
+        saved,
+        recovery_snapshot(edited.clone(), &fixture.sources_a),
+    )
+    .unwrap();
+
+    let copy_root = session::recovery_copy_root(&base, &fixture.root).unwrap();
+    assert_ne!(copy_root, fixture.root);
+    assert!(copy_root.starts_with(&base));
+    assert_eq!(
+        session::recovery_copy_root(&base, &fixture.root).unwrap(),
+        copy_root,
+        "the copy directory must be stable for one project"
+    );
+    assert_eq!(receipt.saved_generation, saved);
+    assert_eq!(
+        tree(&fixture.root),
+        before,
+        "autosave touched the saved project"
+    );
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .inspect_committed()
+            .unwrap()
+            .unwrap()
+            .generation,
+        saved
+    );
+
+    let copy = Store::new(copy_root.clone())
+        .open(OpenChoice::Current)
+        .unwrap();
+    assert_eq!(copy.document(), &edited, "the copy holds the unsaved edit");
+    let record = session::read_autosave(&copy_root).unwrap();
+    assert_eq!(
+        record.project,
+        fixture.root.canonicalize().unwrap().to_string_lossy()
+    );
+    assert_eq!(record.saved_generation, saved.to_string());
+    assert_eq!(record.copy_generation, receipt.generation.to_string());
+    assert!(record.written_ms > 0);
+    assert!(
+        !fixture.root.join(session::AUTOSAVE_FILE).exists(),
+        "recovery metadata belongs to the machine copy only"
+    );
+}
+
+#[test]
+fn failed_autosave_keeps_the_previous_recovery_copy_and_the_saved_project() {
+    let fixture = Fixture::new();
+    let saved = fixture.seed();
+    let base = fixture.base.join("recovery");
+    fs::create_dir(&base).unwrap();
+    let mut edited = fixture.a.clone();
+    edited.pads[1].gain = 0.3;
+    let first = session::autosave_copy(
+        &base,
+        &fixture.root,
+        saved,
+        recovery_snapshot(edited.clone(), &fixture.sources_a),
+    )
+    .unwrap();
+    let copy_root = session::recovery_copy_root(&base, &fixture.root).unwrap();
+    let saved_before = tree(&fixture.root);
+
+    // A declared asset with no bytes anywhere fails before any publish.
+    let absent = b"never published bytes";
+    let mut broken = edited.clone();
+    broken.pads[2].gain = 0.4;
+    broken.assets.push(Asset {
+        reference: AssetRef::of(absent),
+        kind: MediaKind::Source,
+    });
+    let failure = session::autosave_copy(
+        &base,
+        &fixture.root,
+        saved,
+        recovery_snapshot(broken, &fixture.sources_a),
+    )
+    .unwrap_err();
+    match failure {
+        session::Error::Save(error) => assert_eq!(error.commit, CommitState::Unchanged),
+        other => panic!("unexpected autosave failure: {other}"),
+    }
+
+    // The previous complete copy generation and its record are intact.
+    let copy = Store::new(copy_root.clone())
+        .open(OpenChoice::Current)
+        .unwrap();
+    assert_eq!(copy.document(), &edited);
+    assert_eq!(
+        session::read_autosave(&copy_root).unwrap().copy_generation,
+        first.generation.to_string()
+    );
+    assert_eq!(tree(&fixture.root), saved_before);
+    let offer = session::recovery_copy(&base, &fixture.root, saved)
+        .unwrap()
+        .unwrap();
+    assert_eq!(offer.offered, Some(first.generation));
+}
+
+#[test]
+fn recovery_copy_is_offered_only_for_the_same_project_and_saved_generation() {
+    let fixture = Fixture::new();
+    let saved = fixture.seed();
+    let base = fixture.base.join("recovery");
+    fs::create_dir(&base).unwrap();
+    let copy_root = session::recovery_copy_root(&base, &fixture.root).unwrap();
+
+    // A copy identical to the saved version is never offered.
+    let identical = session::autosave_copy(
+        &base,
+        &fixture.root,
+        saved,
+        recovery_snapshot(fixture.a.clone(), &fixture.sources_a),
+    )
+    .unwrap();
+    assert_eq!(identical.generation, saved);
+    let report = session::recovery_copy(&base, &fixture.root, saved)
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.offered, None);
+    assert!(
+        report.note.contains("matches the saved version"),
+        "{}",
+        report.note
+    );
+
+    // A differing copy of the same saved generation is offered, not applied.
+    let mut edited = fixture.a.clone();
+    edited.pads[0].gain = 0.123;
+    let newer = session::autosave_copy(
+        &base,
+        &fixture.root,
+        saved,
+        recovery_snapshot(edited, &fixture.sources_a),
+    )
+    .unwrap();
+    let report = session::recovery_copy(&base, &fixture.root, saved)
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.offered, Some(newer.generation));
+    assert_eq!(
+        Store::new(fixture.root.clone())
+            .inspect_committed()
+            .unwrap()
+            .unwrap()
+            .generation,
+        saved,
+        "offering a copy must not apply it"
+    );
+
+    // A later save makes the copy older, so it is not offered.
+    let second = Store::new(fixture.root.clone())
+        .save(&fixture.b, &fixture.sources_b)
+        .unwrap()
+        .generation;
+    let report = session::recovery_copy(&base, &fixture.root, second)
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.offered, None);
+    assert!(
+        report.note.contains("older than the saved version"),
+        "{}",
+        report.note
+    );
+
+    // A directory holding another project's record is never offered.
+    let other = fixture.base.join("other");
+    let other_saved = Store::new(other.clone())
+        .save(&fixture.a, &fixture.sources_a)
+        .unwrap()
+        .generation;
+    let other_copy = session::recovery_copy_root(&base, &other).unwrap();
+    fs::rename(&copy_root, &other_copy).unwrap();
+    let report = session::recovery_copy(&base, &other, other_saved)
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.offered, None);
+    assert!(report.note.contains("another project"), "{}", report.note);
+}
+
+#[test]
+fn recovery_copy_with_missing_or_corrupt_media_is_rejected_not_offered() {
+    for corrupt in [false, true] {
+        let fixture = Fixture::new();
+        let saved = fixture.seed();
+        let base = fixture.base.join("recovery");
+        fs::create_dir(&base).unwrap();
+        let mut edited = fixture.a.clone();
+        edited.pads[0].gain = 0.2;
+        let copy = session::autosave_copy(
+            &base,
+            &fixture.root,
+            saved,
+            recovery_snapshot(edited.clone(), &fixture.sources_a),
+        )
+        .unwrap();
+        let copy_root = session::recovery_copy_root(&base, &fixture.root).unwrap();
+        let reference = edited
+            .assets
+            .iter()
+            .find(|asset| asset.kind == MediaKind::RetainedRender)
+            .unwrap()
+            .reference
+            .clone();
+        let path = copy_root.join(reference.id.relative_path());
+        if corrupt {
+            fs::write(&path, vec![0; reference.bytes as usize]).unwrap();
+        } else {
+            fs::remove_file(&path).unwrap();
+        }
+
+        let report = session::recovery_copy(&base, &fixture.root, saved)
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.offered, None);
+        assert!(report.options.current.is_err());
+        assert!(!report.options.recoverable.contains(&copy.generation));
+        assert!(
+            !report.options.rejected.is_empty(),
+            "an invalid copy must stay visible as rejected"
+        );
+        // The saved project still opens on its own.
+        let opened = Store::new(fixture.root.clone())
+            .open(OpenChoice::Current)
+            .unwrap();
+        assert_eq!(opened.document(), &fixture.a);
+    }
 }

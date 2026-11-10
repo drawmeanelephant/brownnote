@@ -1,9 +1,9 @@
 # Application project transactions
 
-Refs #100. This slice supplies `project::session` and `ui/projects.rs`, under
-D3–D5, D7 and D8. It does **not** close #100. D6 autosave, manual
-save/reopen/relocation listening, and recovery/media collection policy remain
-open.
+Refs #100 and #196. This slice supplies `project::session` and
+`ui/projects.rs`, under D3–D5, D7 and D8. It does **not** close #100. Manual
+save/reopen/relocation listening and recovery/media collection policy remain
+open. D6 autosave is implemented here.
 
 ## Application controls
 
@@ -62,7 +62,57 @@ rollback claim is made for uncertain publication.
 Save does not cancel pad work, stop voices or change runtime assignments.
 The completion names the saved generation and explicitly says that edits made
 during the save were not included. A save already admitted cannot be cancelled.
-This slice does not claim dirty tracking, automatic save, or quit protection.
+Quit protection is not claimed: D6's 60-second copy plus the open-time offer is
+the deliverable.
+
+## Autosave and the recovery copy (D6)
+
+`Projects` tracks dirtiness against the last successful save or open. The
+comparison is the same `Snapshot` capture a save uses (settings, chains and
+plugin recipes, takes and edits, MIDI mappings, instrument and live-take
+records, and owned media), compared to the document a save wrote or an open
+applied. Only a successful save or open clears dirtiness; a failed or cancelled
+operation leaves the previous baseline in place. The comparison runs at most
+once a second while the app draws, so a large take bank is not recopied every
+frame.
+
+While the kit differs from that baseline and has been idle for 60 seconds, the
+panel captures one `Snapshot` and sends `Request::Autosave` to the same project
+worker. The panel resolves the machine recovery directory
+(`paths::Resource::Recovery`) once on the control thread; the worker appends one
+subdirectory derived from the saved project's canonical root, writes the copy
+through `Store::save` on that root, and records `autosave.json` beside it. The
+saved project directory, its `project.json` and its `.brownnote-store` are only
+read. There is no second document writer and no new field in `project.json`.
+
+The copy record names the canonical project root, the saved generation the copy
+was captured from, the copy root's own generation, and the UNIX millisecond
+write time. A copy for another project identity, a record that does not match
+the copy's current evidenced generation, a copy identical to the saved
+generation, and a copy based on an older saved generation are all rejected or
+left unoffered. Media that is missing or corrupt keeps the copy in the store's
+`rejected` list, never among the choices.
+
+A tick writes nothing and reports a visible reason when a pass is armed or
+recording, a sample/pedal/plugin/instrument import or render is busy, a project
+operation is pending, a chain changed but its render did not, or the project
+exceeds `live_take_capacity`. A failed write reports the store's `Unchanged`,
+`Unknown`, or `PublishedNotDurable` distinction instead of success, leaves the
+previous complete copy generation and its record intact, and retries. Cancelling
+or closing the panel drops the pending autosave completion; the store
+transaction still completes fully or not at all, so no partial copy exists.
+
+On the next open, the worker checks the machine copy and `Prepared::recovery`
+carries the store's own `recovery_options` for that root plus at most one
+offered generation. An offered copy is listed in the panel; selecting it reuses
+`OpenChoice::Committed` and the recovered-content rule (save only to a new,
+nonexistent directory). A copy is never applied by opening the saved project,
+and a recovery-copy problem never fails a valid open.
+
+The 60-second deadline is scheduled by a small timer thread owned by
+`Projects`; its only job is to wake the event loop, so no new work runs on the
+audio callback and pads stay live. The machine recovery root is resolved once on
+the control thread when first needed.
 
 ## Open and explicit recovery
 
@@ -130,7 +180,12 @@ directory relocation, deleting original paths and the opened project before
 save-as, missing/corrupt media, hash-valid bad retained WAV, failed saves,
 candidate output/partial queue refusal, runtime capacity failure, pending work,
 overlapping requests, immutable save snapshots, cancellation, stale completion,
-and explicit recovery/save-as.
+explicit recovery/save-as, and D6 autosave: a clean project producing no copy,
+every dirty source producing one, the separate machine root leaving the saved
+project byte-identical, armed/busy/pending/unrendered/over-capacity skips, a
+failed write keeping the previous copy, the open-time offer never applying a
+copy, a missing-media copy staying rejected, and cancel/close dropping a pending
+write without a partial file.
 
 The script forces the local crate fresh and checks every expected checkout-local
 project-control test name, both in the focused run and full `make native-test`.

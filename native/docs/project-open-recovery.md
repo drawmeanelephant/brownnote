@@ -1,8 +1,9 @@
 # Validated project open and explicit recovery
 
 Refs #100. This is the backend follow-up to the transactional store, under
-D3, D4 and D5. D6 autosave, application save/open UI, runtime replacement,
-and listening checks remain outstanding. This does not close #100.
+D3, D4 and D5. The application save/open UI and runtime replacement landed in
+`project-session.md`, and D6 autosave lists its machine recovery root through
+this same API. Listening checks remain outstanding.
 
 ## Public integration seam
 
@@ -50,8 +51,10 @@ decoder. The next app slice must:
    encoded media through the existing importer/store ownership contract when
    saving. Never add a second document writer.
 
-No immediate integrator wiring is required for this backend PR. The four steps
-above are the exact follow-up integration requirements, not implemented UI.
+No immediate integrator wiring was required for this backend PR itself. The
+four steps above are the follow-up integration requirements; the application
+save/open/recovery slices implement them (`project-session.md`), and D6 reuses
+them on its machine recovery root.
 
 ## Offer recovery, then require a choice
 
@@ -190,7 +193,8 @@ directory sync, hard links, and same-filesystem rename. It does **not** prove
 OS power-loss durability, drive-cache flush, or behavior on other filesystems.
 No physical output or listening claim is made.
 
-Outstanding #100 gates remain application save/open/recovery choice UI and its
-atomic runtime replacement, D6's separate 60-second recovery root using this
-same store, bounded retention/collection policy, and manual listening after
-real application save/reopen/relocation.
+Outstanding gates remain bounded retention/collection of old recovery
+generations, and manual listening after real application save/reopen/relocation
+and after recovering a D6 copy. The save/open/recovery UI, its atomic runtime
+replacement, and D6's separate 60-second recovery root are implemented (see
+`project-session.md`).

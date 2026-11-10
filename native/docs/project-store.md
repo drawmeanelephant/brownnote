@@ -2,8 +2,9 @@
 
 Refs #100. The save transaction and read-only inspection are implemented.
 The follow-up [open/recovery API and version policy](project-open-recovery.md)
-add explicit backend recovery selection. #100 remains open: runtime apply
-integration, save/open/recovery UI, and D6 autosave are later slices.
+adds explicit backend recovery selection. #100 is closed; the application slice
+added runtime apply and save/open/recovery UI, and D6 autosave (issue #196)
+reuses this transaction on a separate machine recovery root.
 
 ## Layout and commit point
 
@@ -60,8 +61,10 @@ The follow-up records commit evidence separately; only evidenced, validated
 snapshots are offered as saved recovery choices. No automatic recovery choice
 is made. Keeping all snapshots is conservative;
 bounded retention and media collection need a later policy that protects both
-saved and separate recovery roots. D6's later recovery writer must call this
-same transaction API with its separate recovery root.
+saved and separate recovery roots. D6's recovery writer (issue #196) calls this
+same transaction API on its separate machine recovery root; it adds only a
+machine-level `autosave.json` beside that root and never changes this layout or
+the project schema.
 
 ## Consumer API
 

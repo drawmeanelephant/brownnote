@@ -72,9 +72,11 @@ checkout, working directory or temporary directory. Default user locations
 are defined only for macOS; other platforms can supply explicit directories.
 
 Cache/recovery resolution creates the directory and writes/removes a unique
-probe to verify access. Call it off the audio thread. Recovery here is only
-a writable location: this slice does not save, autosave or recover projects,
-and it does not select a project directory. Project media is not cache (D4).
+probe to verify access. Call it off the audio thread. This path slice selects
+no project directory and writes no project. The project lane later consumes
+`Resource::Recovery` for D6 autosave: it appends one subdirectory named by the
+saved project's canonical root and writes the copy there through the project
+store. Project media is not cache (D4).
 
 Preference resolution selects a directory without creating it or probing
 write access. The output preference service reads existing settings before
