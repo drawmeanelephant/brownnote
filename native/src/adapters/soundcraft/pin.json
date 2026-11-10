@@ -15,8 +15,12 @@
     "SHA256SUMS.txt": "ef8f2b736eb43bfe3f631905909fd23c1426258eb3e5af8a80dbea4f572fe8e8"
   },
   "verification": "Tag resolved to full commit; downloaded artifacts match release API digests and SHA256SUMS.txt; DMG mounted read-only and executable bytes hashed. No release executable was run. Detached signature not verified.",
-  "status": "real GUI checked through the public control protocol on 2026-11-09 (macOS 27.3 arm64, --no-audio): #95 recipe and adapter edit/save/reopen/relocation pass. NOT listened to; no hand-driven UI edits.",
-  "app_evidence": ["evidence/recipe-app.json", "evidence/adapter-edit.json"],
+  "status": "real GUI checked through the public control protocol on 2026-11-09 (macOS 27.3 arm64, --no-audio): #95 recipe, adapter edit/save/reopen/relocation, and the v3 live-take bundle pass (unsupported note record naming the plugin, retained take and pad hit imported as separate clips). NOT listened to; no hand-driven UI edits.",
+  "app_evidence": [
+    "evidence/recipe-app.json",
+    "evidence/adapter-edit.json",
+    "evidence/live-take.json"
+  ],
   "recheck": [
     "Run the unchanged #95 probe.py with v0.19.0 app/CLI and independent fixtures, using the opt-in test.",
     "Recheck separate-hit overlap, destructive same-track import, same-pitch MIDI import/export, 960 PPQ and sample/tick conversion.",

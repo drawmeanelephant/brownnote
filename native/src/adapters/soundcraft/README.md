@@ -129,6 +129,15 @@ The opt-in test below passed against the actual v0.19.0 GUI, started with
   identical tracks, notes, tempo and loaded relative `Audio Files/`. Removing
   the WAV used by the moved clip is then reported as missing and unhealthy.
   Evidence: [evidence/adapter-edit.json](evidence/adapter-edit.json).
+- The adapter on a manifest v3 bundle from the live-take export path: one held
+  note played through a live CLAP instrument and a pad hit from the same pass,
+  beside the take's retained audio. The pinned app records one unsupported
+  mapping naming the plugin (backend, ID, version, short artifact) and the note
+  count. The note is not written as MIDI, the retained take and the pad hit
+  import as two separate audio clips on their own tracks, and no machine path
+  appears in the report. This is the #171 destination decision, checked against
+  the actual app instead of the fake target.
+  Evidence: [evidence/live-take.json](evidence/live-take.json).
 
 Observations: SoundCraft keeps the deleted clip's WAV in `Audio Files/`. When
 that unused file is removed, `session.open` lists it as missing, but
@@ -141,7 +150,10 @@ result. The maintainer listening steps below are an optional quality follow-up.
 
 To repeat the check, prepare the app as described above, then also set
 `BROWNNOTE_SOUNDCRAFT_EDIT_EVIDENCE=/absolute/scratch/adapter-edit.json`.
-The adapter edit check runs from the same opt-in test.
+The adapter edit check runs from the same opt-in test. The live-take case is a
+second opt-in test; set `BROWNNOTE_SOUNDCRAFT_LIVE_EVIDENCE` to its evidence
+path. `make native-soundcraft-test` runs both.
+
 ## Maintainer real-app gate
 
 Use a desktop session and checksum-verified v0.19.0 app/CLI. Read #95's
@@ -161,8 +173,12 @@ export BROWNNOTE_SOUNDCRAFT_APP=/absolute/SoundCraft.app/Contents/MacOS/SoundCra
 export BROWNNOTE_SOUNDCRAFT_CLI=/absolute/soundcraft-cli
 export BROWNNOTE_SOUNDCRAFT_PYTHON=/absolute/venv/bin/python
 export BROWNNOTE_SOUNDCRAFT_EVIDENCE=/absolute/scratch/app.json
+export BROWNNOTE_SOUNDCRAFT_LIVE_EVIDENCE=/absolute/scratch/live-take.json
 cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
   pinned_app_recipe_and_adapter -- --ignored --exact
+cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
+  pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio \
+  -- --ignored --exact
 ```
 
 The wrapper imports the unchanged `Probe`, `scenario` and independent fixture
@@ -173,6 +189,11 @@ MIDI notes/channels/velocities/durations, 120 BPM, 960 ticks = 24,000 samples,
 edits, save/quit/reopen, source-free relocation, and missing-media negative
 control. It then runs the actual adapter on a minimal bundle; the adapter
 reopens and inspects counts, clip positions, notes, tempo and media availability.
+The live-take test builds its bundle through the live-take export path and
+checks the same pinned app against a `live_instrument_notes` part: one
+unsupported record naming the plugin and its note count, the retained take and
+the pad hit as two separate audio clips, no MIDI part, and no machine path in
+the report.
 Neither a skipped test nor fake-process results satisfy this gate.
 
 Finally use a positive synthetic adapter output (the spike's final relocated

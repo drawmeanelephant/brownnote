@@ -150,5 +150,6 @@ native-ladspa-workflow-test: native-plugin-host
 # Explicit opt-in: requires the pinned SoundCraft app, CLI and Python environment.
 native-soundcraft-test:
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_recipe_and_adapter -- --ignored --exact
+	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio -- --ignored --exact
 
 .PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-soundcraft-test native-plugin-host native-clap-effect-test native-plugin-workflow-test native-clap-live-test native-clap-live-cpal-test native-ladspa-plate-test native-ladspa-workflow-test

@@ -1,13 +1,13 @@
 //! Public bundle/CLI boundaries. All default tests execute only the strict fake.
 use brownnote_native::{
-    adapters::soundcraft::{COMMIT, Report, Request, SamplerMapping, convert},
+    adapters::soundcraft::{COMMIT, PIN, Report, Request, SamplerMapping, VERSION, convert},
     edit::EditModel,
     export::{
         adapter::{self, ProjectFrozenHit},
         bundle::{BundleRequest, SystemWriter},
         manifest::{
-            AssetEntry, AssetId, AssetKind, AudioRole, EventEntry, EventId, LossRecord, Manifest,
-            PartEntry, PartId, PartKind, TimeOrigin, Timing,
+            AssetEntry, AssetId, AssetKind, AudioRole, EventEntry, EventId, LossRecord,
+            MANIFEST_FORMAT_VERSION, Manifest, PartEntry, PartId, PartKind, TimeOrigin, Timing,
         },
     },
     pedals::offline::{Backend, Hash256, Plugin, Stage},
@@ -731,6 +731,157 @@ fn live_take_bundle(root: &std::path::Path) -> Result<(PathBuf, Plugin), Box<dyn
     Ok((bundle, plugin))
 }
 
+/// A manifest v3 bundle from the real export path for one live-instrument pass:
+/// the take's retained audio, the notes that pass played and the pad hit it
+/// played from the same take. The pad's own signal is the pad mixer's, not the
+/// plugin's capture, so it is a pad clip beside the take, never a note.
+fn live_take_with_hit_bundle(root: &std::path::Path) -> Result<(PathBuf, Plugin), Box<dyn Error>> {
+    let take: Vec<f32> = (0..2_400)
+        .flat_map(|frame| {
+            let value = 0.3 * (frame as f32 / 48_000.0 * 300.0 * std::f32::consts::TAU).sin();
+            [value, -value]
+        })
+        .collect();
+    let audio = float_wav(2, &take)?;
+    let pad: Vec<f32> = (0..24_000)
+        .map(|frame| 0.25 * (frame as f32 / 48_000.0 * 220.0 * std::f32::consts::TAU).sin())
+        .collect();
+    let pad_source = float_wav(1, &pad)?;
+    let held: Vec<f32> = (0..36_000)
+        .map(|frame| 0.5 * (frame as f32 / 48_000.0 * 110.0 * std::f32::consts::TAU).sin())
+        .collect();
+    let pad_retained = float_wav(1, &held)?;
+    let id = project::AssetId::of(&audio);
+    let pad_source_id = project::AssetId::of(&pad_source);
+    let pad_retained_id = project::AssetId::of(&pad_retained);
+    let plugin = Plugin {
+        backend: Backend::Clap,
+        id: "org.brownnote.fixture.live".into(),
+        artifact: Hash256::of(b"fixture live take with a pad hit"),
+        abi: "clap-1.2".into(),
+        version: "0.4.0".into(),
+    };
+    let stage = Stage {
+        plugin: plugin.clone(),
+        location: PathBuf::from("/machine/never-installed.clap"),
+        params: Vec::new(),
+        state: Some(vec![1, 2, 3].into()),
+    };
+    let mut live = LiveInstrumentDocument::from_stage(&stage, "Fixture Live".into(), true);
+    live.takes.push(LiveTakeDocument {
+        take: "12".into(),
+        asset: id,
+        rate: 48_000,
+        frames: 2_400,
+    });
+    let mut document = Document {
+        assets: vec![
+            Asset {
+                reference: AssetRef::of(&audio),
+                kind: MediaKind::LiveTakeRender,
+            },
+            Asset {
+                reference: AssetRef::of(&pad_source),
+                kind: MediaKind::Source,
+            },
+            Asset {
+                reference: AssetRef::of(&pad_retained),
+                kind: MediaKind::RetainedRender,
+            },
+        ],
+        live_instrument: Some(live),
+        ..Document::default()
+    };
+    document.pads[3].sample = Some(SampleAssignment {
+        source: pad_source_id,
+        retained: Some(pad_retained_id),
+    });
+    document.validate().map_err(debug)?;
+    let project_dir = root.join("live hit project");
+    let originals = root.join("live hit original media");
+    fs::create_dir_all(&originals)?;
+    let mut sources = Vec::new();
+    for (asset, name, bytes) in [
+        (id, "take.wav", &audio),
+        (pad_source_id, "pad source.wav", &pad_source),
+        (pad_retained_id, "pad retained.wav", &pad_retained),
+    ] {
+        let path = originals.join(name);
+        fs::write(&path, bytes)?;
+        sources.push(MediaSource { id: asset, path });
+    }
+    Store::new(project_dir.clone())
+        .save(&document, &sources)
+        .map_err(debug)?;
+    fs::remove_dir_all(&originals)?;
+
+    let key = |channel, pitch| -> Result<NoteKey, Box<dyn Error>> {
+        Ok(NoteKey {
+            source: SourceId(11),
+            channel: Channel::try_from(channel).map_err(debug)?,
+            pitch: Pitch::try_from(pitch).map_err(debug)?,
+        })
+    };
+    let mut takes = Takes::new(LoopBars::try_from(4).map_err(debug)?, TakeId(12));
+    takes
+        .set_tempo(Tempo::try_from(60_000).map_err(debug)?)
+        .map_err(debug)?;
+    let pass = takes.arm(PassOptions::default()).map_err(debug)?;
+    takes.start(pass).map_err(debug)?;
+    let ms = 1_000_000;
+    for (target, pitch, velocity, on, off) in [
+        (
+            Target::Instrument(InstrumentId(1)),
+            60,
+            100,
+            200 * ms,
+            300 * ms,
+        ),
+        (
+            Target::Pad(PadId::try_from(3).map_err(debug)?),
+            36,
+            110,
+            900 * ms,
+            1_100 * ms,
+        ),
+    ] {
+        takes
+            .note_on(
+                pass,
+                target,
+                key(0, pitch)?,
+                Velocity::try_from(velocity).map_err(debug)?,
+                OriginalTime::from_nanos(on),
+            )
+            .map_err(debug)?;
+        takes
+            .note_off(pass, key(0, pitch)?, OriginalTime::from_nanos(off))
+            .map_err(debug)?;
+    }
+    takes.finish(pass).map_err(debug)?;
+    takes
+        .set_tempo(Tempo::try_from(120_000).map_err(debug)?)
+        .map_err(debug)?;
+    let bundle = root.join("live hit writer bundle");
+    adapter::write_saved_project_bundle(
+        &mut SystemWriter,
+        &BundleRequest {
+            source_root: project_dir,
+            destination: bundle.clone(),
+            origin: TimeOrigin { nanos: 0 },
+            timing: Timing {
+                tempo_milli_bpm: 120_000,
+                sample_rate_hz: 48_000,
+            },
+        },
+        &takes,
+        &EditModel::default(),
+        &BTreeMap::new(),
+    )
+    .map_err(debug)?;
+    Ok((bundle, plugin))
+}
+
 /// Independent expectations at 48 kHz / 120 BPM / 960 PPQ (1 s = 1,920 ticks).
 fn assert_writer_bundle_report(report: &Report) {
     let mut audio: Vec<_> = report.audio.iter().map(|c| (c.start, c.length)).collect();
@@ -922,5 +1073,194 @@ fn pinned_app_recipe_and_adapter() -> TestResult {
         status.success(),
         "actual-app edit/save/reopen of adapter output failed"
     );
+    Ok(())
+}
+
+/// #171's open decision, answered by the actual pinned app instead of the fake:
+/// a manifest v3 bundle built by the live-take export path converts without
+/// losing the take, names the plugin it cannot load, and never invents MIDI.
+#[test]
+#[ignore = "requires explicit BROWNNOTE_SOUNDCRAFT_APP/CLI/PYTHON; launches the actual pinned GUI"]
+fn pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio() -> TestResult {
+    if std::env::var_os("BROWNNOTE_SOUNDCRAFT_RUN_PINNED").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return Err("set BROWNNOTE_SOUNDCRAFT_RUN_PINNED=1 explicitly".into());
+    }
+    let app = std::env::var_os("BROWNNOTE_SOUNDCRAFT_APP").ok_or("set BROWNNOTE_SOUNDCRAFT_APP")?;
+    let cli = std::env::var_os("BROWNNOTE_SOUNDCRAFT_CLI").ok_or("set BROWNNOTE_SOUNDCRAFT_CLI")?;
+    // Check the bytes again here: a substituted app must never reach the GUI.
+    let pin: Value = serde_json::from_str(PIN)?;
+    let app_hash = Hash256::of(&fs::read(&app)?).to_string();
+    let cli_hash = Hash256::of(&fs::read(&cli)?).to_string();
+    assert_eq!(pin["binary_sha256"]["SoundCraft"], app_hash);
+    assert_eq!(pin["binary_sha256"]["soundcraft-cli"], cli_hash);
+
+    let mut fixture = Fixture::new()?;
+    let (bundle, plugin) = live_take_with_hit_bundle(&fixture.root)?;
+    let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
+    assert_eq!(manifest.version, MANIFEST_FORMAT_VERSION);
+    let live_part = manifest
+        .parts
+        .iter()
+        .find(|part| matches!(part.kind, PartKind::LiveInstrumentNotes { .. }))
+        .ok_or("bundle without the live take's notes")?;
+    let PartKind::LiveInstrumentNotes { plugin: identity } = &live_part.kind else {
+        unreachable!()
+    };
+    assert_eq!(
+        (
+            identity.backend.as_str(),
+            identity.id.as_str(),
+            identity.version.as_str(),
+            identity.abi.as_str()
+        ),
+        (
+            "clap",
+            plugin.id.as_str(),
+            plugin.version.as_str(),
+            plugin.abi.as_str()
+        )
+    );
+    assert!(plugin.artifact.to_string().starts_with(&identity.artifact));
+    let note_events: Vec<_> = manifest
+        .events
+        .iter()
+        .filter(|event| event.part == live_part.id)
+        .collect();
+    assert_eq!(note_events.len(), 1);
+
+    fixture.request.app = app.clone().into();
+    fixture.request.cli = cli.clone().into();
+    fixture.request.timeout = Duration::from_secs(45);
+    fixture.request.bundle = bundle.clone();
+    fixture.request.output = fixture.root.join("live take output");
+    // No sampler mapping: the take's retained audio is the only fallback.
+    assert!(fixture.request.mappings.is_empty());
+    let report = convert(&fixture.request)?;
+    assert_eq!(
+        (
+            report.soundcraft_version.as_str(),
+            report.soundcraft_commit.as_str()
+        ),
+        (VERSION, COMMIT)
+    );
+
+    // An explicit unsupported mapping, naming the plugin by identity only.
+    let record = report
+        .records
+        .iter()
+        .find(|record| record.part == Some(live_part.id) && record.kind == "unsupported")
+        .ok_or("unavailable live plugin mapping was not reported")?;
+    assert_eq!(
+        record.detail,
+        format!(
+            "{} live instrument note(s) kept in the manifest for {}; this target cannot load \
+             that plugin or carry its identity into a track, so the notes are not imported as \
+             MIDI. The take's retained audio is the fallback.",
+            note_events.len(),
+            identity.describe()
+        )
+    );
+    assert!(record.detail.contains("clap"), "{}", record.detail);
+    assert!(record.detail.contains(&plugin.id), "{}", record.detail);
+    assert!(record.detail.contains(&plugin.version), "{}", record.detail);
+    assert!(record.detail.contains(&plugin.abi), "{}", record.detail);
+    // The short artifact hash, never the whole digest.
+    assert!(record.detail.contains(&identity.artifact[..12]));
+    assert!(!record.detail.contains(&identity.artifact));
+
+    // The live notes never become a sampled-instrument MIDI track.
+    assert!(report.midi.is_empty());
+
+    // The retained take audio and the pad hit are separate audio clips.
+    let take_part = manifest
+        .parts
+        .iter()
+        .find(|part| matches!(part.kind, PartKind::SampleClips { .. }))
+        .ok_or("bundle without the retained take clips")?;
+    let take_event = manifest
+        .events
+        .iter()
+        .find(|event| event.part == take_part.id)
+        .ok_or("bundle without the take's audio clip")?;
+    let pad_part = manifest
+        .parts
+        .iter()
+        .find(|part| matches!(part.kind, PartKind::PadClips { pad: 3 }))
+        .ok_or("bundle without the pad hit")?;
+    let pad_event = manifest
+        .events
+        .iter()
+        .find(|event| event.part == pad_part.id)
+        .ok_or("bundle without the pad hit's event")?;
+    assert_eq!((pad_event.pitch, pad_event.velocity), (Some(36), Some(110)));
+    assert_eq!(report.audio.len(), 2);
+    let retained = report
+        .audio
+        .iter()
+        .find(|clip| clip.event == take_event.id)
+        .ok_or("the retained take audio was not imported")?;
+    assert_eq!((retained.start, retained.length), (0, 2_400));
+    // 900 ms of the 60 BPM pass halved to 450 ms at 48 kHz, then the pad's
+    // whole retained render: the adapter never trims a hit to its event.
+    let hit = report
+        .audio
+        .iter()
+        .find(|clip| clip.event == pad_event.id)
+        .ok_or("the pad hit was not imported as its own audio clip")?;
+    assert_eq!((hit.start, hit.length), (21_600, 36_000));
+    assert_ne!(retained.track, hit.track);
+    assert_ne!(retained.clip, hit.clip);
+
+    // Identity, not a machine path, in every string the report carries.
+    let text = serde_json::to_string(&report)?;
+    assert!(!text.contains("/machine/"), "{text}");
+    assert!(!text.contains("/Users/"), "{text}");
+    assert!(!text.contains(&*fixture.root.to_string_lossy()), "{text}");
+
+    let evidence = std::env::var_os("BROWNNOTE_SOUNDCRAFT_LIVE_EVIDENCE")
+        .map_or_else(|| fixture.root.join("live-take.json"), PathBuf::from);
+    let record_kinds: BTreeSet<_> = report.records.iter().map(|r| r.kind.clone()).collect();
+    let payload = json!({
+        "check": "manifest v3 live-instrument take and pad hit through the pinned app",
+        "date": "2026-11-09",
+        "pin": {"tag": pin["tag"], "commit": COMMIT, "version": VERSION},
+        "binaries": {
+            "SoundCraft": {"sha256": app_hash, "matches_pin": true},
+            "soundcraft-cli": {"sha256": cli_hash, "matches_pin": true},
+        },
+        "launch": ["SoundCraft", "--no-audio", "--control", "0"],
+        "bundle": {
+            "manifest_version": manifest.version,
+            "parts": manifest.parts.len(),
+            "events": manifest.events.len(),
+            "assets": manifest.assets.len(),
+            "losses": manifest.losses.len(),
+        },
+        "report": {
+            "soundcraft_version": report.soundcraft_version,
+            "soundcraft_commit": report.soundcraft_commit,
+            "audio_clips": report.audio.len(),
+            "midi_parts": report.midi.len(),
+            "record_kinds": record_kinds,
+        },
+        "live_notes": {
+            "events": note_events.len(),
+            "imported_as_midi": false,
+            "plugin": identity,
+            "record": record.detail,
+        },
+        "retained_take": {"track": retained.track, "clip": retained.clip,
+                          "start": retained.start, "length": retained.length},
+        "pad_hit": {"track": hit.track, "clip": hit.clip,
+                    "start": hit.start, "length": hit.length},
+        "app_exit": 0,
+        "app_exit_source": "process::App::finish requires a successful exit status for both \
+                            no-audio GUI runs; convert returns only after both quit cleanly",
+        "listening": "none: no audio device was opened",
+    });
+    fs::write(&evidence, serde_json::to_vec_pretty(&payload)?)?;
+    println!("Actual-app live-take evidence: {}", evidence.display());
     Ok(())
 }
