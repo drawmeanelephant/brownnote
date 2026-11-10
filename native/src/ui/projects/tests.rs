@@ -3,9 +3,17 @@ use super::*;
 use brownnote_native::{
     engine::{Command, Sample},
     import::{MediaPublisher, retain},
+    instrument::{INSTRUMENT, Preset, describe},
     kit::{self, Kit},
-    pedals::render::{Chain, Stage},
-    project::{Asset, AssetRef, MediaKind, SampleAssignment, store::Store},
+    pedals::{
+        offline::{Backend, Hash256, Plugin, Stage as OfflineStage},
+        render::{Chain, Stage},
+    },
+    project::{
+        Asset, AssetRef, MediaKind, SampleAssignment,
+        live::{LiveInstrumentDocument, LiveTakeDocument},
+        store::{CommitState, SaveFailure, Store, StoreError},
+    },
 };
 use rune::{Env, Key, KeyEvent, Mods, Runtime};
 use std::{
@@ -51,7 +59,36 @@ fn state() -> State {
         true,
     );
     state.pedals.auto_load = false;
+    // Tests never resolve the real machine recovery directory. A test that
+    // expects a copy points this at its own temporary root.
+    state.projects.recovery_base = Some(std::env::temp_dir().join(format!(
+        "brownnote-project-recovery-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Relaxed)
+    )));
     state
+}
+
+/// A prompt autosave for tests: the real idle interval is a minute.
+fn autosave_enabled(s: &mut State, base: &std::path::Path) {
+    fs::create_dir_all(base).unwrap();
+    s.projects.recovery_base = Some(base.to_path_buf());
+    s.projects.autosave_after = Duration::ZERO;
+    s.projects.check_every = Duration::ZERO;
+}
+
+/// Poll until the recovery write, if any, has left the worker.
+fn autosaved(s: &mut State) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    poll(s);
+    while s.projects.autosave_job.is_some() && Instant::now() < deadline {
+        poll(s);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        s.projects.autosave_job.is_none(),
+        "autosave worker timed out"
+    );
 }
 fn finish(s: &mut State) {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -970,4 +1007,485 @@ fn project_controls_save_and_reopen_recorded_takes_edits_and_mappings_then_repla
     }
     assert!(s.output.schedule_counters().dispatched >= 2);
     assert_eq!(s.transport.counters.schedule_lost, 0);
+}
+
+fn recovery_root(s: &State, project: &std::path::Path) -> PathBuf {
+    session::recovery_copy_root(s.projects.recovery_base.as_ref().unwrap(), project).unwrap()
+}
+
+fn copy_document(s: &State, project: &std::path::Path) -> Option<Document> {
+    let root = recovery_root(s, project);
+    if !root.join("project.json").is_file() {
+        return None;
+    }
+    Store::new(root)
+        .inspect_committed()
+        .unwrap()
+        .map(|copy| copy.document)
+}
+
+fn copy_played(s: &mut State, project: &std::path::Path) -> Option<Document> {
+    autosaved(s);
+    copy_document(s, project)
+}
+
+fn project_files(root: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut files = Vec::new();
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                directories.push(path);
+            } else {
+                files.push((
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    fs::read(&path).unwrap(),
+                ));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+#[test]
+fn project_controls_autosave_writes_one_separate_recovery_copy_after_idle() {
+    let root = Root::new();
+    let project = root.0.join("saved");
+    let mut s = state();
+    saved(&mut s, &project);
+    let committed = fs::read(project.join("project.json")).unwrap();
+    let before = project_files(&project);
+    let recovery = root.0.join("recovery");
+    autosave_enabled(&mut s, &recovery);
+
+    // A clean, idle project produces no recovery copy at all.
+    autosaved(&mut s);
+    assert!(
+        !recovery_root(&s, &project).exists(),
+        "a clean project must not produce a copy"
+    );
+
+    s.settings[3].gain = 0.123;
+    s.master = 0.44;
+    let expected = snapshot(&s).unwrap().document;
+    assert_eq!(copy_played(&mut s, &project), Some(expected.clone()));
+    assert!(s.projects.dirty, "a copy is not a save");
+    assert!(
+        s.projects.autosave_status.contains("Recovery copy"),
+        "{}",
+        s.projects.autosave_status
+    );
+
+    // The copy lives in the machine root, never in the saved project.
+    let copy_root = recovery_root(&s, &project);
+    assert!(copy_root.starts_with(&recovery));
+    assert_ne!(copy_root, project);
+    assert_eq!(fs::read(project.join("project.json")).unwrap(), committed);
+    assert_eq!(project_files(&project), before);
+    assert_eq!(s.settings[3].gain, 0.123, "the active kit kept the edit");
+}
+
+/// Every dirty source is captured by the same comparison: settings, chains and
+/// retained media, imported samples, MIDI mappings, takes/edits, and the
+/// instrument and live-take records.
+#[test]
+fn project_controls_autosave_covers_every_dirty_source_and_clean_idle_writes_none() {
+    let root = Root::new();
+    let project = root.0.join("saved");
+    let mut s = state();
+    saved(&mut s, &project);
+    let recovery = root.0.join("recovery");
+    autosave_enabled(&mut s, &recovery);
+    autosaved(&mut s);
+    assert_eq!(
+        copy_document(&s, &project),
+        None,
+        "clean project wrote a copy"
+    );
+
+    let copied = |s: &mut State, label: &str| {
+        let expected = snapshot(s)
+            .unwrap_or_else(|error| panic!("{label}: {error}"))
+            .document;
+        assert_eq!(
+            copy_played(s, &project),
+            Some(expected),
+            "{label} was not captured by autosave"
+        );
+        assert!(s.projects.dirty, "{label}");
+    };
+
+    // Pad settings and master.
+    s.settings[5].gain = 0.33;
+    s.settings[5].pan = -0.5;
+    s.master = 0.61;
+    copied(&mut s, "pad settings");
+
+    // An imported sample.
+    custom(&mut s, &root);
+    copied(&mut s, "imported media");
+
+    // A chain with its retained render and media.
+    retained(&mut s, 8_000);
+    copied(&mut s, "chain and retained media");
+
+    // MIDI mappings.
+    let mappings: brownnote_native::midi::input::MappingsDocument = serde_json::from_str(
+        r#"{"version":1,"mappings":[{"type":"note","channel":0,"pitch":60,"target":{"type":"one_shot","pad":2}}]}"#,
+    )
+    .unwrap();
+    midi::set_mappings(&mut s, mappings.to_mappings().unwrap());
+    copied(&mut s, "MIDI mappings");
+
+    // A committed take and its edit layer.
+    transport::record(&mut s);
+    s.trigger(4, 1.0);
+    transport::stop(&mut s, "Stopped");
+    let take = s.takes.selected().unwrap();
+    s.edit.model.toggle_quantization(&s.takes, take).unwrap();
+    copied(&mut s, "takes and edits");
+
+    // The instrument record and its exact source bytes.
+    let source = b"fixture instrument bytes".to_vec();
+    let reference = AssetRef::of(&source);
+    s.media.owned.publish(&reference, &source).unwrap();
+    s.instrument.document = Some(describe(
+        INSTRUMENT,
+        "Fixture instrument",
+        reference.id,
+        Preset {
+            bank: 0,
+            program: 0,
+        },
+        0.5,
+    ));
+    copied(&mut s, "instrument record");
+
+    // A live-instrument record with its take entry.
+    let stage = live_stage("org.brownnote.fixture.autosave");
+    let mut live = LiveInstrumentDocument::from_stage(&stage, "Fixture".into(), false);
+    let clip = b"fixture live take bytes".to_vec();
+    let clip_reference = AssetRef::of(&clip);
+    s.media.owned.publish(&clip_reference, &clip).unwrap();
+    live.takes.push(LiveTakeDocument {
+        take: "7".into(),
+        asset: clip_reference.id,
+        rate: 48_000,
+        frames: 4_800,
+    });
+    s.live.document = Some(live);
+    copied(&mut s, "live instrument record");
+}
+
+fn live_stage(id: &str) -> OfflineStage {
+    OfflineStage {
+        plugin: Plugin {
+            backend: Backend::Clap,
+            id: id.into(),
+            artifact: Hash256::of(id.as_bytes()),
+            abi: "clap-1.2".into(),
+            version: "1.0.0".into(),
+        },
+        location: PathBuf::from("/machine/fixture.clap"),
+        params: Vec::new(),
+        state: None,
+    }
+}
+
+#[test]
+fn project_controls_autosave_skips_armed_busy_pending_and_unrendered_ticks() {
+    let root = Root::new();
+    let project = root.0.join("saved");
+    let mut s = state();
+    saved(&mut s, &project);
+    autosave_enabled(&mut s, &root.0.join("recovery"));
+
+    // An armed pass holds tentative capture that must never be saved (D6).
+    transport::record(&mut s);
+    s.settings[0].gain = 0.51;
+    autosaved(&mut s);
+    assert_eq!(copy_document(&s, &project), None);
+    assert!(
+        s.projects
+            .autosave_status
+            .to_lowercase()
+            .contains("skipped"),
+        "{}",
+        s.projects.autosave_status
+    );
+    assert!(
+        s.projects.autosave_status.contains("recording"),
+        "{}",
+        s.projects.autosave_status
+    );
+    transport::stop(&mut s, "Stopped");
+
+    // A busy pedal render blocks the capture.
+    s.pedals.pads[1].status = pedals::Status::Rendering;
+    s.settings[1].gain = 0.4;
+    autosaved(&mut s);
+    assert_eq!(copy_document(&s, &project), None);
+    assert!(
+        s.projects.autosave_status.contains("skipped"),
+        "{}",
+        s.projects.autosave_status
+    );
+    s.pedals.pads[1].status = pedals::Status::Base;
+
+    // A chain edited after its render is not a saveable sound.
+    s.pedals.pads[0].restore_project_chain(
+        Chain {
+            stages: vec![Stage {
+                effect: "Tape Echo".into(),
+                pots: Vec::new(),
+                mix: None,
+            }],
+        },
+        Some(1.0),
+    );
+    s.pedals.pads[0].chain.stages[0].mix = Some(60);
+    assert!(matches!(
+        s.pedals.pads[0].status,
+        pedals::Status::Ready { .. }
+    ));
+    autosaved(&mut s);
+    assert_eq!(copy_document(&s, &project), None);
+    assert!(
+        s.projects.autosave_status.contains("skipped"),
+        "{}",
+        s.projects.autosave_status
+    );
+    s.pedals.pads[0].chain.stages.clear();
+    s.pedals.pads[0].restore_project_chain(Chain::default(), None);
+
+    // An in-flight project operation skips the tick without writing.
+    let job = s
+        .projects
+        .service
+        .as_ref()
+        .unwrap()
+        .start(Request::Recovery {
+            root: project.clone(),
+        })
+        .unwrap();
+    s.projects.pending = Some(Pending {
+        root: project.clone(),
+        kind: Kind::Recovery,
+        job,
+    });
+    s.settings[2].gain = 0.2;
+    autosaved(&mut s);
+    assert_eq!(copy_document(&s, &project), None);
+    assert!(
+        s.projects.autosave_status.contains("operation is running"),
+        "{}",
+        s.projects.autosave_status
+    );
+    finish(&mut s);
+}
+
+#[test]
+fn project_controls_autosave_skips_over_capacity_projects() {
+    let root = Root::new();
+    let project = root.0.join("saved");
+    let mut s = state();
+    saved(&mut s, &project);
+    autosave_enabled(&mut s, &root.0.join("recovery"));
+    let mut document =
+        LiveInstrumentDocument::from_stage(&live_stage("capacity"), "Over".into(), false);
+    for index in 0..30u8 {
+        document.takes.push(LiveTakeDocument {
+            take: index.to_string(),
+            asset: brownnote_native::project::AssetId::of(&[index]),
+            rate: 48_000,
+            frames: 4,
+        });
+    }
+    s.live.document = Some(document);
+    autosaved(&mut s);
+    assert_eq!(copy_document(&s, &project), None);
+    assert!(
+        s.projects.autosave_status.contains("capacity"),
+        "{}",
+        s.projects.autosave_status
+    );
+}
+
+#[test]
+fn project_controls_failed_autosave_keeps_the_previous_copy_and_reports_commit_state() {
+    let root = Root::new();
+    let project = root.0.join("saved");
+    let mut s = state();
+    saved(&mut s, &project);
+    let committed = fs::read(project.join("project.json")).unwrap();
+    autosave_enabled(&mut s, &root.0.join("recovery"));
+    s.settings[4].gain = 0.9;
+    let previous = copy_played(&mut s, &project).unwrap();
+
+    // Break only the copy store's writer lock; the saved project is untouched.
+    let copy_root = recovery_root(&s, &project);
+    let lock = copy_root.join(".brownnote-store/lock");
+    fs::remove_file(&lock).unwrap();
+    fs::create_dir(&lock).unwrap();
+    s.settings[4].gain = 0.95;
+    autosaved(&mut s);
+    assert!(
+        s.projects.autosave_status.contains("unchanged"),
+        "{}",
+        s.projects.autosave_status
+    );
+    assert!(!s.projects.autosave_status.contains("Recovery copy"));
+    assert_eq!(copy_document(&s, &project), Some(previous.clone()));
+    assert_eq!(fs::read(project.join("project.json")).unwrap(), committed);
+
+    // The store's distinctions stay distinct rather than becoming success.
+    let generation = s.projects.saved.as_ref().unwrap().generation;
+    for (commit, needle) in [
+        (CommitState::Unchanged, "unchanged"),
+        (CommitState::Unknown(generation), "may have changed"),
+        (
+            CommitState::PublishedNotDurable(generation),
+            "not proven durable",
+        ),
+    ] {
+        let error = Error::Save(Box::new(SaveFailure {
+            commit,
+            error: Box::new(StoreError::Io(std::io::ErrorKind::Other)),
+        }));
+        let status = autosave_failure(&error);
+        assert!(status.contains(needle), "{status}");
+    }
+}
+
+#[test]
+fn project_controls_open_offers_a_newer_recovery_copy_without_applying_it() {
+    let root = Root::new();
+    let project = root.0.join("saved");
+    let mut s = state();
+    saved(&mut s, &project);
+    let saved_document = snapshot(&s).unwrap().document;
+    let committed = fs::read(project.join("project.json")).unwrap();
+    autosave_enabled(&mut s, &root.0.join("recovery"));
+    s.settings[6].gain = 0.77;
+    let recovery_document = snapshot(&s).unwrap().document;
+    assert_eq!(
+        copy_played(&mut s, &project),
+        Some(recovery_document.clone())
+    );
+
+    // Reopening the saved project offers the copy and applies nothing.
+    set_path(&mut s, &project);
+    open(&mut s);
+    finish(&mut s);
+    assert!(s.projects.error.is_none(), "{:?}", s.projects.error);
+    assert_eq!(snapshot(&s).unwrap().document, saved_document);
+    let copy = s.projects.recovery_copy.clone().unwrap();
+    assert!(copy.offered.is_some(), "{}", copy.note);
+    assert!(s.projects.recovery_note.contains("offered"));
+    assert_eq!(fs::read(project.join("project.json")).unwrap(), committed);
+
+    // Selecting it opens through the explicit recovery flow.
+    let generation = copy.offered.unwrap();
+    open_choice(&mut s, copy.root.clone(), OpenChoice::Committed(generation));
+    finish(&mut s);
+    assert!(s.projects.error.is_none(), "{:?}", s.projects.error);
+    assert_eq!(
+        s.projects.recovered_from.as_deref(),
+        Some(copy.root.as_path())
+    );
+    assert_eq!(snapshot(&s).unwrap().document, recovery_document);
+
+    // Recovered content only saves to a new, nonexistent directory.
+    set_path(&mut s, &project);
+    save(&mut s);
+    finish(&mut s);
+    assert_eq!(
+        s.projects.error.as_deref(),
+        Some("Save recovered content to a new, nonexistent project directory.")
+    );
+    let fresh = root.0.join("rescued");
+    saved(&mut s, &fresh);
+    assert_eq!(
+        Store::new(fresh)
+            .inspect_committed()
+            .unwrap()
+            .unwrap()
+            .document,
+        recovery_document
+    );
+}
+
+#[test]
+fn project_controls_recovery_copy_with_missing_media_is_rejected_not_offered() {
+    let root = Root::new();
+    let project = root.0.join("saved");
+    let mut s = state();
+    saved(&mut s, &project);
+    let saved_document = snapshot(&s).unwrap().document;
+    autosave_enabled(&mut s, &root.0.join("recovery"));
+    s.settings[8].gain = 0.19;
+    let copy = copy_played(&mut s, &project).unwrap();
+    let copy_root = recovery_root(&s, &project);
+    let reference = copy.assets[0].reference.clone();
+    fs::remove_file(copy_root.join(reference.id.relative_path())).unwrap();
+
+    set_path(&mut s, &project);
+    open(&mut s);
+    finish(&mut s);
+    assert!(s.projects.error.is_none(), "{:?}", s.projects.error);
+    assert_eq!(snapshot(&s).unwrap().document, saved_document);
+    let report = s.projects.recovery_copy.as_ref().unwrap();
+    assert!(report.offered.is_none());
+    assert!(report.options.current.is_err());
+    assert!(
+        s.projects.recovery_note.contains("not offered"),
+        "{}",
+        s.projects.recovery_note
+    );
+}
+
+#[test]
+fn project_controls_cancel_and_close_drop_the_pending_autosave_without_a_partial_file() {
+    let root = Root::new();
+    let project = root.0.join("saved");
+    let mut s = state();
+    saved(&mut s, &project);
+    autosave_enabled(&mut s, &root.0.join("recovery"));
+
+    s.settings[7].gain = 0.55;
+    poll(&mut s);
+    assert!(s.projects.autosave_job.is_some());
+    cancel(&mut s);
+    assert!(s.projects.autosave_job.is_none());
+    assert!(
+        s.projects.autosave_status.contains("dropped"),
+        "{}",
+        s.projects.autosave_status
+    );
+    assert_eq!(s.settings[7].gain, 0.55, "the active kit is unchanged");
+
+    // Whatever the worker did, only a complete generation may exist.
+    std::thread::sleep(Duration::from_millis(200));
+    let copy_root = recovery_root(&s, &project);
+    if copy_root.join("project.json").is_file() {
+        let copy = Store::new(copy_root).open(OpenChoice::Current).unwrap();
+        assert_eq!(copy.document(), &snapshot(&s).unwrap().document);
+    }
+
+    // Leaving the panel drops the next pending write too.
+    s.settings[7].gain = 0.66;
+    poll(&mut s);
+    assert!(s.projects.autosave_job.is_some());
+    s.projects.visible = true;
+    close(&mut s);
+    assert!(!s.projects.visible);
+    assert!(s.projects.autosave_job.is_none());
+    assert!(
+        s.projects.autosave_status.contains("dropped"),
+        "{}",
+        s.projects.autosave_status
+    );
+    assert_eq!(s.settings[7].gain, 0.66);
 }

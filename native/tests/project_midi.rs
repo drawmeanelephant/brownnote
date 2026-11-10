@@ -181,6 +181,7 @@ fn historical_v1_without_mappings_opens_with_an_empty_bank() -> Result {
         Request::Open {
             root: root.clone(),
             choice: OpenChoice::Current,
+            recovery: None,
         },
     )? {
         Completion::Opened(prepared) => {
@@ -340,7 +341,7 @@ fn session_snapshots_save_open_and_recover_mappings_without_a_device() -> Result
             new_root: false,
         },
     )? {
-        Completion::Saved(receipt) => receipt.generation,
+        Completion::Saved { receipt, .. } => receipt.generation,
         _ => return Err("save did not return a receipt".into()),
     };
     let prepared = match complete(
@@ -348,6 +349,7 @@ fn session_snapshots_save_open_and_recover_mappings_without_a_device() -> Result
         Request::Open {
             root: fixture.root(),
             choice: OpenChoice::Current,
+            recovery: None,
         },
     )? {
         Completion::Opened(prepared) => prepared,
@@ -396,6 +398,7 @@ fn session_snapshots_save_open_and_recover_mappings_without_a_device() -> Result
         Request::Open {
             root: fixture.root(),
             choice: OpenChoice::Committed(first),
+            recovery: None,
         },
     )? {
         Completion::Opened(prepared) => {
