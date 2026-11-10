@@ -13,6 +13,7 @@ import struct
 import subprocess
 import tarfile
 import tempfile
+import tomllib
 import wave
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -50,6 +51,43 @@ def digest(path):
 
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def crate_version(manifest=ROOT / "native/Cargo.toml"):
+    """The one version source: the tag, the archive name and the record agree on it."""
+    with Path(manifest).open("rb") as stream:
+        return tomllib.load(stream)["package"]["version"]
+
+
+def artifact_name(version, head):
+    return f"brownnote-native-macos-arm64-{version}-{head[:12]}-unsigned-test.tar.gz"
+
+
+def require_clean(dirty):
+    """A dirty tree cannot be identified by the commit its build record names."""
+    require(not dirty,
+            "Refusing to package a dirty working tree:\n"
+            f"{dirty}\n"
+            "Commit or remove these changes first; the artifact must match the recorded "
+            "source commit.")
+
+
+def require_commit(head, expected):
+    """The release names a commit; building anything else mislabels the artifact."""
+    if expected is None:
+        return
+    require(head == expected,
+            f"Refusing to package commit {head}: the tagged commit is {expected}. "
+            "Build the checked-out tag, not another commit.")
+
+
+def require_tag(tag, version):
+    """A release tag is `v<crate version>`; anything else cannot be that release."""
+    if tag is None:
+        return
+    require(tag == f"v{version}",
+            f"Refusing tag {tag}: a release tag must be v{version}, the version in "
+            "native/Cargo.toml.")
 
 
 class UndeclaredRecording(RuntimeError):
@@ -198,13 +236,19 @@ def tones(directory):
                 for i in range(44100)))
 
 
-def package(destination):
+def package(destination, expected_commit=None, tag=None):
     mac_arm()
     destination = Path(destination).resolve()
-    destination.mkdir(parents=True, exist_ok=True)
     head = output(["git", "rev-parse", "HEAD"])
-    dirty = bool(output(["git", "status", "--porcelain", "--untracked-files=normal"]))
-    archive = destination / f"brownnote-native-macos-arm64-{head[:12]}-unsigned-test.tar.gz"
+    dirty = output(["git", "status", "--porcelain", "--untracked-files=normal"])
+    version = crate_version()
+    # Refuse before writing anything: a tag, filename and build record that cannot all
+    # name the same clean commit must not produce an artifact.
+    require_clean(dirty)
+    require_commit(head, expected_commit)
+    require_tag(tag, version)
+    destination.mkdir(parents=True, exist_ok=True)
+    archive = destination / artifact_name(version, head)
     require(not archive.exists(), f"Refusing to replace existing artifact: {archive}")
     manifest = ROOT / "native/Cargo.toml"
     metadata = json.loads(output(["cargo", "metadata", "--locked", "--format-version", "1",
@@ -215,8 +259,11 @@ def package(destination):
         layout.mkdir()
         # Inventory and notices are generated before any executable or audio is bundled.
         inventory(metadata, layout)
+        # Bake the identity this record prints, so the executable cannot disagree with it.
         run(["cargo", "build", "--locked", "--release", "--manifest-path", manifest,
-             "--bin", "brownnote-native"], cwd=ROOT)
+             "--bin", "brownnote-native"], cwd=ROOT,
+            env={**os.environ, "BROWNNOTE_SOURCE_COMMIT": head,
+                 "BROWNNOTE_SOURCE_DIRTY": "1" if dirty else "0"})
         binary = Path(metadata["target_directory"]) / "release/brownnote-native"
         require(output(["lipo", "-archs", binary]) == "arm64", "Expected arm64-only executable")
         dependencies = output(["otool", "-L", binary]).splitlines()[1:]
@@ -230,7 +277,7 @@ def package(destination):
         shutil.copy2(ROOT / "native/docs/distribution-inventory.md", layout / "DISTRIBUTION.md")
         shutil.copy2(ROOT / "native/Cargo.lock", layout / "Cargo.lock")
         write_json(layout / "build-record.json", {
-            "source_commit": head, "source_dirty": dirty,
+            "version": version, "source_commit": head, "source_dirty": bool(dirty),
             "target": "aarch64-apple-darwin", "profile": "release",
             "rustc": output(["rustc", "--version"]), "build_os": platform.mac_ver()[0],
             "binary_sha256": digest(layout / "brownnote-native"),
@@ -447,6 +494,18 @@ def smoke(artifact):
                 require(not value["warnings"], f"Rune warnings: {value['warnings']}")
                 return {e["key"]: e.get("text", "") for e in value["elements"] if "key" in e}
 
+            # Offline identity of the downloaded executable, read before any kit or window
+            # work, must agree with the record the archive ships.
+            version = app(original, "--version").stdout.strip()
+            expected = (f"brownnote-native {build['version']}\n"
+                        f"commit {build['source_commit']}")
+            require(version == expected,
+                    f"Packaged --version disagrees with build-record.json: {version!r}")
+            require(build["source_dirty"] is False,
+                    "Packaged build record claims a dirty source tree")
+            record["checks"].append("Packaged --version prints the record's crate version and full "
+                                    "source commit, with no dirty marker")
+
             previous = original
             for index in range(3):
                 layout = previous if index == 0 else temp / f"relocated {index} with spaces" / LAYOUT
@@ -508,10 +567,15 @@ def smoke(artifact):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("package").add_argument("output_directory", nargs="?", default=ROOT / "build/packages")
+    packaging = commands.add_parser("package")
+    packaging.add_argument("output_directory", nargs="?", default=ROOT / "build/packages")
+    packaging.add_argument("--expected-commit",
+                           help="the commit the release tag names; the build must be HEAD")
+    packaging.add_argument("--tag",
+                           help="the release tag, which must be v<crate version>")
     commands.add_parser("smoke").add_argument("artifact")
     arguments = parser.parse_args()
     if arguments.command == "package":
-        package(arguments.output_directory)
+        package(arguments.output_directory, arguments.expected_commit, arguments.tag)
     else:
         smoke(arguments.artifact)

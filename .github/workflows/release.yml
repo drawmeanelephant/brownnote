@@ -1,0 +1,121 @@
+name: release
+
+# A maintainer pushes a v<version> tag. This job builds that exact commit, smokes the
+# packaged executable and creates a DRAFT GitHub Release. It publishes nothing, signs
+# nothing, installs nothing and uploads to no package registry. See
+# native/docs/macos-test-package.md.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  draft-release:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          components: rust-docs
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: native-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/Cargo.lock') }}
+          restore-keys: |
+            native-release-${{ runner.os }}-${{ runner.arch }}-
+      - name: Refuse to touch an existing release for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Re-runs never overwrite, delete or replace an existing release's assets.
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "::error::Release $GITHUB_REF_NAME already exists; assets are never replaced."
+            exit 1
+          fi
+      - name: Test the packaging boundary
+        env:
+          CARGO_TERM_COLOR: always
+        run: python3 native/scripts/test_package.py
+      - name: Build the tagged commit as the unsigned test artifact
+        env:
+          CARGO_TERM_COLOR: always
+        run: |
+          # Refuses a dirty tree, a tag commit that is not HEAD, and a tag that is not
+          # v<crate version> in native/Cargo.toml. The packager calls the build itself.
+          native/scripts/package-macos.sh \
+            --expected-commit "$(git rev-parse "$GITHUB_REF_NAME^{commit}")" \
+            --tag "$GITHUB_REF_NAME"
+          artifacts=(build/packages/*.tar.gz)
+          test "${#artifacts[@]}" -eq 1
+      - name: Require a passed smoke of the packaged executable
+        env:
+          CARGO_TERM_COLOR: always
+        run: |
+          # No skipped smoke: the required script must run and report passed.
+          artifacts=(build/packages/*.tar.gz)
+          test "${#artifacts[@]}" -eq 1
+          native/scripts/smoke-package.sh "${artifacts[0]}"
+          status=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' \
+            "${artifacts[0]}.smoke.json")
+          test "$status" = passed
+      - name: Collect exactly the four draft assets
+        run: |
+          artifact=$(ls build/packages/*.tar.gz)
+          tar -xzf "$artifact" -O "Brownnote Native Test/build-record.json" \
+            > build/packages/build-record.json
+          python3 -c '
+          import json, subprocess, sys
+          record = json.load(open(sys.argv[1]))
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          assert record["source_commit"] == head, record
+          assert record["source_dirty"] is False, record
+          ' build/packages/build-record.json
+          ls -l "$artifact" "$artifact.sha256" "$artifact.smoke.json" \
+            build/packages/build-record.json
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          artifact=$(ls build/packages/*.tar.gz)
+          version=$(python3 -c 'import json; print(json.load(open("build/packages/build-record.json"))["version"])')
+          commit=$(git rev-parse HEAD)
+          cat > build/release-notes.md <<NOTES
+          Brownnote Native $version unsigned test build.
+
+          Not a supported release. This is an unsigned, arm64, base-pad-only test
+          artifact with generated tones. It has no Developer ID signature or
+          notarization, no installer, and no package-registry upload. Clean-machine
+          installation and Gatekeeper behavior stay open.
+
+          - Version: $version
+          - Source commit: $commit
+          - Verify the archive with shasum -a 256 -c <archive>.sha256
+          - The executable prints this version and commit with brownnote-native --version.
+          - The .smoke.json asset records the checks this exact executable passed.
+
+          README.md inside the archive describes installation, relocation and the
+          support limits. Do not describe this artifact as validated on a clean machine.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --verify-tag \
+            --title "Brownnote Native $version unsigned test build" \
+            --notes-file build/release-notes.md \
+            "$artifact" \
+            "$artifact.sha256" \
+            "$artifact.smoke.json" \
+            build/packages/build-record.json

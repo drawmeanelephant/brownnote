@@ -28,9 +28,10 @@ and missing notices. This is an engineering inventory, not legal advice.
 
 The archive includes `Cargo.lock`, `dependency-inventory.json`, `licenses/`,
 `corresponding-source.tar.gz`, `DISTRIBUTION.md`, and `build-record.json`.
-The build record identifies source SHA, dirty state, binary and lockfile
-SHA-256, Rust version, build OS, dylibs, signing limitation and kit limitation.
-Do not describe a dirty build as validated at its recorded commit.
+The build record identifies the crate version, full source SHA, dirty state,
+binary and lockfile SHA-256, Rust version, build OS, dylibs, signing
+limitation and kit limitation. Do not describe a dirty build as validated at
+its recorded commit.
 
 Supplemental notices are checked in so a package build does not need GitHub
 credentials or make network license guesses. Dependency updates that add a
@@ -42,4 +43,6 @@ crate in metadata was linked.
 Before a public release, a maintainer must review the generated inventory,
 the dispatch notice limitation, toolchain redistribution obligations, and
 any new binaries/assets. No tag, GitHub Release, package registry upload,
-Developer ID signature or notarization is created by these scripts.
+Developer ID signature or notarization is created by these scripts. The
+`release` workflow creates a **draft** GitHub Release from a tag the
+maintainer pushes, and still signs, notarizes and publishes nothing.

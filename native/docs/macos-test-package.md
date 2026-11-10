@@ -19,7 +19,7 @@ From the repository root:
 
 ```sh
 native/scripts/package-macos.sh
-native/scripts/smoke-package.sh build/packages/brownnote-native-macos-arm64-<commit>-unsigned-test.tar.gz
+native/scripts/smoke-package.sh build/packages/brownnote-native-macos-arm64-<version>-<commit>-unsigned-test.tar.gz
 ```
 
 During a resource-constrained swarm, run **each whole command through the
@@ -32,6 +32,42 @@ executable mode and uses the existing executable-relative flat resource
 layout. It refuses to replace an existing artifact. An optional output
 directory argument permits separate runs. There is no installer or launcher
 that injects `--samples`.
+
+It also refuses a build it cannot identify: a dirty working tree, an expected
+commit (`--expected-commit`) other than `HEAD`, and a release tag (`--tag`)
+that is not `v<version>` for the version in `native/Cargo.toml`. The archive
+name carries that version beside the 12-character commit, so tag, filename and
+the executable's own report agree.
+
+### Tagged release build
+
+A maintainer pushes a `v<version>` tag. The `release` workflow runs on it and
+calls `test_package.py`, then `package-macos.sh` with the tag's commit and
+name, then the required `smoke-package.sh`. Finally it creates a **draft**
+GitHub Release for that tag with exactly four assets: the archive, its
+`.sha256`, its `.smoke.json` and the `build-record.json` extracted from the
+archive. It does not publish the release, and no script or workflow creates or
+pushes the tag.
+
+The job fails and publishes nothing when the working tree is dirty, when the
+tag commit is not `HEAD`, when the tag is not `v<version>` for the version in
+`native/Cargo.toml`, or when the smoke report's status is not `passed`. A
+re-run for a tag that already has a release fails instead of overwriting,
+deleting or replacing its assets. Once a release is created, publishing it,
+signing it or attaching notes remains a maintainer decision.
+
+The packaged executable reports its own identity offline, before any kit,
+device or window work:
+
+```sh
+"/absolute/path/Brownnote Native Test/brownnote-native" --version
+brownnote-native 0.1.0
+commit <full 40-character source commit>
+```
+
+`dirty` appears on the commit line only when the build had uncommitted changes,
+which packaging refuses. The printed commit is the `source_commit` in the
+archive's `build-record.json`, and smoke requires the two to agree.
 
 Outputs:
 
@@ -51,10 +87,10 @@ fails rather than treating a skipped GPU check as passed.
 Verify the checksum alongside the downloaded archive, then extract:
 
 ```sh
-shasum -a 256 -c brownnote-native-macos-arm64-<commit>-unsigned-test.tar.gz.sha256
-tar -xzf brownnote-native-macos-arm64-<commit>-unsigned-test.tar.gz
+shasum -a 256 -c brownnote-native-macos-arm64-<version>-<commit>-unsigned-test.tar.gz.sha256
+tar -xzf brownnote-native-macos-arm64-<version>-<commit>-unsigned-test.tar.gz
 cd /tmp
-"/absolute/path/Brownnote Native Test/brownnote-native"
+"/absolute/path/Brownnote Native Test/brownnote-native" --version
 ```
 
 Move/copy the **whole directory**, including `resources`, not the executable
@@ -137,6 +173,7 @@ library `paths` tests exercise production writable-path resolution separately.
 |---|---|
 | macOS arm64, built-in audio only | D1/D2 target scope; no wider hardware support claim |
 | Release compile, dynamic dependencies, checksums | Required by package script; inspect exact build record |
+| Tagged build and draft release | `release` workflow on a maintainer `v<version>` tag; archive version, full commit and `--version` agree; four draft assets, nothing published |
 | Real executable relocation, default five-source kit | Required GPU/headless smoke at three locations; silent mixer only |
 | GPU UI scenes | Required by smoke and `make native-test`; not audio evidence |
 | Engine/library/import/store/device tests | Separate `make native-test`; not relocated full workflow |
@@ -151,7 +188,9 @@ library `paths` tests exercise production writable-path resolution separately.
 
 Packaging landed under #103 and that issue is closed. The **Open** rows
 above stay with the maintainer, including clean-machine downloaded
-installation and Gatekeeper. No signing/notarization route or roadmap
+installation and Gatekeeper. A tagged build and its draft release do not
+close them: the release is a place to carry the identified artifact, not a
+support claim. No signing/notarization route or roadmap
 decision changes here. Before treating the packaging work as
 release-ready, record the exact artifact hash and head for the
 clean-machine, device and listening checks, and play the reopened project
