@@ -868,18 +868,13 @@ impl Output {
     /// length and CPAL presentation lead, for [`CallbackSummary`] to read
     /// off-thread. For manual probes and examples only: the normal app path
     /// never opts in, so it carries no `Instant` read or measurement
-    /// allocation.
+    /// allocation. `--check-audio` is the only caller, with either the default
+    /// selection or the machine's saved one.
     pub fn open_selected_probed(
         slots: impl Into<Slots>,
         selection: &OutputSelection,
     ) -> Result<Self, AudioError> {
         Self::open_inner(slots, selection, |_, _| (None, None), true)
-    }
-
-    /// The system-default wrapper used by `--check-audio`, composed from
-    /// [`Output::open_selected_probed`].
-    fn open_probed(slots: impl Into<Slots>) -> Result<Self, AudioError> {
-        Self::open_selected_probed(slots, &OutputSelection::default())
     }
 
     fn open_inner(
@@ -1143,18 +1138,49 @@ where
         .map_err(device_error)
 }
 
+/// Which instruction the probe followed. Printed without any device identity,
+/// so a report says what was asked for, never which ID answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionSource {
+    SystemDefault,
+    Saved,
+}
+
+impl SelectionSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SystemDefault => "system-default",
+            Self::Saved => "saved",
+        }
+    }
+}
+
+impl fmt::Display for SelectionSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 /// How long `--check-audio` plays pad 0, and how often it drains the bounded
 /// callback queue so a two-second run does not overflow it.
 const CHECK_AUDIO_WINDOW: Duration = Duration::from_secs(2);
 const CHECK_AUDIO_POLL: Duration = Duration::from_millis(10);
 
-pub fn check_audio(samples: Box<[Sample]>) -> Result<String, AudioError> {
+/// Probes `selection` and reports the source beside the opened status line.
+/// The selection is validated before any stream opens, so a stale ID or an
+/// unsupported saved rate or buffer returns the error without playing audio and
+/// without falling back to the default (D16).
+pub fn check_audio(
+    samples: Box<[Sample]>,
+    selection: &OutputSelection,
+    source: SelectionSource,
+) -> Result<String, AudioError> {
     if samples.first().is_none_or(|s| s.data.is_empty()) {
         return Err(AudioError::Device(
             "pad 0 sample is missing or invalid".into(),
         ));
     }
-    let mut output = Output::open_probed(samples)?;
+    let mut output = Output::open_selected_probed(samples, selection)?;
     output.send(Command::Trigger {
         pad: 0,
         slot: 0,
@@ -1183,10 +1209,20 @@ pub fn check_audio(samples: Box<[Sample]>) -> Result<String, AudioError> {
             "no signal: frames={frames}, peak={peak}"
         )));
     }
-    Ok(format!(
-        "{}\nframes={frames}, peak={peak:.6}\n{timing}",
-        output.status
-    ))
+    Ok(probe_report(&output.status, source, frames, peak, &timing))
+}
+
+/// The stable printed block. `selection_source` says where the measured
+/// instruction came from; the status line already names the opened device,
+/// rate, format and channels, so no ID or serial is added here.
+fn probe_report(
+    status: &str,
+    source: SelectionSource,
+    frames: u64,
+    peak: f32,
+    timing: &CallbackSummary,
+) -> String {
+    format!("{status}\nselection_source={source}\nframes={frames}, peak={peak:.6}\n{timing}")
 }
 
 #[cfg(test)]
@@ -1214,6 +1250,52 @@ mod tests {
         assert!(failed.opened().is_none());
         assert!(failed.status.contains("explicitly choose system default"));
         assert!(failed.status.contains("voices stopped"));
+    }
+
+    #[test]
+    fn probe_report_names_the_selection_source_without_device_identity() {
+        let status = "Output: Duplicate output · 48000 Hz · F32 · 2 ch";
+        let saved = probe_report(
+            status,
+            SelectionSource::Saved,
+            88_200,
+            0.5,
+            &CallbackSummary::default(),
+        );
+        assert!(saved.starts_with(&format!("{status}\nselection_source=saved\n")));
+        assert!(!saved.contains("system-default"));
+        assert!(saved.contains("frames=88200, peak=0.500000\n"));
+        assert!(saved.contains("round_trip_latency=unmeasured"));
+        let default = probe_report(
+            status,
+            SelectionSource::SystemDefault,
+            1,
+            0.0,
+            &CallbackSummary::default(),
+        );
+        assert!(default.contains("\nselection_source=system-default\n"));
+        assert!(!default.contains("selection_source=saved"));
+        assert_eq!(SelectionSource::Saved.to_string(), "saved");
+    }
+
+    #[test]
+    fn probe_refuses_a_stale_saved_id_before_opening_a_stream() {
+        let selection = OutputSelection {
+            device_id: Some(DeviceId::new(
+                cpal::default_host().id(),
+                "brownnote-missing-output-fixture",
+            )),
+            sample_rate: Some(48_000),
+            ..Default::default()
+        };
+        let samples = Box::from([Sample {
+            data: Arc::from([0.1; 8]),
+            rate: 44_100,
+        }]);
+        assert!(matches!(
+            check_audio(samples, &selection, SelectionSource::Saved),
+            Err(AudioError::SelectedDeviceUnavailable)
+        ));
     }
 
     #[test]

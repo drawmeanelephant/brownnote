@@ -8,7 +8,7 @@ mod ui_tests;
 
 use brownnote_native::{
     kit::{DEFAULT_SAMPLES, Kit},
-    output::check_audio,
+    output::{OutputSelection, SelectionSource, check_audio},
     pedals::{
         brownnote::{self, DEFAULT_BIN},
         catalog::Catalog,
@@ -16,10 +16,26 @@ use brownnote_native::{
 };
 use std::{path::PathBuf, time::Duration};
 
+/// What `--check-audio` should measure. `None` keeps today's system default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectionMode {
+    SystemDefault,
+    Saved,
+}
+
+/// What the probe does once the headless guard has been applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProbeRequest {
+    Refused,
+    SystemDefault,
+    Saved,
+}
+
 struct Options {
     samples: PathBuf,
     no_audio: bool,
     check_audio: bool,
+    selection: Option<SelectionMode>,
     list_pedals: bool,
     version: bool,
     brownnote: PathBuf,
@@ -31,6 +47,7 @@ fn options(args: Vec<String>) -> Result<Options, String> {
         samples: DEFAULT_SAMPLES.into(),
         no_audio: false,
         check_audio: false,
+        selection: None,
         list_pedals: false,
         version: false,
         brownnote: DEFAULT_BIN.into(),
@@ -48,12 +65,45 @@ fn options(args: Vec<String>) -> Result<Options, String> {
             }
             "--no-audio" => options.no_audio = true,
             "--check-audio" => options.check_audio = true,
+            "--selection" => {
+                let value = args.next().ok_or("--selection requires saved or default")?;
+                options.selection = Some(match value.as_str() {
+                    "saved" => SelectionMode::Saved,
+                    "default" => SelectionMode::SystemDefault,
+                    _ => return Err(format!("Unknown --selection value: {value}")),
+                });
+            }
             "--list-pedals" => options.list_pedals = true,
             "--version" => options.version = true,
             _ => return Err(format!("Unknown app option: {arg}")),
         }
     }
+    if options.selection.is_some() && !options.check_audio {
+        return Err("--selection requires --check-audio".into());
+    }
     Ok(options)
+}
+
+/// The headless/`--no-audio` refusal applies to the saved probe exactly as it
+/// does to the system-default one, before any preference is read.
+fn probe_request(options: &Options, headless: bool) -> ProbeRequest {
+    if headless || options.no_audio {
+        return ProbeRequest::Refused;
+    }
+    match options.selection {
+        Some(SelectionMode::Saved) => ProbeRequest::Saved,
+        _ => ProbeRequest::SystemDefault,
+    }
+}
+
+/// Resolve the machine root the app itself uses, then read the saved selection
+/// strictly: no file, bad JSON, another version, a malformed ID or a zero
+/// configuration is an error, never an implicit system default (D16).
+fn saved_selection() -> Result<OutputSelection, String> {
+    let root = brownnote_native::paths::Resolver::current()
+        .and_then(|paths| paths.resolve(brownnote_native::paths::Resource::Preferences, None))
+        .map_err(|error| error.to_string())?;
+    ui::devices::preferences::load_saved(&root)
 }
 
 /// The identity `--version` prints: crate version, then the full commit this executable
@@ -125,15 +175,31 @@ fn main() {
         return;
     }
     if options.check_audio {
-        if rune::is_headless() || options.no_audio {
+        let request = probe_request(&options, rune::is_headless());
+        if request == ProbeRequest::Refused {
             eprintln!("--check-audio cannot be combined with headless flags or --no-audio");
             std::process::exit(3);
         }
+        // Only the saved probe reads preferences, and only after the refusal
+        // above, so headless and --no-audio sessions still touch no machine
+        // preference. A saved selection that cannot be loaded or resolved
+        // stops here without opening a stream or measuring the default.
+        let (selection, source) = if request == ProbeRequest::Saved {
+            match saved_selection() {
+                Ok(selection) => (selection, SelectionSource::Saved),
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(3);
+                }
+            }
+        } else {
+            (OutputSelection::default(), SelectionSource::SystemDefault)
+        };
         if let Some(error) = &kit.errors[0] {
             eprintln!("{error}");
             std::process::exit(3);
         }
-        match check_audio(kit.samples) {
+        match check_audio(kit.samples, &selection, source) {
             Ok(report) => println!("{report}"),
             Err(error) => {
                 eprintln!("{error}");
@@ -167,9 +233,33 @@ fn main() {
 
 #[cfg(test)]
 mod option_tests {
-    use super::{DEFAULT_BIN, DEFAULT_SAMPLES, options};
+    use super::{
+        DEFAULT_BIN, DEFAULT_SAMPLES, ProbeRequest, SelectionMode, options, probe_request,
+    };
     use brownnote_native::paths::DEFAULT_CACHE;
     use std::path::PathBuf;
+
+    fn parsed(arguments: &[&str]) -> super::Options {
+        options(
+            arguments
+                .iter()
+                .map(|argument| argument.to_string())
+                .collect(),
+        )
+        .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    fn rejected(arguments: &[&str]) -> String {
+        match options(
+            arguments
+                .iter()
+                .map(|argument| argument.to_string())
+                .collect(),
+        ) {
+            Ok(_) => panic!("accepted {arguments:?}"),
+            Err(error) => error,
+        }
+    }
 
     #[test]
     fn runtime_defaults_are_shared_by_cli_and_pedal_ui() {
@@ -195,6 +285,48 @@ mod option_tests {
         assert_eq!(selected.samples, PathBuf::from("/chosen/samples"));
         assert_eq!(selected.brownnote, PathBuf::from("/chosen/brownnote"));
         assert_eq!(selected.pedal_cache, PathBuf::from("/chosen/cache"));
+    }
+
+    #[test]
+    fn selection_defaults_to_absent_and_only_saved_opts_in() {
+        let defaults = parsed(&[]);
+        assert!(!defaults.check_audio);
+        assert_eq!(defaults.selection, None);
+        assert_eq!(probe_request(&defaults, false), ProbeRequest::SystemDefault);
+
+        let saved = parsed(&["--check-audio", "--selection", "saved"]);
+        assert!(saved.check_audio);
+        assert_eq!(saved.selection, Some(SelectionMode::Saved));
+        assert_eq!(probe_request(&saved, false), ProbeRequest::Saved);
+
+        let explicit_default = parsed(&["--check-audio", "--selection", "default"]);
+        assert_eq!(
+            explicit_default.selection,
+            Some(SelectionMode::SystemDefault)
+        );
+        assert_eq!(
+            probe_request(&explicit_default, false),
+            ProbeRequest::SystemDefault
+        );
+    }
+
+    #[test]
+    fn selection_is_refused_without_the_probe_or_a_known_value() {
+        assert!(rejected(&["--selection", "saved"]).contains("requires --check-audio"));
+        assert!(rejected(&["--check-audio", "--selection"]).contains("saved or default"));
+        assert!(
+            rejected(&["--check-audio", "--selection", "remembered"])
+                .contains("Unknown --selection value: remembered")
+        );
+    }
+
+    #[test]
+    fn saved_probe_keeps_the_headless_and_no_audio_refusal() {
+        let saved = parsed(&["--check-audio", "--selection", "saved"]);
+        assert_eq!(probe_request(&saved, true), ProbeRequest::Refused);
+        let muted = parsed(&["--check-audio", "--selection", "saved", "--no-audio"]);
+        assert_eq!(probe_request(&muted, false), ProbeRequest::Refused);
+        assert_eq!(probe_request(&muted, true), ProbeRequest::Refused);
     }
 
     #[test]

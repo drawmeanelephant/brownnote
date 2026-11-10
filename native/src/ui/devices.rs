@@ -1,5 +1,5 @@
 //! Output selection and recovery, owned by the feature, not the project.
-mod preferences;
+pub(crate) mod preferences;
 #[cfg(test)]
 mod tests;
 mod view;

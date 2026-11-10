@@ -46,6 +46,40 @@ hardware, even after explicit panel actions. If the preference directory
 cannot be resolved, startup stays silent with an error. An explicit default
 choice can still open audio, but the preference error remains visible.
 
+## Probe the remembered selection
+
+`--check-audio` probes the system default unless `--selection saved` is given.
+The opt-in reads the same `audio-output.json` through the panel's reader and
+validation, then resolves the saved ID and whole configuration exactly as
+**RETRY REMEMBERED** does. It never searches for a namesake and never falls
+back to the system default (D16).
+
+```sh
+cargo run --release --manifest-path native/Cargo.toml -- --check-audio --selection saved
+```
+
+`--selection default` states today's system-default behavior explicitly.
+`--selection` without `--check-audio`, an unknown value, and the existing
+headless/`--no-audio` refusal all exit non-zero before audio is opened. A
+headless or `--no-audio` session still reads no machine preference.
+
+A run that cannot measure the saved selection exits non-zero with the panel's
+reason and opens no stream. That covers a missing file (where the panel would
+use the default), corrupt JSON, another `version`, a malformed or stale device
+ID, and a saved rate, channel count or buffer the device does not support. A
+selection that no longer resolves stays an error; it is never reported as the
+default device.
+
+The printed block adds one line after the `Output:` status line:
+
+```text
+selection_source=saved
+```
+
+Without the flag the line reads `selection_source=system-default`. It names the
+instruction only. The status line already carries the device label, and no
+device ID, serial or media path is printed.
+
 ## Check the mounted controls
 
 From the repository root, run the actual feature and application targets:
@@ -109,15 +143,18 @@ owned temporary directory before launching the app.
 7. With the built-in output connected, run the release `--check-audio` and
    record its printed block. It reports callback cost, deadline headroom,
    observed buffer lengths and CPAL's own presentation estimate for the system
-   default. It still says round-trip latency is unmeasured, so it does not
-   close the latency gate.
+   default. Then save an explicit choice in **AUDIO OUTPUT** and run
+   `--check-audio --selection saved`; record that block too. It reports the
+   same measurements for the remembered device and rate. Both blocks still say
+   round-trip latency is unmeasured, so neither closes the latency gate.
 
 The optional second-output run, maintainer listening, and first-use latency
-measurements remain unresolved. `--check-audio` probes the system default,
-not the UI's saved selection. It plays pad 0 for two seconds and prints a
-stable block after the status and meter lines:
+measurements remain unresolved. The probe plays pad 0 for two seconds and
+prints a stable block after the status and meter lines, beginning with the
+selection source:
 
 ```text
+selection_source=<saved|system-default>
 frames=<rendered frames>, peak=<mastered peak>
 callbacks=<observed>, dropped=<queue overflow>, rejected=<replayed or foreign>, inverted_lead=<unavailable predictions>
 callback_duration_us=min=<us>, p50=<us>, p95=<us>, n=<observed>
