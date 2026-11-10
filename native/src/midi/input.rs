@@ -8,6 +8,17 @@
 //! - The dispatch [`Sink`] reports a full destination (the 256-slot command
 //!   queue) as `false`; the controller counts that loss explicitly and never
 //!   leaves a stuck note.
+//! - Backend timestamps become take time only through checked arithmetic
+//!   ([`Controller::original_time`]): a packet timestamped before the
+//!   connection's first packet, or whose microsecond delta or base+delta would
+//!   overflow, is counted in [`Counters::clock_anomalies`] and is not
+//!   dispatched — no time is invented and no stored `OriginalTime` is
+//!   rewritten (D9). A timestamp that decreases but is still at or after the
+//!   first packet keeps its real value, so `NoteLifecycle` reports
+//!   `EndBeforeStart` where it would invert a note pair; that anomaly is
+//!   counted in the lifecycle path and the note stays active for disconnect
+//!   reconciliation. Equal timestamps are valid (a zero-duration note) and are
+//!   not anomalous.
 //! - Disconnect/reconnect reconciles held notes and reports loss; mappings are
 //!   never changed silently. Device selection is a machine preference (D8);
 //!   mappings are project DTOs ([`MappingsDocument`]). This module owns neither
@@ -47,6 +58,9 @@ use std::{
 pub const RAW_CAPACITY: usize = 16;
 /// Bounded raw handoff between the backend callback and [`Controller::poll`].
 pub const RAW_QUEUE_CAPACITY: usize = 1024;
+
+/// Nanoseconds in one backend timestamp unit (microseconds).
+const NANOS_PER_MICROSECOND: u64 = 1_000;
 
 /// The CoreMIDI client name for enumeration and connections.
 pub const CLIENT_NAME: &str = "brownnote-native";
@@ -185,7 +199,10 @@ pub struct Counters {
     pub released_on_disconnect: u64,
     /// Raw records that belonged to an already-ended connection.
     pub stale_events: u64,
-    /// Clock anomalies (e.g. end before start); the note stays reconcilable.
+    /// Clock anomalies: a backend timestamp that could not be converted
+    /// (counted once; its message is not dispatched) or a note pair the
+    /// lifecycle rejected as reversed. Kept distinct from
+    /// `unmatched_releases`; an anomalous note stays reconcilable.
     pub clock_anomalies: u64,
     /// Messages captured while learn mode was on.
     pub learned: u64,
@@ -335,7 +352,11 @@ impl Controller {
                 match parser::parse_message(raw.bytes()) {
                     Err(_) => self.counters.malformed += 1,
                     Ok(message) => {
-                        let time = self.original_time(raw.timestamp_us);
+                        let Some(time) = self.original_time(raw.timestamp_us) else {
+                            // Counted in `clock_anomalies`; no time exists for
+                            // this message, so it is not dispatched.
+                            continue;
+                        };
                         self.handle(message, time, sink);
                     }
                 }
@@ -351,13 +372,32 @@ impl Controller {
     /// Backend microseconds to take-relative nanoseconds: a checked
     /// microsecond-to-nanosecond conversion against the connection's first
     /// packet, based at the take time the connection opened with.
-    fn original_time(&mut self, timestamp_us: u64) -> OriginalTime {
-        let Some(epoch) = &mut self.epoch else {
-            return OriginalTime::from_nanos(0);
+    ///
+    /// `None` means this packet's timestamp cannot be converted honestly: it
+    /// was counted once in [`Counters::clock_anomalies`] and its message is
+    /// not dispatched. That covers a timestamp before the connection's first
+    /// packet and overflow in the delta multiplication or the base+delta sum.
+    /// The first packet itself establishes the epoch and always converts.
+    fn original_time(&mut self, timestamp_us: u64) -> Option<OriginalTime> {
+        let Some(epoch) = self.epoch.as_mut() else {
+            // No connection: `poll` counts this packet as stale first.
+            return None;
         };
         let first = *epoch.first_timestamp_us.get_or_insert(timestamp_us);
-        let delta_ns = timestamp_us.saturating_sub(first).saturating_mul(1_000);
-        OriginalTime::from_nanos(epoch.base_time.nanos().saturating_add(delta_ns))
+        let base = epoch.base_time.nanos();
+        let checked = timestamp_us
+            .checked_sub(first)
+            .and_then(|delta_us| delta_us.checked_mul(NANOS_PER_MICROSECOND))
+            .and_then(|delta_ns| base.checked_add(delta_ns));
+        match checked {
+            Some(nanos) => Some(OriginalTime::from_nanos(nanos)),
+            None => {
+                // Never saturate, clamp or otherwise invent a time: the
+                // message is dropped and the anomaly is visible in status.
+                self.counters.clock_anomalies += 1;
+                None
+            }
+        }
     }
 
     fn handle(&mut self, message: Message, time: OriginalTime, sink: &mut impl Sink) {
@@ -1340,6 +1380,185 @@ mod tests {
         );
         assert_eq!(controller.active_held(), 0);
         assert_eq!(controller.counters().unmatched_releases, 2);
+    }
+
+    /// One connection based at `base_nanos`, for the clock fixtures that need
+    /// a base time near `u64::MAX`.
+    fn rig_at(base_nanos: u64) -> (Controller, rtrb::Producer<RawMessage>) {
+        let (producer, consumer) = rtrb::RingBuffer::new(RAW_QUEUE_CAPACITY);
+        let mut controller = Controller::new(TakeId(90), Arc::new(CallbackCounters::default()));
+        controller.attach(consumer);
+        controller.begin_connection(SourceId(7), OriginalTime::from_nanos(base_nanos));
+        (controller, producer)
+    }
+
+    fn start_time(sink: &VecSink) -> Option<OriginalTime> {
+        sink.actions.iter().find_map(|action| match action {
+            Action::HeldStart(on) => Some(on.original_time),
+            _ => None,
+        })
+    }
+
+    fn end_time(sink: &VecSink) -> Option<OriginalTime> {
+        sink.actions.iter().find_map(|action| match action {
+            Action::HeldEnd(note) => Some(note.original_end()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_timestamp_before_the_first_packet_is_counted_once_and_not_dispatched() {
+        let (mut controller, mut producer) = rig(80);
+        controller.set_mappings(mappings(NoteTarget::Held(InstrumentId(17))));
+        let mut sink = VecSink::default();
+        // The first packet establishes the connection epoch: 20us -> base 1000ns.
+        push(&mut producer, 20, &[0x91, 40, 100]);
+        // A release sent before that first packet has no honest take time.
+        push(&mut producer, 10, &[0x81, 40, 64]);
+        controller.poll(&mut sink);
+        assert_eq!(
+            controller.counters().clock_anomalies,
+            1,
+            "counted exactly once, not saturated into the base time"
+        );
+        assert_eq!(controller.counters().received, 2);
+        assert_eq!(
+            controller.counters().unmatched_releases,
+            0,
+            "the dropped packet is never a release"
+        );
+        assert_eq!(start_time(&sink), Some(OriginalTime::from_nanos(1_000)));
+        assert_eq!(
+            end_time(&sink),
+            None,
+            "no time was invented for the release"
+        );
+        assert_eq!(controller.active_held(), 1);
+        // The note stays reconcilable on disconnect and gets a positive duration.
+        let released = controller.end_connection(&mut sink, OriginalTime::from_nanos(100_000));
+        assert_eq!(released, 1);
+        assert_eq!(controller.counters().held_ended, 1);
+        assert_eq!(controller.counters().unmatched_releases, 0);
+        let start = start_time(&sink).unwrap_or_else(|| unreachable!("one start"));
+        let end = end_time(&sink).unwrap_or_else(|| unreachable!("disconnect ended it"));
+        assert!(end.nanos() > start.nanos(), "never a negative duration");
+    }
+
+    #[test]
+    fn a_descending_timestamp_keeps_its_real_time_and_the_lifecycle_counts_it() {
+        let (mut controller, mut producer) = rig(81);
+        controller.set_mappings(mappings(NoteTarget::Held(InstrumentId(17))));
+        let mut sink = VecSink::default();
+        // First packet at 10us fixes the epoch; the pair then reverses.
+        push(&mut producer, 10, &[0x91, 41, 100]); // unmapped, sets the epoch
+        push(&mut producer, 30, &[0x91, 40, 100]); // start at 21000ns
+        push(&mut producer, 20, &[0x81, 40, 64]); // release at 11000ns: before start
+        controller.poll(&mut sink);
+        assert_eq!(
+            controller.counters().clock_anomalies,
+            1,
+            "the lifecycle reports the reversal once"
+        );
+        assert_eq!(
+            controller.counters().unmatched_releases,
+            0,
+            "a reversed end is an anomaly, not an unmatched release"
+        );
+        assert_eq!(controller.active_held(), 1, "the note stays reconcilable");
+        assert_eq!(end_time(&sink), None);
+        assert_eq!(start_time(&sink), Some(OriginalTime::from_nanos(21_000)));
+        // Disconnect reconciles it at a later time without rewriting the start.
+        let released = controller.end_connection(&mut sink, OriginalTime::from_nanos(100_000));
+        assert_eq!(released, 1);
+        assert_eq!(controller.counters().clock_anomalies, 1);
+        assert_eq!(controller.counters().unmatched_releases, 0);
+        assert_eq!(start_time(&sink), Some(OriginalTime::from_nanos(21_000)));
+        assert_eq!(end_time(&sink), Some(OriginalTime::from_nanos(100_000)));
+    }
+
+    #[test]
+    fn equal_timestamps_are_valid_and_make_a_zero_duration_note() {
+        let (mut controller, mut producer) = rig(82);
+        controller.set_mappings(mappings(NoteTarget::Held(InstrumentId(17))));
+        let mut sink = VecSink::default();
+        push(&mut producer, 10, &[0x91, 40, 100]);
+        push(&mut producer, 10, &[0x81, 40, 64]);
+        controller.poll(&mut sink);
+        assert_eq!(
+            controller.counters().clock_anomalies,
+            0,
+            "equal is not anomalous"
+        );
+        assert_eq!(controller.counters().held_ended, 1);
+        assert_eq!(controller.active_held(), 0);
+        assert_eq!(start_time(&sink), Some(OriginalTime::from_nanos(1_000)));
+        assert_eq!(end_time(&sink), Some(OriginalTime::from_nanos(1_000)));
+        let end = sink.actions.iter().find_map(|action| match action {
+            Action::HeldEnd(note) => Some(note.duration_nanos()),
+            _ => None,
+        });
+        assert_eq!(end, Some(0));
+    }
+
+    #[test]
+    fn an_overflowing_timestamp_is_counted_and_not_saturated() {
+        let (mut controller, mut producer) = rig(83);
+        controller
+            .set_mapping(Mapping::Note {
+                channel: ch(1),
+                pitch: pitch(40),
+                target: NoteTarget::OneShot(pad(3)),
+            })
+            .unwrap();
+        let mut sink = VecSink::default();
+        push(&mut producer, 10, &[0x91, 40, 100]);
+        // (u64::MAX - 10)us does not fit in nanoseconds.
+        push(&mut producer, u64::MAX, &[0x91, 40, 100]);
+        controller.poll(&mut sink);
+        assert_eq!(controller.counters().clock_anomalies, 1);
+        assert_eq!(
+            controller.counters().triggered,
+            1,
+            "the overflowing packet is not dispatched at a distant time"
+        );
+        assert_eq!(controller.counters().unmatched_releases, 0);
+        let times: Vec<u64> = sink
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                Action::Trigger { time, .. } => Some(time.nanos()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(times, vec![1_000]);
+    }
+
+    #[test]
+    fn base_plus_delta_overflow_is_counted_and_not_saturated() {
+        let (mut controller, mut producer) = rig_at(u64::MAX - 500);
+        controller
+            .set_mapping(Mapping::Note {
+                channel: ch(1),
+                pitch: pitch(40),
+                target: NoteTarget::OneShot(pad(3)),
+            })
+            .unwrap();
+        let mut sink = VecSink::default();
+        push(&mut producer, 10, &[0x91, 40, 100]);
+        // One microsecond past the first packet is 1000ns, too much for the base.
+        push(&mut producer, 11, &[0x91, 40, 100]);
+        controller.poll(&mut sink);
+        assert_eq!(controller.counters().clock_anomalies, 1);
+        assert_eq!(controller.counters().triggered, 1);
+        let times: Vec<u64> = sink
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                Action::Trigger { time, .. } => Some(time.nanos()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(times, vec![u64::MAX - 500], "first packet kept its base");
     }
 
     /// A sink backed by the real 256-slot engine command queue.

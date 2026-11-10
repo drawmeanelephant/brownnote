@@ -1357,6 +1357,26 @@ mod tests {
     }
 
     #[test]
+    fn a_clock_anomaly_is_visible_in_the_status_line() {
+        let mut app = app();
+        app.state.selected = 2;
+        let mut producer = connected(&mut app, 2);
+        push(&mut producer, 20, &[0x91, 40, 100]);
+        // A release before the connection's first packet has no take time: it
+        // is counted and not dispatched, so the status line must say so.
+        push(&mut producer, 10, &[0x81, 40, 64]);
+        poll(&mut app.state, &app.midi);
+        assert_eq!(counters(&app).clock_anomalies, 1);
+        assert_eq!(counters(&app).triggered, 1);
+        assert_eq!(counters(&app).unmatched_releases, 0);
+        let text = status(&app.state, &app.midi);
+        assert!(
+            text.contains("commands 0 · stale 0 · unmatched 0 · clock 1"),
+            "the counted anomaly is reported in the LOSS group: {text}"
+        );
+    }
+
+    #[test]
     fn learn_captures_then_assigns_a_mapping_to_the_selected_pad() {
         let mut app = app();
         app.state.selected = 9;
