@@ -15,9 +15,11 @@
 //! stream's real rate and buffer (D16).
 use super::{State, button, caption, ink};
 use brownnote_native::{
+    assets::{AssetRegistry, RegistryError},
     import::MediaPublisher,
-    live_audio,
+    live_audio::{self, StereoClip},
     midi::mapping::ControlIntent,
+    output::Output,
     paths::Resolver,
     pedals::offline::protocol::PluginInfo,
     pedals::offline::{HelperCommand, Stage},
@@ -30,7 +32,8 @@ use brownnote_native::{
         },
     },
     project::{
-        AssetId, AssetRef, LiveInstrumentDocument, LiveTakeDocument, session::LiveTakeSlots,
+        AssetId, AssetRef, LiveInstrumentDocument, LiveTakeDocument,
+        session::{self, LiveTakeSlots},
     },
 };
 use rune::{El, Key, KeyEvent, TextEdit, TextStyle, Tx, col, row, text_input};
@@ -70,7 +73,9 @@ pub struct Live {
     pub plugin_id: TextEdit,
     /// The project's saved live instrument and every retained take clip.
     pub document: Option<LiveInstrumentDocument>,
-    /// Retained take audio already loaded into mixer slots by a project open.
+    /// Retained take audio loaded into mixer slots, by a project open or by
+    /// the commit that recorded it. Transport replay plays a take from here
+    /// instead of falling through to the sampled instrument.
     pub takes: BTreeMap<TakeId, RetainedTake>,
     pub status: Option<LiveStatus>,
     pub notice: Option<String>,
@@ -549,6 +554,8 @@ impl Live {
     fn finish_capture(
         &mut self,
         media: &dyn MediaPublisher,
+        assets: &mut AssetRegistry,
+        output: &mut Output,
         take: TakeId,
         pass_start: u64,
         pass_end: u64,
@@ -622,8 +629,42 @@ impl Live {
             self.notice = Some("No live audio fell inside the recorded pass".into());
             return;
         }
-        let interleaved = &captured.samples[start * 2..end * 2];
-        let bytes = match live_audio::encode(captured.rate, interleaved) {
+        self.retain_take(
+            media,
+            assets,
+            output,
+            take,
+            captured.rate,
+            &captured.samples[start * 2..end * 2],
+        );
+    }
+
+    /// Commit one take's captured stereo audio as project media and as this
+    /// session's playable take: the document record, two unassigned mixer
+    /// slots loaded exactly as a project open loads them, and the replay entry
+    /// transport replay gates on. The take is audible the moment it commits.
+    ///
+    /// A take owns one slot pair forever: committing the same take again keeps
+    /// the slots it already has. When the mixer cannot hold another take the
+    /// commit is refused with a notice naming the limit, before any media or
+    /// document entry is written, so nothing half-written is left behind.
+    fn retain_take(
+        &mut self,
+        media: &dyn MediaPublisher,
+        assets: &mut AssetRegistry,
+        output: &mut Output,
+        take: TakeId,
+        rate: u32,
+        interleaved: &[f32],
+    ) {
+        let Some((replaces, saved_takes)) = self
+            .document
+            .as_ref()
+            .map(|document| (document.take(take).is_some(), document.takes.len()))
+        else {
+            return;
+        };
+        let bytes = match live_audio::encode(rate, interleaved) {
             Ok(bytes) => bytes,
             Err(error) => {
                 self.error = Some(format!("Take audio was not encoded: {error}"));
@@ -631,24 +672,73 @@ impl Live {
             }
         };
         let reference = AssetRef::of(&bytes);
+        if let Some(existing) = self.takes.get(&take) {
+            self.notice = Some(if existing.asset == reference.id {
+                format!("Take {} audio is already retained in this session", take.0)
+            } else {
+                format!(
+                    "Take {} already has retained audio in this session; keeping it",
+                    take.0
+                )
+            });
+            return;
+        }
+        // The take replaces its own saved record, so it only needs one more
+        // pair when the document does not already list it.
+        let takes_after = saved_takes + usize::from(!replaces);
+        if let Err(error) = session::live_take_capacity(assets.pad_assets(), takes_after) {
+            self.notice = Some(format!("Take {} audio was not retained: {error}", take.0));
+            return;
+        }
+        let pair = match assets.claim_live_take(
+            &StereoClip::from_interleaved(rate, interleaved),
+            |command| output.send(command),
+        ) {
+            Ok(pair) => pair,
+            Err(RegistryError::Full) => {
+                self.notice = Some(format!(
+                    "Take {} audio was not retained: no pair of free mixer slots is left in this session",
+                    take.0
+                ));
+                return;
+            }
+            Err(_) => {
+                self.notice = Some(format!(
+                    "Take {} audio was not retained: the mixer command queue is full",
+                    take.0
+                ));
+                return;
+            }
+        };
         if media.publish(&reference, &bytes).is_err() {
+            assets.release_live_take(pair, |command| output.send(command));
             self.error = Some("Take audio could not be published to project media".into());
             return;
         }
-        let Some(document) = &mut self.document else {
-            return;
-        };
-        let record = LiveTakeDocument {
-            take: take.0.to_string(),
-            asset: reference.id,
-            rate: captured.rate,
-            frames: (end - start) as u64,
-        };
-        document.takes.retain(|saved| saved.take != record.take);
-        document.takes.push(record);
+        let frames = (interleaved.len() / 2) as u64;
+        if let Some(document) = &mut self.document {
+            let record = LiveTakeDocument {
+                take: take.0.to_string(),
+                asset: reference.id,
+                rate,
+                frames,
+            };
+            document.takes.retain(|saved| saved.take != record.take);
+            document.takes.push(record);
+        }
+        self.takes.insert(
+            take,
+            RetainedTake {
+                asset: reference.id,
+                left: pair.0,
+                right: pair.1,
+                rate,
+                frames,
+            },
+        );
         self.notice = Some(format!(
             "Retained {:.2} s of take {} audio as project media",
-            (end - start) as f64 / f64::from(captured.rate),
+            frames as f64 / f64::from(rate),
             take.0
         ));
         self.error = None;
@@ -799,11 +889,18 @@ pub fn begin_take_capture(s: &mut State, take: TakeId, pass_start: u64) {
     s.live.begin_capture(take, pass_start, now);
 }
 
-/// Keep the pass's live audio as project media once the take commits.
+/// Keep the pass's live audio as project media once the take commits, and give
+/// it the mixer slots that make it replayable in this same session.
 pub fn finish_take_capture(s: &mut State, take: TakeId, pass_start: u64, pass_end: u64) {
     let media = s.media.owned.clone();
-    s.live
-        .finish_capture(media.as_ref(), take, pass_start, pass_end);
+    s.live.finish_capture(
+        media.as_ref(),
+        &mut s.assets,
+        &mut s.output,
+        take,
+        pass_start,
+        pass_end,
+    );
 }
 
 /// A discarded pass leaves no retained audio.

@@ -1,8 +1,9 @@
 //! UI/control-thread runtime identities and transactional slot ownership.
 //! Slot allocation is shared by sources and retained renders, never partitioned.
 use crate::{
-    engine::{Command, Returned, SLOTS, Slots},
+    engine::{Command, Returned, SLOTS, Sample, Slots},
     import::Imported,
+    live_audio::StereoClip,
     project::{AssetId, MediaKind, PAD_COUNT, PadId, SampleAssignment},
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -135,6 +136,78 @@ impl AssetRegistry {
 
     pub fn slots(&self) -> &Slots {
         &self.slots
+    }
+
+    /// Pad-playable assets this registry holds: one mixer slot each, and
+    /// exactly the pad entries a save lists. Retained live take slots are
+    /// `External`, not assets, so they are never counted here.
+    pub fn pad_assets(&self) -> usize {
+        self.assets
+            .values()
+            .filter(|asset| asset.imported.asset.kind.is_pad_audio())
+            .count()
+    }
+
+    /// Reserve the next two free slots for a retained live take's stereo audio
+    /// and load them into the running mixer. The slots stay `External`: no pad
+    /// import can take them, they belong to project media, and only the
+    /// project replaces them. Nothing changes if either load is refused.
+    pub fn claim_live_take(
+        &mut self,
+        clip: &StereoClip,
+        mut send: impl FnMut(Command) -> bool,
+    ) -> Result<(usize, usize), RegistryError> {
+        let mut free = self
+            .states
+            .iter()
+            .enumerate()
+            .filter(|(_, state)| **state == SlotState::Free)
+            .map(|(slot, _)| slot);
+        let (Some(left), Some(right)) = (free.next(), free.next()) else {
+            return Err(RegistryError::Full);
+        };
+        let left_sample = Sample {
+            data: clip.left.clone(),
+            rate: clip.rate,
+        };
+        let right_sample = Sample {
+            data: clip.right.clone(),
+            rate: clip.rate,
+        };
+        if !send(Command::Load {
+            slot: left,
+            sample: left_sample.clone(),
+        }) {
+            return Err(RegistryError::QueueFull);
+        }
+        if !send(Command::Load {
+            slot: right,
+            sample: right_sample.clone(),
+        }) {
+            // The registry never claimed the first slot; the mixer returns it.
+            let _ = send(Command::Unload { slot: left });
+            return Err(RegistryError::QueueFull);
+        }
+        self.slots.set(left, Some(left_sample));
+        self.slots.set(right, Some(right_sample));
+        self.states[left] = SlotState::External;
+        self.states[right] = SlotState::External;
+        Ok((left, right))
+    }
+
+    /// Take a claimed slot pair back, for a take that could not be retained.
+    /// The mixer retires both samples and the slots become allocatable again.
+    pub fn release_live_take(
+        &mut self,
+        (left, right): (usize, usize),
+        send: impl FnMut(Command) -> bool,
+    ) {
+        for slot in [left, right] {
+            if self.states.get(slot) == Some(&SlotState::External) && !self.slots.is_empty(slot) {
+                self.states[slot] = SlotState::PendingUnload;
+            }
+        }
+        self.flush_unloads(send);
     }
 
     pub fn has_retirements(&self) -> bool {

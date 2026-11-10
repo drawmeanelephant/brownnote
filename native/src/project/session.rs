@@ -39,6 +39,11 @@ pub enum Error {
     Media,
     Decode(AssetId, String),
     Registry,
+    /// Pad-playable assets and retained live takes do not fit the mixer.
+    Capacity {
+        pad_assets: usize,
+        live_takes: usize,
+    },
     Admission(String),
     RecoveryDestination,
     PassActive,
@@ -61,6 +66,16 @@ impl fmt::Display for Error {
             Self::Registry => write!(
                 f,
                 "Project exceeds runtime sample capacity or has invalid assignments."
+            ),
+            Self::Capacity {
+                pad_assets,
+                live_takes,
+            } => write!(
+                f,
+                "Project exceeds mixer slot capacity: {pad_assets} pad asset(s) and \
+                 {live_takes} retained live take(s) need {} of {SLOTS} slots \
+                 ({LIVE_TAKE_SLOTS} per take). Remove a pad sample or a live take.",
+                pad_assets + live_takes * LIVE_TAKE_SLOTS
             ),
             Self::Admission(reason) => write!(f, "Project output was not admitted: {reason}"),
             Self::RecoveryDestination => write!(
@@ -106,6 +121,32 @@ pub struct LiveTakeSlots {
     pub right: usize,
     pub rate: u32,
     pub frames: u64,
+}
+
+/// Mixer slots one retained live take needs: one mono slot per channel.
+pub const LIVE_TAKE_SLOTS: usize = 2;
+
+/// The two slots a retained take occupies, packed after the pad-playable
+/// assets in document order. An open decodes the same assets in that order,
+/// so this is the only place the retained-take slot arithmetic lives.
+pub fn live_take_slots(pad_assets: usize, index: usize) -> (usize, usize) {
+    let left = pad_assets + index * LIVE_TAKE_SLOTS;
+    (left, left + 1)
+}
+
+/// The mixer's whole capacity for pad audio and retained live takes: one slot
+/// per pad-playable asset and two per retained take, inside the fixed pool.
+/// Recording refuses the take this rejects, a save refuses the project, and an
+/// open refuses a hand-built document, so the three cannot disagree about what
+/// this machine can play.
+pub fn live_take_capacity(pad_assets: usize, live_takes: usize) -> Result<(), Error> {
+    if pad_assets > SLOTS || pad_assets + live_takes * LIVE_TAKE_SLOTS > SLOTS {
+        return Err(Error::Capacity {
+            pad_assets,
+            live_takes,
+        });
+    }
+    Ok(())
 }
 
 impl Snapshot {
@@ -189,8 +230,17 @@ impl Snapshot {
     }
 
     /// Add the live instrument, its stable identity and every retained take
-    /// clip it played into. A disabled record still keeps both.
+    /// clip it played into. A disabled record still keeps both. A save that
+    /// would write a project this machine cannot open is refused here, with
+    /// the counts, rather than producing an unopenable document.
     pub fn with_live_instrument(mut self, document: LiveInstrumentDocument) -> Result<Self, Error> {
+        let pad_assets = self
+            .document
+            .assets
+            .iter()
+            .filter(|asset| asset.kind.is_pad_audio())
+            .count();
+        live_take_capacity(pad_assets, document.takes.len())?;
         for take in &document.takes {
             self.add_asset(take.asset, MediaKind::LiveTakeRender)?;
         }
@@ -317,9 +367,7 @@ impl Prepared {
             .live_instrument
             .as_ref()
             .map_or(0, |live| live.takes.len());
-        if pad_assets > SLOTS || pad_assets + live_takes_saved * 2 > SLOTS {
-            return Err(Error::Registry);
-        }
+        live_take_capacity(pad_assets, live_takes_saved)?;
         let media = Arc::new(SessionMedia::default());
         let mut slots = Slots::empty();
         let mut imported = Vec::new();
@@ -376,8 +424,7 @@ impl Prepared {
                 media
                     .publish(&AssetRef::of(encoded), encoded)
                     .map_err(|_| Error::Media)?;
-                let left = pad_assets + index * 2;
-                let right = left + 1;
+                let (left, right) = live_take_slots(pad_assets, index);
                 slots.set(
                     left,
                     Some(crate::engine::Sample {
