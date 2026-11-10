@@ -1,6 +1,7 @@
 # SoundCraft adapter
 
-This adapter consumes only #109's `manifest.json` v1 and content-hash WAV media.
+This adapter consumes the current #109 export `manifest.json` (v3, with v1/v2
+read support) and content-hash WAV media.
 It owns a fresh GUI process through explicit `--app` and `--cli` paths. It never
 connects to a personal session, starts audio, uses CLI `run`, or writes private
 SoundCraft session JSON.
@@ -34,11 +35,12 @@ for comparison and are not imported as tracks.
 
 ## Mapping boundary
 
-Manifest v1 does not describe sampler roots, key ranges, play modes, plugins or
-effects. These are **not inferred** from event renders. MIDI tracks start muted,
-so an unrelated default synth or approximate sampler cannot double retained
-audio. Notes without retained audio carry an explicit unsupported record.
-Original bundle loss records remain unchanged in the report.
+The manifest does not describe sampler roots, key ranges, play modes, plugin
+state or effects. A `live_instrument_notes` part names the plugin, never its
+state. None of this is **inferred** from event renders. MIDI tracks start
+muted, so an unrelated default synth or approximate sampler cannot double
+retained audio. Notes without retained audio carry an explicit unsupported
+record. Original bundle loss records remain unchanged in the report.
 
 `live_instrument_notes` parts name an external plugin identity. This target
 cannot load a plugin from a bundle or carry its identity into a track, so each
@@ -116,7 +118,7 @@ The opt-in test below passed against the actual v0.19.0 GUI, started with
   outside-map bounces, choke rejection, move/delete/note edits, quit/reopen,
   source-free relocation and the missing-media negative control.
   Evidence: [evidence/recipe-app.json](evidence/recipe-app.json).
-- The adapter on a minimal v1 bundle with an explicit sampler mapping.
+- The adapter on a minimal bundle with an explicit sampler mapping.
 - The adapter on a bundle written by the real #109 project, takes and edit
   path. The bundle has two overlapping hits on one pad (one nudged, a third
   deleted) and three overlapping notes, two with frozen renders. Every hit and
@@ -169,7 +171,7 @@ It verifies binary hashes before launch. The recipe checks overlapping clips,
 MIDI notes/channels/velocities/durations, 120 BPM, 960 ticks = 24,000 samples,
 44.1 kHz conversion, sampler variants and choke rejection, move/delete/note
 edits, save/quit/reopen, source-free relocation, and missing-media negative
-control. It then runs the actual adapter on a minimal v1 bundle; the adapter
+control. It then runs the actual adapter on a minimal bundle; the adapter
 reopens and inspects counts, clip positions, notes, tempo and media availability.
 Neither a skipped test nor fake-process results satisfy this gate.
 

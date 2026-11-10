@@ -102,17 +102,25 @@ A neutral bundle cannot host a live plugin. For each retained take the adapter
 writes one `sample_clips` part with one event whose asset is the retained WAV.
 The WAV is copied byte-for-byte.
 
-A take's notes export too, as one more part per take: manifest v3
-`live_instrument_notes`, carrying the plugin identity (backend, ID, artifact
+A take's instrument-target notes export too, as one more part per take: manifest
+v3 `live_instrument_notes`, carrying the plugin identity (backend, ID, artifact
 SHA-256, ABI, version) instead of the sampled-instrument ID. Every note keeps
 its take-local position: the original sample-timed onset converted from the
 take's own recording tempo, with the effective duration, channel, pitch and
 velocity the edit view reports. The events keep their real
 `<take>:<sequence>` IDs, so the notes and the retained audio of one take join
-by take identity without renaming anything. A take with no notes adds no such
-part. Held notes carry the project's single instrument target, so every
-instrument-target note of a live take is attributed to the live plugin here;
-the take's retained audio remains the record of what actually sounded.
+by take identity without renaming anything. A take with no instrument-target
+notes adds no such part. Held notes carry the project's single instrument
+target, so every instrument-target note of a live take is attributed to the
+live plugin here; the take's retained audio remains the record of what actually
+sounded.
+
+A live pass captures the plugin, not the pad mixer. Pad and sample hits played
+over the pass are summed into the output after the plugin's own blocks, so they
+are not inside the retained take WAV. They are neither dropped nor folded into
+the take's notes: each exports in its normal `pad_clips` or `sample_clips` part,
+resolving the same retained render or source asset as any other hit. The pad
+audio therefore appears once, from the pad's own media.
 
 The bundle records a `baked_processing` loss per take naming the honest plugin
 identity, stating that the retained take was played live and is not editable
@@ -136,8 +144,9 @@ promise. Identity is name-and-hash only — the machine path is never exported.
 - The machine hint is not rewritten when the user relocates the bundle; type
   the new absolute path and choose the same identity.
 - No offline render or freeze: only the captured stereo take audio and that
-  take's editable notes are retained, and neither can reconstruct the plugin's
-  sound without the plugin.
+  take's editable instrument notes are retained, and neither can reconstruct the
+  plugin's sound without the plugin. Pad or sample hits from the same pass are
+  not plugin audio; they export from their pad media as their own parts.
 - The live host's own limits (one helper process, bounded queues, block
   deadlines) apply unchanged.
 
@@ -160,6 +169,10 @@ checks the note count, positions, durations, controls and recording tempo
 against a take fixture recorded at 60 BPM while the project runs at 120 BPM,
 the plugin identity through a manifest round trip, the unchanged retained audio
 and the absence of any machine path.
+`native/tests/export_bundle.rs::live_take_pad_hit_exports_as_a_pad_clip_beside_the_take_notes`
+checks that a pad hit recorded in that pass exports as a pad clip with its own
+asset, controls and take-local position, beside the take's instrument note and
+its unchanged retained audio.
 `native/tests/soundcraft_adapter.rs::unavailable_live_plugin_is_reported_and_the_retained_take_still_converts`
 converts such a bundle through the strict fake target: the plugin is reported
 as an unsupported mapping by identity and the retained take is imported as an

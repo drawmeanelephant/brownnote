@@ -212,15 +212,16 @@ pub fn prepare(
     let mut grouped: BTreeMap<PartKey, Vec<EventId>> = BTreeMap::new();
     let mut exported_takes: BTreeMap<u128, FixtureTake> = BTreeMap::new();
     for note in effective {
-        let live = document
-            .live_instrument
-            .as_ref()
-            .is_some_and(|live| live.take(note.id.take).is_some());
-        if live && !matches!(note.target, Target::Instrument(_)) {
-            // A live take's instrument notes carry the plugin identity; pad or
-            // sample hits recorded in it stay out of this slice, as before.
-            continue;
-        }
+        // Only a live take's instrument notes are regrouped: they carry the
+        // plugin identity instead of the sampled instrument's. A pad or sample
+        // hit in that take keeps its normal part and asset, because the
+        // retained take audio carries the plugin's own output and not the pad
+        // mixer those hits were summed from.
+        let live_instrument_note = matches!(note.target, Target::Instrument(_))
+            && document
+                .live_instrument
+                .as_ref()
+                .is_some_and(|live| live.take(note.id.take).is_some());
         let id = event_id(note.id);
         let (target, part) = match note.target {
             Target::Pad(pad) => (FixtureTarget::Pad(pad.into()), PartKey::Pad(pad.into())),
@@ -233,7 +234,7 @@ pub fn prepare(
                 PartKey::Instrument(instrument.0),
             ),
         };
-        let part = if live {
+        let part = if live_instrument_note {
             PartKey::LiveTakeNotes(id.take)
         } else {
             part
@@ -287,7 +288,10 @@ pub fn prepare(
                 ),
             }),
         };
-        if !live && let Some(render) = frozen.get(&note.id) {
+        // A live instrument note never joins a frozen render: the take's
+        // retained audio is that note's sound, and a sampled-instrument render
+        // of the same target would fabricate a performance it never played.
+        if !live_instrument_note && let Some(render) = frozen.get(&note.id) {
             audio.frozen.insert(
                 id,
                 FrozenHit {
