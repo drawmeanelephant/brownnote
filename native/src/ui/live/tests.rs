@@ -310,6 +310,12 @@ fn a_recorded_take_survives_a_missing_bundle_and_replays_its_audio() {
     s.live
         .finish_capture(media.as_ref(), TakeId(9), pass_start, pass_end);
     assert!(s.live.error.is_none(), "{:?}", s.live.error);
+    let retained_notice = s.live.notice.clone().unwrap_or_default();
+    assert!(retained_notice.starts_with("Retained"), "{retained_notice}");
+    assert!(
+        !retained_notice.contains("not retained"),
+        "{retained_notice}"
+    );
     let saved = s.live.for_save().unwrap().unwrap();
     assert_eq!(
         saved.takes.len(),
@@ -404,6 +410,174 @@ fn a_recorded_take_survives_a_missing_bundle_and_replays_its_audio() {
     assert!(peak > 0.0, "retained take did not play");
     assert_eq!(reopened.output.meters.counts(), [0; 16]);
     transport::stop(&mut reopened, "test");
+}
+
+/// A pass whose instrument is stopped mid-recording still commits its MIDI
+/// take, and the take says its live audio was not retained instead of
+/// dropping the loss silently.
+#[test]
+fn a_take_committed_after_the_instrument_stopped_reports_the_missing_audio() {
+    let Some((helper, fixture)) = env() else {
+        return;
+    };
+    let root = Root::new();
+    let bundle = root.0.join("pinned-instrument.clap");
+    fs::copy(&fixture, &bundle).unwrap();
+    let mut s = state();
+    s.live.set_helper(helper.clone());
+    let info = identify_fixture(&helper, &bundle);
+    s.live
+        .adopt(
+            Chosen {
+                info,
+                path: bundle.clone(),
+            },
+            RATE,
+        )
+        .unwrap();
+    let stage = s.live.stage_from_document().unwrap();
+    let _voice = s.live.mount(stage, RATE, 256).unwrap();
+
+    s.now = 0.25;
+    transport::record(&mut s);
+    assert!(
+        s.live.capture.is_some(),
+        "REC starts retaining the live audio"
+    );
+    s.now = 0.26;
+    s.trigger(4, 1.0);
+    s.now = 0.27;
+    s.trigger(4, 0.3);
+
+    // The panel's CLEAR INSTRUMENT drops the live capture during the pass.
+    clear(&mut s);
+    assert!(s.live.capture.is_none());
+    assert!(
+        s.live
+            .notice
+            .as_deref()
+            .unwrap_or_default()
+            .contains("cleared"),
+        "{:?}",
+        s.live.notice
+    );
+
+    transport::stop(&mut s, "Stopped");
+    let take = s.takes.selected().expect("the pass still commits its take");
+    let notes = s.takes.take(take).map_or(0, |pass| pass.notes().len());
+    assert!(notes > 0, "the committed take kept its MIDI notes");
+    let notice = s.live.notice.clone().expect("the loss is reported");
+    assert!(notice.contains(&take.0.to_string()), "{notice}");
+    assert!(notice.contains("live audio was not retained"), "{notice}");
+    assert!(notice.contains("stopped during the pass"), "{notice}");
+    assert!(
+        !notice.contains("failed"),
+        "a user CLEAR is not a device failure: {notice}"
+    );
+    assert!(s.live.error.is_none(), "{:?}", s.live.error);
+    assert!(
+        s.live.for_save().unwrap().unwrap().takes.is_empty(),
+        "no audio was published for the take"
+    );
+}
+
+/// The host can answer that it kept nothing for an active capture (a capture
+/// that already stopped inside the helper). The take still says the audio was
+/// not retained rather than returning silently.
+#[test]
+fn a_take_whose_host_kept_no_capture_reports_the_missing_audio() {
+    let Some((helper, fixture)) = env() else {
+        return;
+    };
+    let root = Root::new();
+    let bundle = root.0.join("pinned-instrument.clap");
+    fs::copy(&fixture, &bundle).unwrap();
+    let mut s = state();
+    s.live.set_helper(helper.clone());
+    let info = identify_fixture(&helper, &bundle);
+    s.live
+        .adopt(
+            Chosen {
+                info,
+                path: bundle.clone(),
+            },
+            RATE,
+        )
+        .unwrap();
+    let stage = s.live.stage_from_document().unwrap();
+    let mut voice = s.live.mount(stage, RATE, 256).unwrap();
+
+    let pass_start = 5_000_000_000;
+    let pass_end = pass_start + 100_000_000;
+    s.live.begin_capture(TakeId(9), pass_start, pass_start);
+    let base = s.live.session.as_ref().unwrap().sender.earliest_exact();
+    send(&mut s, &[note(5, base + 64, true)]);
+    {
+        let session = s.live.session.as_ref().unwrap();
+        play_lockstep(&session.host, &mut voice, 1_024);
+    }
+    // The helper already stopped keeping the capture: the UI's request then
+    // returns `Ok(None)`.
+    assert!(
+        s.live
+            .session
+            .as_ref()
+            .unwrap()
+            .host
+            .capture(false)
+            .unwrap()
+            .is_some()
+    );
+
+    let media = s.media.owned.clone();
+    s.live
+        .finish_capture(media.as_ref(), TakeId(9), pass_start, pass_end);
+    let notice = s.live.notice.clone().expect("the loss is reported");
+    assert!(notice.contains("9"), "{notice}");
+    assert!(notice.contains("live audio was not retained"), "{notice}");
+    assert!(notice.contains("kept no capture"), "{notice}");
+    assert!(s.live.error.is_none(), "{:?}", s.live.error);
+    assert!(s.live.for_save().unwrap().unwrap().takes.is_empty());
+}
+
+/// A pass captured for one take is not reported as the audio of another.
+#[test]
+fn a_take_finished_without_its_capture_reports_which_capture_was_running() {
+    let Some((helper, fixture)) = env() else {
+        return;
+    };
+    let root = Root::new();
+    let bundle = root.0.join("pinned-instrument.clap");
+    fs::copy(&fixture, &bundle).unwrap();
+    let mut s = state();
+    s.live.set_helper(helper.clone());
+    let info = identify_fixture(&helper, &bundle);
+    s.live
+        .adopt(
+            Chosen {
+                info,
+                path: bundle.clone(),
+            },
+            RATE,
+        )
+        .unwrap();
+    let stage = s.live.stage_from_document().unwrap();
+    let _voice = s.live.mount(stage, RATE, 256).unwrap();
+
+    s.live
+        .begin_capture(TakeId(4), 1_000_000_000, 1_000_000_000);
+    assert_eq!(
+        s.live.capture.as_ref().map(|capture| capture.take),
+        Some(TakeId(4))
+    );
+    let media = s.media.owned.clone();
+    s.live
+        .finish_capture(media.as_ref(), TakeId(5), 1_000_000_000, 2_000_000_000);
+    let notice = s.live.notice.clone().expect("the loss is reported");
+    assert!(notice.contains("Take 5"), "{notice}");
+    assert!(notice.contains("live audio was not retained"), "{notice}");
+    assert!(notice.contains("belonged to take 4"), "{notice}");
+    assert!(s.live.for_save().unwrap().unwrap().takes.is_empty());
 }
 
 fn panel_view(state: &State, _cx: &mut Cx<State>) -> El {
