@@ -140,6 +140,23 @@ cache before export and the project before reading a relocated bundle.
 Fault tests fail each staged write, including generated WAV, SMF and manifest
 writes. No hardware, plugin, or new dependency is required.
 
-Maintainer follow-up: mount an off-thread export action in the UI and supply
-effective per-event frozen renders when an instrument/plugin owner exists.
-Listening checks and the pinned SoundCraft adapter remain separate gates.
+## The app's export action (#198)
+
+`native/src/ui/export.rs` mounts this writer in the running application. EXPORT
+captures the same owned snapshot a save takes (kit, instrument, takes, edits,
+retained media), then a single-flight worker freezes instrument renders with
+`Snapshot::freeze` and calls `write_project_bundle` with that captured
+document, its takes/edit layer and the project's per-note frozen renders. The
+captured media is published through the existing `SessionMedia`/`ProjectMedia`
+contract into a private staging root, so unsaved audio exports exactly as it
+plays and the writer still verifies every byte. The action never overwrites a
+destination, refuses a destination inside the saved project, one export at a
+time, and cancellation before publication, and reports the `BundleReceipt` or a
+typed refusal. UI tests drive the shipped view, `poll` and `on_key` headless and
+read the bundle back with these same readers (`ui::export::tests`).
+
+Maintainer follow-up: listen to an app-produced bundle in the pinned SoundCraft
+build, and supply per-event frozen variants from a pad/plugin owner when one
+grows one (the sampled instrument already joins through
+`InstrumentDocument::frozen_hits`). Listening checks and the pinned SoundCraft
+adapter remain separate gates.
