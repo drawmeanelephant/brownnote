@@ -174,7 +174,7 @@ Direct dependencies:
 - rune-fx from the same revision, and wgpu 30 for the compositor hook's types
   (features come from Rune's own wgpu). Only the look showcase draws with them.
 - cpal `=0.18.2`, rtrb `=0.4.1`, hound `=3.5.1`.
-- serde with derive, serde_json, and sha2 `=0.10.9` support project data,
+- serde with derive, serde_json, and sha2 `=0.11.1` support project data,
   machine preferences, and content hashes. `Cargo.lock` fixes resolved versions.
 
 Linux build packages (unverified): `libxkbcommon-dev` and `libwayland-dev`
