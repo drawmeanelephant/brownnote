@@ -39,18 +39,46 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Root(PathBuf);
 impl Root {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "brownnote-export-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
-        Self(root)
+        // This helper's own namespace. The app's writer stages into
+        // `brownnote-export-<pid>-<n>` from a counter of its own, so a name
+        // that counter already took must never be fatal here, and an
+        // interrupted run can leave a directory behind: skip a taken name.
+        for _ in 0..16 {
+            let root = std::env::temp_dir().join(format!(
+                "brownnote-export-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Relaxed)
+            ));
+            match fs::create_dir(&root) {
+                Ok(()) => return Self(root),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("cannot create {}: {error}", root.display()),
+            }
+        }
+        panic!("no unique test directory could be created");
     }
 }
 impl Drop for Root {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The suite presses EXPORT for real while other tests create roots, and the
+/// writer stages into the same temp directory. A root must therefore never
+/// compete for a name the staging writer already owns: when both counters
+/// produced the same name, whichever lost `create_dir` died with
+/// `AlreadyExists`.
+#[test]
+fn a_test_root_and_a_live_staging_directory_never_take_one_name() {
+    let mut roots = Vec::new();
+    let mut stagings = Vec::new();
+    for _ in 0..64 {
+        roots.push(Root::new());
+        match Staging::create() {
+            Ok(staging) => stagings.push(staging),
+            Err(refusal) => panic!("staging was refused: {refusal}"),
+        }
     }
 }
 
