@@ -288,23 +288,16 @@ fn load(bundle: &Path, mappings: &[SamplerMapping]) -> Result<Input> {
             }
             // Live-instrument notes obey the same note bounds: they stay notes
             // even when this target cannot load the plugin that played them.
-            PartKind::InstrumentNotes { .. } | PartKind::LiveInstrumentNotes { .. } => {
+            // No tick floor: `build` gives a short instrument gate the bundle
+            // SMF's one-tick minimum, and live notes never become ticks.
+            PartKind::InstrumentNotes { .. } | PartKind::LiveInstrumentNotes { .. }
                 if !event.pitch.is_some_and(|x| x <= 127)
                     || !event.channel.is_some_and(|x| x <= 15)
-                    || !event.velocity.is_some_and(|x| (1..=127).contains(&x))
-                {
-                    return Err(invalid(
-                        "MIDI note needs pitch 0..127, channel 0..15 and velocity 1..127",
-                    ));
-                }
-                let (length, _) = rounded(
-                    event.duration_nanos,
-                    u64::from(manifest.timing.tempo_milli_bpm) * PPQ,
-                    60_000_000_000_000,
-                )?;
-                if length == 0 {
-                    return Err(invalid("MIDI note shorter than one target tick"));
-                }
+                    || !event.velocity.is_some_and(|x| (1..=127).contains(&x)) =>
+            {
+                return Err(invalid(
+                    "MIDI note needs pitch 0..127, channel 0..15 and velocity 1..127",
+                ));
             }
             _ => {}
         }
@@ -553,21 +546,40 @@ fn build(
         let mut notes = Vec::new();
         for event in events {
             let factor = u64::from(manifest.timing.tempo_milli_bpm) * PPQ;
+            let end_nanos = event
+                .start_nanos
+                .checked_add(event.duration_nanos)
+                .ok_or_else(|| invalid("event end overflows"))?;
+            // The bundle SMF's gate policy (export::midi) at the session tempo:
+            // onset and absolute end round, never the duration alone, and a
+            // gate that rounds to zero gets one tick.
             let (start, start_loss) = rounded(event.start_nanos, factor, 60_000_000_000_000)?;
-            let (length, length_loss) = rounded(event.duration_nanos, factor, 60_000_000_000_000)?;
+            let (end, end_loss) = rounded(end_nanos, factor, 60_000_000_000_000)?;
             notes.push(Note {
                 start,
-                length,
+                length: (end - start).max(1),
                 pitch: event.pitch.ok_or_else(|| invalid("missing pitch"))?,
                 channel: event.channel.ok_or_else(|| invalid("missing channel"))?,
                 velocity: event.velocity.ok_or_else(|| invalid("missing velocity"))?,
             });
-            if start_loss || length_loss {
+            if start_loss || end_loss {
                 report.record(
                     Some(event.id),
                     Some(part.id),
                     "conversion",
-                    "MIDI onset/duration rounded independently to nearest 960 PPQ tick.",
+                    "MIDI onset/end rounded to nearest 960 PPQ tick, ties later (the bundle SMF policy).",
+                );
+            }
+            if end == start {
+                report.record(
+                    Some(event.id),
+                    Some(part.id),
+                    "conversion",
+                    format!(
+                        "MIDI gate of {} ns rounds to zero 960 PPQ ticks; lengthened to the bundle \
+                         SMF's one-tick minimum gate.",
+                        event.duration_nanos
+                    ),
                 );
             }
             if event.asset.is_none() {

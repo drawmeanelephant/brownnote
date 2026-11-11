@@ -7,8 +7,10 @@ use brownnote_native::{
         bundle::{BundleRequest, SystemWriter},
         manifest::{
             AssetEntry, AssetId, AssetKind, AudioRole, EventEntry, EventId, LossRecord,
-            MANIFEST_FORMAT_VERSION, Manifest, PartEntry, PartId, PartKind, TimeOrigin, Timing,
+            MANIFEST_FORMAT_VERSION, Manifest, PartEntry, PartId, PartKind, PluginIdentity,
+            TimeOrigin, Timing,
         },
+        midi,
     },
     pedals::offline::{Backend, Hash256, Plugin, Stage},
     performance::{
@@ -24,7 +26,7 @@ use brownnote_native::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fs,
     io::Cursor,
@@ -198,6 +200,31 @@ impl Fixture {
                 .join(".output session.soundcraft-staging")
                 .exists()
         );
+    }
+    /// The #234 note as the earliest one: 100 us from 500 ms, whose end
+    /// rounds onto its onset tick at 120 BPM.
+    fn sub_tick(&mut self) {
+        self.manifest.events[2].start_nanos = 500_000_000;
+        self.manifest.events[2].duration_nanos = 100_000;
+    }
+    /// A copy of event 2 as event 4 on a live-instrument part.
+    fn live_note(&mut self) {
+        self.manifest.parts.push(PartEntry {
+            id: PartId(3),
+            kind: PartKind::LiveInstrumentNotes {
+                plugin: PluginIdentity {
+                    backend: "clap".into(),
+                    id: "org.example.synth".into(),
+                    artifact: "ab".repeat(32),
+                    abi: "clap-1.2".into(),
+                    version: "0.4.0".into(),
+                },
+            },
+        });
+        let mut note = self.manifest.events[2].clone();
+        note.id.sequence = 4;
+        note.part = PartId(3);
+        self.manifest.events.push(note);
     }
 }
 
@@ -449,7 +476,7 @@ fn rounded_timing_and_full_asset_duration_are_reported_not_hidden() -> TestResul
         report
             .records
             .iter()
-            .any(|r| r.detail.contains("MIDI onset/duration rounded"))
+            .any(|r| r.detail.contains("MIDI onset/end rounded"))
     );
     assert!(
         report
@@ -635,8 +662,12 @@ fn writer_bundle_with_source(
 
 /// A bundle written by the real export path for a project whose take was
 /// played through a live CLAP instrument: the retained take audio plus that
-/// take's notes, pinned to the plugin identity.
-fn live_take_bundle(root: &std::path::Path) -> Result<(PathBuf, Plugin), Box<dyn Error>> {
+/// take's notes, pinned to the plugin identity. Each note is (channel, pitch,
+/// velocity, on, off) at the take's 60 BPM recording tempo.
+fn live_take_bundle(
+    root: &std::path::Path,
+    notes: &[(u8, u8, u8, u64, u64)],
+) -> Result<(PathBuf, Plugin), Box<dyn Error>> {
     let take: Vec<f32> = (0..2_400)
         .flat_map(|frame| {
             let value = 0.3 * (frame as f32 / 48_000.0 * 300.0 * std::f32::consts::TAU).sin();
@@ -696,11 +727,7 @@ fn live_take_bundle(root: &std::path::Path) -> Result<(PathBuf, Plugin), Box<dyn
         .map_err(debug)?;
     let pass = takes.arm(PassOptions::default()).map_err(debug)?;
     takes.start(pass).map_err(debug)?;
-    let ms = 1_000_000;
-    for (channel, pitch, velocity, on, off) in [
-        (0, 60, 100, 200 * ms, 300 * ms),
-        (0, 64, 90, 500 * ms, 800 * ms),
-    ] {
+    for &(channel, pitch, velocity, on, off) in notes {
         takes
             .note_on(
                 pass,
@@ -965,7 +992,14 @@ fn real_writer_bundle_imports_every_effective_hit_and_note() -> TestResult {
 #[test]
 fn unavailable_live_plugin_is_reported_and_the_retained_take_still_converts() -> TestResult {
     let fixture = Fixture::new()?;
-    let (bundle, plugin) = live_take_bundle(&fixture.root)?;
+    let ms = 1_000_000;
+    let (bundle, plugin) = live_take_bundle(
+        &fixture.root,
+        &[
+            (0, 60, 100, 200 * ms, 300 * ms),
+            (0, 64, 90, 500 * ms, 800 * ms),
+        ],
+    )?;
     let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
     let mut request = fixture.request.clone();
     request.bundle = bundle.clone();
@@ -1132,6 +1166,301 @@ fn retained_source_at_any_native_rate_converts_from_48k_hit_wet() -> TestResult 
     Ok(())
 }
 
+
+/// (onset, gate, pitch, channel, velocity), with times in 960 PPQ ticks.
+type SmfNote = (i64, i64, u8, u8, u8);
+
+/// Deliberately independent of export::midi: every note of an SMF, sorted.
+/// Note-offs pair FIFO per track, channel and pitch; running status is refused.
+fn smf_notes(bytes: &[u8]) -> Result<Vec<SmfNote>, Box<dyn Error>> {
+    fn take<'a>(bytes: &mut &'a [u8], count: usize) -> Result<&'a [u8], Box<dyn Error>> {
+        let head = bytes.get(..count).ok_or("truncated SMF")?;
+        *bytes = &bytes[count..];
+        Ok(head)
+    }
+    fn quantity(bytes: &mut &[u8]) -> Result<i64, Box<dyn Error>> {
+        let mut value = 0;
+        for _ in 0..4 {
+            let byte = take(bytes, 1)?[0];
+            value = (value << 7) | i64::from(byte & 0x7f);
+            if byte < 0x80 {
+                return Ok(value);
+            }
+        }
+        Err("SMF quantity longer than four bytes".into())
+    }
+    let mut rest = bytes;
+    let header = take(&mut rest, 14)?;
+    if header[..4] != *b"MThd" || header[12..] != 960_u16.to_be_bytes() {
+        return Err("not a 960 PPQ SMF".into());
+    }
+    let mut notes = Vec::new();
+    while !rest.is_empty() {
+        let chunk = take(&mut rest, 8)?;
+        if chunk[..4] != *b"MTrk" {
+            return Err("not an SMF track".into());
+        }
+        let mut body = take(
+            &mut rest,
+            u32::from_be_bytes(chunk[4..].try_into()?) as usize,
+        )?;
+        let mut tick = 0;
+        let mut held: BTreeMap<(u8, u8), VecDeque<(i64, u8)>> = BTreeMap::new();
+        while !body.is_empty() {
+            tick += quantity(&mut body)?;
+            let status = take(&mut body, 1)?[0];
+            if status == 0xff {
+                take(&mut body, 1)?;
+                let length = quantity(&mut body)?;
+                take(&mut body, usize::try_from(length)?)?;
+                continue;
+            }
+            let data = take(&mut body, 2)?;
+            let key = (status & 0x0f, data[0]);
+            match status & 0xf0 {
+                0x90 if data[1] > 0 => held.entry(key).or_default().push_back((tick, data[1])),
+                0x80 | 0x90 => {
+                    let (on, velocity) = held
+                        .get_mut(&key)
+                        .and_then(VecDeque::pop_front)
+                        .ok_or("note-off without a note-on")?;
+                    notes.push((on, tick - on, key.1, key.0, velocity));
+                }
+                _ => return Err(format!("unexpected SMF status {status:#04x}").into()),
+            }
+        }
+    }
+    notes.sort();
+    Ok(notes)
+}
+
+/// #234 through public APIs: a saved 48 kHz pad source, two pad hits and a
+/// 100 us instrument note at 120 BPM, exported by the real writer.
+fn sub_tick_writer_bundle(root: &std::path::Path) -> Result<PathBuf, Box<dyn Error>> {
+    let source = float_wav(1, &[0.25; 4_800])?;
+    let id = project::AssetId::of(&source);
+    let mut document = Document {
+        assets: vec![Asset {
+            reference: AssetRef::of(&source),
+            kind: MediaKind::Source,
+        }],
+        ..Document::default()
+    };
+    document.pads[3].sample = Some(SampleAssignment {
+        source: id,
+        retained: None,
+    });
+    let project_dir = root.join("sub-tick project");
+    let path = root.join("sub-tick source.wav");
+    fs::write(&path, &source)?;
+    Store::new(project_dir.clone())
+        .save(
+            &document,
+            &[MediaSource {
+                id,
+                path: path.clone(),
+            }],
+        )
+        .map_err(debug)?;
+    fs::remove_file(&path)?;
+    let mut takes = Takes::new(LoopBars::try_from(1).map_err(debug)?, TakeId(234));
+    takes
+        .set_tempo(Tempo::try_from(120_000).map_err(debug)?)
+        .map_err(debug)?;
+    let take = takes.arm(PassOptions::default()).map_err(debug)?;
+    takes.start(take).map_err(debug)?;
+    let pad = Target::Pad(PadId::try_from(3).map_err(debug)?);
+    let ms = 1_000_000;
+    for (target, pitch, velocity, on, off) in [
+        (pad, 36, 110, 100 * ms, 130 * ms),
+        (pad, 36, 90, 250 * ms, 280 * ms),
+        (
+            Target::Instrument(InstrumentId(77)),
+            60,
+            100,
+            500 * ms,
+            500 * ms + 100_000,
+        ),
+    ] {
+        let key = NoteKey {
+            source: SourceId(5),
+            channel: Channel::try_from(0).map_err(debug)?,
+            pitch: Pitch::try_from(pitch).map_err(debug)?,
+        };
+        let velocity = Velocity::try_from(velocity).map_err(debug)?;
+        takes
+            .note_on(take, target, key, velocity, OriginalTime::from_nanos(on))
+            .map_err(debug)?;
+        takes
+            .note_off(take, key, OriginalTime::from_nanos(off))
+            .map_err(debug)?;
+    }
+    takes.finish(take).map_err(debug)?;
+    let bundle = root.join("sub-tick bundle");
+    adapter::write_saved_project_bundle(
+        &mut SystemWriter,
+        &BundleRequest {
+            source_root: project_dir,
+            destination: bundle.clone(),
+            origin: TimeOrigin { nanos: 0 },
+            timing: Timing {
+                tempo_milli_bpm: 120_000,
+                sample_rate_hz: 48_000,
+            },
+        },
+        &takes,
+        &EditModel::default(),
+        &BTreeMap::new(),
+    )
+    .map_err(debug)?;
+    Ok(bundle)
+}
+
+/// #234: the writer gives a 100 us note a legal one-tick SMF gate. The adapter
+/// converts it to that same gate and still imports the unrelated pad hits.
+#[test]
+fn sub_tick_writer_note_converts_to_the_bundle_one_tick_gate_with_its_pad_audio() -> TestResult {
+    let fixture = Fixture::new()?;
+    let bundle = sub_tick_writer_bundle(&fixture.root)?;
+    let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
+    let part = manifest
+        .parts
+        .iter()
+        .find(|part| matches!(part.kind, PartKind::InstrumentNotes { .. }))
+        .ok_or("bundle without the instrument part")?;
+    let note = manifest
+        .events
+        .iter()
+        .find(|event| event.part == part.id)
+        .ok_or("bundle without the instrument note")?;
+    assert_eq!(
+        (note.start_nanos, note.duration_nanos),
+        (500_000_000, 100_000)
+    );
+    let gate = vec![(960, 1, 60, 0, 100)];
+    assert_eq!(smf_notes(&fs::read(bundle.join("notes.mid"))?)?, gate);
+    let mut request = fixture.request.clone();
+    request.bundle = bundle;
+    let report = convert(&request)?;
+    let notes: Vec<_> = report
+        .midi
+        .iter()
+        .flat_map(|part| &part.notes)
+        .map(|n| (n.start, n.length, n.pitch, n.channel, n.velocity))
+        .collect();
+    assert_eq!(notes, gate);
+    let record = report
+        .records
+        .iter()
+        .find(|record| record.detail.contains("one-tick minimum gate"))
+        .ok_or("the lengthened gate was not reported")?;
+    assert_eq!(
+        (record.event, record.part, record.kind.as_str()),
+        (Some(note.id), Some(part.id), "conversion")
+    );
+    assert!(record.detail.contains("100000 ns"), "{}", record.detail);
+    let hits: BTreeSet<_> = manifest
+        .events
+        .iter()
+        .filter(|event| event.pad == Some(3))
+        .map(|event| event.id)
+        .collect();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(
+        report
+            .audio
+            .iter()
+            .map(|clip| clip.event)
+            .collect::<BTreeSet<_>>(),
+        hits
+    );
+    assert!(request.output.join("session.scraft").is_file());
+    Ok(())
+}
+
+/// Independent expectations at 120 BPM and 960 PPQ: one tick is 1e9 / 1,920
+/// ns, so an exact half tick needs an odd multiple of 781,250 ns.
+#[test]
+fn note_ticks_round_onsets_and_absolute_ends_with_a_one_tick_minimum_gate() -> TestResult {
+    const EXACT: &[&str] = &[];
+    const ROUNDED: &[&str] = &["MIDI onset/end rounded"];
+    const MINIMUM: &[&str] = &["MIDI onset/end rounded", "one-tick minimum gate"];
+    // (start ns, duration ns, pitch, channel, velocity), the expected (start,
+    // length) ticks, and the conversion records expected for the note.
+    let cases = [
+        // 960 to 960.192: the #234 gate rounds to zero and gets one tick.
+        ((500_000_000, 100_000, 60, 0, 100), (960, 1), MINIMUM),
+        // An end 0.49999872 tick after an exact onset rounds onto it.
+        ((1_000_000_000, 260_416, 61, 1, 1), (1_920, 1), MINIMUM),
+        // 0.50000064 tick rounds up: one tick without lengthening.
+        ((2_000_000_000, 260_417, 62, 2, 127), (3_840, 1), ROUNDED),
+        // An exact tie at 5,761.5 rounds later.
+        ((3_000_000_000, 781_250, 63, 9, 64), (5_760, 2), ROUNDED),
+        // 7,680.4 and 7,681.6 give two ticks; 1.2 ticks alone would be one.
+        ((4_000_208_333, 625_000, 64, 15, 90), (7_680, 2), ROUNDED),
+        // 9,600.6 and 9,602.4 give one tick; 1.8 ticks alone would be two.
+        ((5_000_312_500, 937_500, 65, 3, 80), (9_601, 1), ROUNDED),
+        // 0.3 tick alone rounds to zero, but its end crosses a half tick.
+        ((6_000_208_333, 156_250, 66, 4, 70), (11_520, 1), ROUNDED),
+        // Exact onset and end: nothing to report.
+        ((7_000_000_000, 1_562_500, 67, 5, 60), (13_440, 3), EXACT),
+        // An onset tie at 15,361.5 rounds later, and its end rounds onto it.
+        ((8_000_781_250, 100_000, 68, 6, 50), (15_362, 1), MINIMUM),
+    ];
+    let mut fixture = Fixture::new()?;
+    fixture.manifest.events.truncate(2);
+    for (sequence, ((start, duration, pitch, channel, velocity), _, _)) in (10..).zip(cases) {
+        fixture.manifest.events.push(EventEntry {
+            id: EventId { take: 5, sequence },
+            part: PartId(2),
+            start_nanos: start,
+            duration_nanos: duration,
+            pad: None,
+            pitch: Some(pitch),
+            channel: Some(channel),
+            velocity: Some(velocity),
+            asset: None,
+            source: None,
+            variant_of: None,
+        });
+    }
+    fixture.save()?;
+    let report = convert(&fixture.request)?;
+    assert_eq!(report.audio.len(), 2);
+    let mut expected: Vec<_> = cases
+        .iter()
+        .map(|&((_, _, pitch, channel, velocity), (start, length), _)| {
+            (start, length, pitch, channel, velocity)
+        })
+        .collect();
+    expected.sort();
+    let notes: Vec<_> = report.midi[0]
+        .notes
+        .iter()
+        .map(|n| (n.start, n.length, n.pitch, n.channel, n.velocity))
+        .collect();
+    assert_eq!(notes, expected);
+    // The bundle's own SMF writer agrees on every boundary.
+    assert_eq!(
+        smf_notes(&midi::encode(&fixture.manifest)?.bytes)?,
+        expected
+    );
+    for (sequence, (_, _, records)) in (10..).zip(cases) {
+        let id = EventId { take: 5, sequence };
+        let details: Vec<_> = report
+            .records
+            .iter()
+            .filter(|record| record.event == Some(id) && record.kind == "conversion")
+            .map(|record| record.detail.as_str())
+            .collect();
+        assert_eq!(details.len(), records.len(), "{sequence}: {details:?}");
+        for (detail, record) in details.iter().zip(records) {
+            assert!(detail.contains(record), "{sequence}: {detail}");
+        }
+    }
+    Ok(())
+}
+
 /// Rewrite every reference to `old` so the bundle stays hash-consistent.
 fn replace_asset(
     bundle: &std::path::Path,
@@ -1242,6 +1571,130 @@ fn imported_media_outside_the_slice_or_any_truncated_wav_fails_before_launch() -
     }
     Ok(())
 }
+
+/// Live-instrument notes never become target ticks, so a gate under half a
+/// tick cannot block the take's authoritative retained audio.
+#[test]
+fn sub_tick_live_instrument_note_never_blocks_the_retained_take() -> TestResult {
+    let fixture = Fixture::new()?;
+    let ms = 1_000_000;
+    let (bundle, plugin) = live_take_bundle(
+        &fixture.root,
+        &[
+            (0, 60, 100, 200 * ms, 200 * ms + 100_000),
+            (0, 64, 90, 500 * ms, 800 * ms),
+        ],
+    )?;
+    let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
+    let part = manifest
+        .parts
+        .iter()
+        .find(|part| matches!(part.kind, PartKind::LiveInstrumentNotes { .. }))
+        .ok_or("bundle without the live take's notes")?;
+    let gates: Vec<_> = manifest
+        .events
+        .iter()
+        .filter(|event| event.part == part.id)
+        .map(|event| event.duration_nanos)
+        .collect();
+    // Under half of a 960 PPQ tick at the bundle's 120 BPM.
+    assert!(
+        gates
+            .iter()
+            .any(|&gate| gate > 0 && gate * 1_920 < 500_000_000),
+        "{gates:?}"
+    );
+    let mut request = fixture.request.clone();
+    request.bundle = bundle;
+    let report = convert(&request)?;
+    assert!(report.midi.is_empty());
+    let audio: Vec<_> = report.audio.iter().map(|c| (c.start, c.length)).collect();
+    assert_eq!(audio, [(0, 2_400)]);
+    let records: Vec<_> = report
+        .records
+        .iter()
+        .filter(|record| record.part == Some(part.id))
+        .collect();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].kind, "unsupported");
+    assert!(records[0].detail.contains("2 live instrument note(s)"));
+    assert!(records[0].detail.contains(&plugin.id));
+    assert!(request.output.join("session.scraft").is_file());
+    Ok(())
+}
+
+#[test]
+fn malformed_sub_tick_and_live_notes_still_fail_before_executing_anything() -> TestResult {
+    // Without a defect the same bundle converts, so each failure is the note's.
+    let mut fixture = Fixture::new()?;
+    fixture.sub_tick();
+    fixture.live_note();
+    fixture.save()?;
+    convert(&fixture.request)?;
+    let bounds = "MIDI note needs pitch";
+    for (index, bad, expected) in [
+        (2, "zero", "zero event duration"),
+        (4, "zero", "zero event duration"),
+        (2, "end", "event end overflows"),
+        (4, "end", "event end overflows"),
+        (2, "velocity", bounds),
+        (4, "velocity", bounds),
+        (2, "channel", bounds),
+        (4, "pitch", bounds),
+        (4, "missing", bounds),
+    ] {
+        let mut fixture = Fixture::new()?;
+        fixture.sub_tick();
+        fixture.live_note();
+        let event = &mut fixture.manifest.events[index];
+        match bad {
+            "zero" => event.duration_nanos = 0,
+            "end" => event.start_nanos = u64::MAX - 50_000,
+            "velocity" => event.velocity = Some(0),
+            "channel" => event.channel = Some(16),
+            "pitch" => event.pitch = Some(128),
+            "missing" => event.channel = None,
+            _ => unreachable!(),
+        }
+        fixture.save()?;
+        let error = convert(&fixture.request)
+            .err()
+            .ok_or("accepted a malformed note")?;
+        assert!(
+            error.to_string().contains(expected),
+            "{index} {bad}: {error}"
+        );
+        assert!(!fixture.root.join("calls.jsonl").exists(), "{index} {bad}");
+        fixture.no_output();
+    }
+    Ok(())
+}
+
+#[test]
+fn failures_after_a_one_tick_gate_reaches_the_target_never_publish() -> TestResult {
+    for (config, expected) in [
+        (json!({"fail": "midi.note_add"}), "injected partial failure"),
+        // The fake shortens the earliest saved note on reopen: 1 -> 0 ticks.
+        (json!({"corrupt": "notes"}), "saved MIDI notes differ"),
+    ] {
+        let mut fixture = Fixture::new()?;
+        fixture.sub_tick();
+        fixture.save()?;
+        fixture.config(config)?;
+        let error = convert(&fixture.request)
+            .err()
+            .ok_or("published after an injected failure")?;
+        assert!(error.to_string().contains(expected), "{error}");
+        assert!(fixture.calls()?.iter().any(|call| {
+            call["method"] == "midi.note_add"
+                && call["params"]["start_ticks"] == 960
+                && call["params"]["length_ticks"] == 1
+        }));
+        fixture.no_output();
+    }
+    Ok(())
+}
+
 
 #[test]
 #[ignore = "requires explicit BROWNNOTE_SOUNDCRAFT_APP/CLI/PYTHON; launches the actual pinned GUI"]
