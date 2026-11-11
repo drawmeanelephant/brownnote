@@ -63,9 +63,41 @@ jobs:
         with:
           workspaces: native -> target
 
-      - uses: reviewdog/action-clippy@v1
+      # There is no reviewdog/action-clippy; run clippy here and pipe its JSON
+      # diagnostics through jq into reviewdog's rdjsonl format so the comments
+      # still land on the diff. pipefail keeps a compile error red even though
+      # the pipeline ends at reviewdog.
+      - uses: reviewdog/action-setup@d8edfce3dd5e1ec6978745e801f9c50b5ef80252 # v1.4.0
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          reporter: github-pr-review
-          workdir: native
-          clippy_flags: --all-targets
+          reviewdog_version: v0.21.3
+
+      - name: Clippy with reviewdog
+        working-directory: native
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          cargo clippy --all-targets --message-format=json 2>/dev/null \
+            | jq -c '
+                select(.reason == "compiler-message")
+                | .message
+                | select(.level == "error" or .level == "warning")
+                | select((.spans | length) > 0)
+                | (.spans[] | select(.is_primary)) as $s
+                | {
+                    message: .message,
+                    location: {
+                      path: $s.file_name,
+                      range: {
+                        start: {line: $s.line_start, column: $s.column_start},
+                        end: {line: $s.line_end, column: $s.column_end}
+                      }
+                    },
+                    severity: (
+                      if .level == "error" then "ERROR"
+                      elif .level == "warning" then "WARNING"
+                      else "INFO" end
+                    ),
+                    code: {value: (.code.code // "")}
+                  }' \
+            | reviewdog -f=rdjsonl -reporter=github-pr-review -fail-level=error
