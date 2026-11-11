@@ -108,18 +108,23 @@ native-plugin-host:
 # it opens the default output device and fails under BROWNNOTE_REQUIRE_CLAP=1
 # unless BROWNNOTE_LIVE_CPAL=1, so it runs only through
 # `make native-clap-live-cpal-test` on a machine with audio hardware.
+# The two pinned SoundCraft GUI tests are skipped by name too: they need the
+# pinned app, CLI and Python and run only through `make native-soundcraft-test`,
+# so `--include-ignored` still passes without BROWNNOTE_SOUNDCRAFT_RUN_PINNED=1.
 CPAL_DEVICE_TEST = cpal_device_callback_timing_with_the_live_instrument
+SOUNDCRAFT_SKIPS = --skip pinned_app_recipe_and_adapter \
+	--skip pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio
 
 native-test: native-plugin-host
 	$(CARGO) fmt --manifest-path native/Cargo.toml --check
 	$(CARGO) clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
-	$(CLAP_TEST_ENV) $(LADSPA_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored --skip pinned_app_recipe_and_adapter --skip $(CPAL_DEVICE_TEST)
+	$(CLAP_TEST_ENV) $(LADSPA_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored --skip $(CPAL_DEVICE_TEST) $(SOUNDCRAFT_SKIPS)
 
 # The render deadline and signal fixtures repeated in fresh processes with a
 # slow `dirname` on PATH, which is how a startup timing regression shows up.
 # It rebuilds with `--lib --no-run` and repeats three cases three times each,
-# so it stays out of `native-test`; the `native` job in
-# `.github/workflows/ci.yml` runs it as its own step.
+# so it stays out of `native-test`; the `native-core` job in
+# `.github/workflows/native.yml` runs it as its own step.
 native-render-timeout:
 	python3 native/tests/check_render_timeout.py
 

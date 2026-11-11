@@ -40,10 +40,11 @@ from CI, and this page says where to look after each one.
 
 ## 3. Alerting and incident flow
 
-`.github/workflows/incident.yml` watches the `ci`, `Documentation`, `CodeQL`,
-and `release` workflows on `main`. A failed run creates (or updates) an issue
-labelled `incident` and `P1` with the failing job, commit, and run URL. A
-recovered run comments on the open issue and closes it.
+`.github/workflows/incident.yml` watches the `ci`, `native`, `native-package`,
+`Documentation`, `release`, and `codeql` workflows on `main`. A failed run
+creates (or updates) an issue labelled `incident` and `P1` with the failing
+job, commit, and run URL. A recovered run comments on the open issue and
+closes it.
 
 If the repository has a Slack or PagerDuty webhook configured as the
 `ALERT_WEBHOOK_URL` secret, the same workflow posts a one-line alert there.

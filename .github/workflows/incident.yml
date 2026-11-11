@@ -27,6 +27,10 @@ jobs:
       github.event.workflow_run.head_branch == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Job-level so the step `if:` below can see it; a secret used only in a
+    # step-level `env:` is empty while that step's `if:` is evaluated.
+    env:
+      ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
     steps:
       - uses: actions/github-script@v7
         id: report
@@ -68,11 +72,11 @@ jobs:
       - name: Page a webhook if one is configured
         if: env.ALERT_WEBHOOK_URL != ''
         env:
-          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           TITLE: ${{ steps.report.outputs.title }}
           RUN_URL: ${{ steps.report.outputs.url }}
           ISSUE: ${{ steps.report.outputs.issue }}
         run: |
+          [ -n "$ALERT_WEBHOOK_URL" ] || exit 0
           body=$(jq -nc --arg t "$TITLE" --arg u "$RUN_URL" --arg i "$ISSUE" \
             '{text: ("ALERT " + $t + " — " + $u + " (issue #" + $i + ")")}')
           curl -fsS -X POST -H 'content-type: application/json' \

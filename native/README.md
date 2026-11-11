@@ -267,14 +267,21 @@ inclusion is loud rather than a silent pass. The device-free coverage stays in
 the required lane: `engine_callback_with_the_live_instrument_allocates_and_frees_nothing`
 for the callback, and `tests/output_timing.rs` for the timing arithmetic.
 
-The `native` job in `.github/workflows/ci.yml` runs on macOS and builds the
-bench and `build/brownnote` first. It sets `BROWNNOTE_REQUIRE_BENCH=1`, which
-turns a missing-bench skip in `tests/pedals_live.rs` into a failure, so the
-catalog and render tests really ran against upstream GuitarPedal. Without that
-variable they print the reason and pass, which is what happens on a machine
-with no bench. The same job runs `make native-render-timeout` in the
-`Required render deadline stress` step, so a timing regression in the render
-deadline, ready-handler or SIGKILL path turns CI red instead of waiting for
+`.github/workflows/native.yml` runs on macOS and builds the bench and
+`build/brownnote` first. It sets `BROWNNOTE_REQUIRE_BENCH=1` for the whole
+workflow, which turns a missing-bench skip in `tests/pedals_live.rs` into a
+failure, so the catalog and render tests really ran against upstream
+GuitarPedal. Without that variable they print the reason and pass, which is
+what happens on a machine with no bench.
+
+The `native-core` job runs `make fmt-check-rust`, `make complexity-rust`,
+`cargo nextest --profile ci`, `make native-render-timeout` in the
+`Required render deadline stress` step, and `make unused-deps`; on `main` it
+also runs `make sizes`. The `native-plugins` job runs the required CLAP and
+LADSPA helper, pinned-effect and plugin-pad lanes. The `native-coverage` job
+runs on `main` and the weekly schedule and enforces the 60% line-coverage
+gate with `make native-coverage`. A timing regression in the render deadline,
+ready-handler or SIGKILL path turns `native-core` red instead of waiting for
 someone to run the script by hand.
 
 ## Look showcase

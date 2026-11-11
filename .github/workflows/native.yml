@@ -197,6 +197,11 @@ jobs:
       - name: Build the bench
         run: make -C vendor/GuitarPedal/Validation bench
 
+      # BROWNNOTE_REQUIRE_BENCH=1 makes tests/pedals_live.rs run the real
+      # bench through build/brownnote, so the CLI must exist before the gate.
+      - name: Build brownnote
+        run: make
+
       - name: Line coverage gate (60%)
         run: make native-coverage
 
