@@ -1,16 +1,30 @@
 # Provenance of the files in `recordings/`
 
-This is a factual record for the seven files in this directory, not a license
-grant and not legal advice. It states what the repository records, and says
-**unknown** where it does not. The rights holder, the permission to
-distribute and any obligations are **not** inferred here; the maintainer
-records that decision.
+This is the factual record and rights decision for the seven files in this
+directory: `fart_dry.wav`, `fart_fuzz.wav`, `fart_delay.wav`,
+`fart_chorus.wav`, `fart_chain.wav`, `demo_brownnote.wav` and
+`demo_brownnote.m4a`. It records the maintainer's permission and packaging
+decision; it is not a legal opinion. Production facts that are not recorded
+still say **unknown** below; the rights are no longer unknown.
 
-No distribution permission is declared for these files. They are not part
-of the macOS test artifact, which ships arithmetic-generated test tones
-instead. The packager (`native/scripts/package_macos.py`) refuses to bundle
-any audio file whose SHA-256 matches a file in this directory, and refuses
-to copy a file from this directory unless this declaration names it.
+The maintainer, `drawmeanelephant`, generated and committed all seven files
+in one commit and grants permission to use, copy, modify, merge, publish,
+distribute, sublicense and sell them under the repository's root MIT
+`LICENSE` (Copyright (c) 2026 drawmeanelephant), with its copyright and
+permission notice included.
+
+The six files processed through the GPL v2 GuitarPedal bench, or derived
+from bench-processed audio, are `fart_fuzz.wav`, `fart_delay.wav`,
+`fart_chorus.wav`, `fart_chain.wav`, `demo_brownnote.wav` and
+`demo_brownnote.m4a`. The grant covers `drawmeanelephant`'s own contribution
+to them; no legal opinion is claimed about whether the GPL v2 GuitarPedal
+bench imposes any obligation on that subprocess output.
+
+They are not part of the macOS test artifact, which ships
+arithmetic-generated test tones instead. The packager
+(`native/scripts/package_macos.py`) refuses to bundle any audio file whose
+SHA-256 matches a file in this directory, and refuses to copy a file from
+this directory unless this declaration names it.
 
 ## Identity
 
@@ -76,45 +90,63 @@ records how they were produced. Their formats and SHA-256 digests:
 ## Per-file record
 
 The generator, command, input and verification facts above apply to every
-file below. The rights holder, permission and obligations columns are
-unknown for every file; the repository states no asset grant and no
-individual file carries a notice.
+file below. Every file was generated and committed by the maintainer,
+`drawmeanelephant`, who grants permission over it under the root MIT
+`LICENSE`. The obligations column records the one condition that grant
+carries; the six bench-processed files add an open question this record does
+not answer.
 
 | File | Generator / revision | Command | Input | Effects and pots | Rights holder | Permission | Obligations |
 |---|---|---|---|---|---|---|---|
-| `fart_dry.wav` | kujamba, revision unknown | unknown (documented template only) | phrase `kujamba karibu`, seed 42 | none | unknown | unknown | unknown |
-| `fart_fuzz.wav` | kujamba, revision unknown | unknown | `fart_dry.wav` signal | `Rat Sketch` (alias `fuzz`); pots unknown | unknown | unknown | unknown |
-| `fart_delay.wav` | kujamba, revision unknown | unknown | `fart_dry.wav` signal | `Tape Echo` (alias `delay`); pots unknown | unknown | unknown | unknown |
-| `fart_chorus.wav` | kujamba, revision unknown | unknown | `fart_dry.wav` signal | `Flanger` (alias `chorus`); pots unknown | unknown | unknown | unknown |
-| `fart_chain.wav` | kujamba, revision unknown | unknown | `fart_dry.wav` signal | `Rat Sketch` → `Tape Echo` → `Flanger`; pots unknown | unknown | unknown | unknown |
-| `demo_brownnote.wav` | kujamba, revision unknown | unknown | `fart_dry.wav` signal | dry, fuzz, delay, chorus and chain segments in sequence, 10.7 s | unknown | unknown | unknown |
-| `demo_brownnote.m4a` | kujamba, revision unknown | unknown | `demo_brownnote.wav` | same sequence, AAC-compressed | unknown | unknown | unknown |
+| `fart_dry.wav` | kujamba, revision unknown | unknown (documented template only) | phrase `kujamba karibu`, seed 42 | none | `drawmeanelephant` | MIT (root `LICENSE`) | Include MIT copyright and permission notice |
+| `fart_fuzz.wav` | kujamba, revision unknown | unknown | `fart_dry.wav` signal | `Rat Sketch` (alias `fuzz`); pots unknown | `drawmeanelephant` | MIT (root `LICENSE`) | Include MIT notice; no legal opinion on GPL v2 GuitarPedal subprocess output |
+| `fart_delay.wav` | kujamba, revision unknown | unknown | `fart_dry.wav` signal | `Tape Echo` (alias `delay`); pots unknown | `drawmeanelephant` | MIT (root `LICENSE`) | Include MIT notice; no legal opinion on GPL v2 GuitarPedal subprocess output |
+| `fart_chorus.wav` | kujamba, revision unknown | unknown | `fart_dry.wav` signal | `Flanger` (alias `chorus`); pots unknown | `drawmeanelephant` | MIT (root `LICENSE`) | Include MIT notice; no legal opinion on GPL v2 GuitarPedal subprocess output |
+| `fart_chain.wav` | kujamba, revision unknown | unknown | `fart_dry.wav` signal | `Rat Sketch` → `Tape Echo` → `Flanger`; pots unknown | `drawmeanelephant` | MIT (root `LICENSE`) | Include MIT notice; no legal opinion on GPL v2 GuitarPedal subprocess output |
+| `demo_brownnote.wav` | kujamba, revision unknown | unknown | `fart_dry.wav` signal | dry, fuzz, delay, chorus and chain segments in sequence, 10.7 s | `drawmeanelephant` | MIT (root `LICENSE`) | Include MIT notice; no legal opinion on GPL v2 GuitarPedal subprocess output |
+| `demo_brownnote.m4a` | kujamba, revision unknown | unknown | `demo_brownnote.wav` | same sequence, AAC-compressed | `drawmeanelephant` | MIT (root `LICENSE`) | Include MIT notice; no legal opinion on GPL v2 GuitarPedal subprocess output |
 
 ## Rights
 
-- **Rights holder: unknown.** The repository's root MIT `LICENSE` covers
-  source code. Nothing in the repository states who holds rights in these
-  recordings, and there is no license or notice file inside `recordings/`.
-  The commit author (`drawmeanelephant`) is git attribution metadata, not a
-  rights statement.
-- **Permission relied on: none declared.** No grant, waiver, release or
-  asset license exists in the repository. The README description of how the
-  files were rendered is context, not permission.
-- **Obligations: undecided.** Whether the GPL v2 GuitarPedal bench imposes
-  any obligation on rendered output is not evaluated here and is not a legal
-  opinion. The distribution inventory already excludes the bench binary and
-  GuitarPedal source.
+- **Rights holder: `drawmeanelephant`.** The maintainer generated and
+  committed all seven files in one commit and states the rights position
+  here in his own name. The git author field names the same person; this
+  section is the rights statement that field alone is not.
+- **Permission: root MIT `LICENSE`.** The maintainer grants permission to
+  use, copy, modify, merge, publish, distribute, sublicense and sell all
+  seven files under the repository's MIT `LICENSE` (Copyright (c) 2026
+  drawmeanelephant). Copies and substantial portions must include that
+  copyright and permission notice, which the root `LICENSE` text provides.
+- **Obligations: MIT notice, and nothing decided about the bench.** The six
+  bench-processed files (`fart_fuzz.wav`, `fart_delay.wav`,
+  `fart_chorus.wav`, `fart_chain.wav`, `demo_brownnote.wav`,
+  `demo_brownnote.m4a`) passed through the GPL v2 GuitarPedal
+  `Validation/bench` subprocess, or derive from audio that did. No legal
+  opinion is claimed on whether that subprocess use imposes any GPL v2
+  obligation on them. The distribution inventory already excludes the bench
+  binary and GuitarPedal source, and this record does not decide the
+  question in either direction.
 
-## Maintainer decision (open)
+## Maintainer decision
 
-The repository does not answer this, so it is left explicit rather than
-guessed:
+The maintainer, `drawmeanelephant`, records the decision that closes the
+previous open questions:
 
-1. Who holds the rights in these seven files, and under what terms may they
-   be redistributed?
-2. May a future recording kit ship any of them, and with what attribution or
-   other obligations?
+1. **Rights.** He grants MIT (`LICENSE`) permission over all seven files as
+   his own contribution, with the notice obligation stated under Rights. No
+   other permission, waiver or asset license is asserted.
+2. **Packaging.** `recordings/` stays **excluded** from packaged
+   `brownnote-native` artifacts, including the unsigned macOS test archive
+   and any draft release built from it. Those artifacts ship only the five
+   generated arithmetic test tones. This exclusion is a packaging decision,
+   not a restriction on the MIT permission above.
+3. **Enforcement.** `native/scripts/package_macos.py` keeps the decision
+   mechanical: `tone_kit()` generates the five test tones and
+   `refuse_recordings()` rejects any bundled audio file whose SHA-256
+   matches a file here, while `bundle_recordings()` refuses a `recordings/`
+   file this declaration does not name. Packaging fails before an archive is
+   written rather than shipping an undeclared sample.
 
-Until the maintainer records an answer, `recordings/` stays excluded from
-distributed artifacts. The packaging boundary check enforces the exclusion
-without deciding the rights question.
+A future recording kit that ships any of these files needs its own reviewed
+distribution decision. The MIT grant recorded here permits redistribution;
+it does not change what the current packaged artifact contains.
