@@ -54,7 +54,8 @@ def main() -> int:
             continue
         path = f"{root}/{rel}"
         try:
-            text = open(path, "r", errors="ignore").read()
+            with open(path, "r", errors="ignore") as handle:
+                text = handle.read()
         except OSError:
             continue
         for label, pattern in PATTERNS.items():

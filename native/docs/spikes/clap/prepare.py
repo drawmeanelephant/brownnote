@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import tempfile
 import urllib.request
 
@@ -108,4 +107,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

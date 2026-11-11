@@ -11,7 +11,6 @@ headless process on Rune's virtual clock, so frames are deterministic; they say 
 desktop smoothness.
 """
 import argparse
-import json
 import shutil
 import subprocess
 import sys

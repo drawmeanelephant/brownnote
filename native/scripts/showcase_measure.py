@@ -12,6 +12,7 @@ virtual clock: no presentation, no window server, no display timing.
 """
 import argparse
 import json
+import math
 import re
 import statistics
 import subprocess
@@ -64,7 +65,7 @@ def one(args, binary=BIN):
 
 
 def med(values):
-    values = [v for v in values if v == v]
+    values = [v for v in values if not math.isnan(v)]
     return statistics.median(values) if values else float("nan")
 
 

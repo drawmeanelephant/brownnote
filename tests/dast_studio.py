@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import http.client
 import os
 import socket
@@ -83,12 +84,10 @@ def boot(port: int) -> subprocess.Popen:
         if proc.poll() is not None:
             raise SystemExit(
                 f"dast: studio exited early:\n{proc.stderr.read()[-2000:]}")
-        try:
+        with contextlib.suppress(OSError):
             status, _, _ = request(port, "GET", "/healthz", timeout=2)
             if status == 200:
                 return proc
-        except OSError:
-            pass
         time.sleep(0.5)
     proc.terminate()
     raise SystemExit("dast: studio did not become ready in 120s")

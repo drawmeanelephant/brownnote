@@ -13,7 +13,6 @@ it draws. This is the app's own submit and present timing, not photons; the wind
 composite and the panel come after it.
 """
 import argparse
-import collections
 import json
 import statistics
 import subprocess
@@ -48,7 +47,8 @@ def one(name, args, k):
         sys.exit(f"{name}: no 300 frames in 120 s; is the display awake and unlocked?")
     if done.returncode != 0:
         sys.exit(f"failed {name}: {done.stderr}")
-    header, *frames = [json.loads(line) for line in trace.open()]
+    with trace.open() as f:
+        _header, *frames = [json.loads(line) for line in f]
     # Drop the launch frame: it carries window and pipeline setup.
     frames = frames[1:]
     tick = statistics.median(f["present_dt_ms"] for f in frames if f.get("present_dt_ms"))

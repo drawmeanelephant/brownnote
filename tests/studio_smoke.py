@@ -50,6 +50,7 @@ Prints "ok: ..." / "bad: ..." so tests/run_tests.sh can case-match the
 verdict like the inline python3 heredocs do.  Exit 0 on pass, 1 on fail.
 """
 import array
+import contextlib
 import http.client
 import io
 import json
@@ -282,7 +283,12 @@ def main():
     jam_gate = os.path.join(fake_dir, "second-interval")
     with open(fake_bin, "w") as f:
         f.write(FAKE_KUJAMBA)
-    os.chmod(fake_bin, 0o755)
+    os.chmod(fake_bin, 0o700)
+    mode = os.stat(fake_bin).st_mode & 0o777
+    if mode != 0o700:
+        shutil.rmtree(fake_dir, ignore_errors=True)
+        print(f"bad: fake kujamba mode {mode:o} (want 700)")
+        return 1
     env = dict(os.environ, STUDIO_PORT=str(port), STUDIO_HOST="127.0.0.1",
                KUJAMBA=fake_bin, FAKE_KUJAMBA_PIDFILE=pidfile,
                FAKE_KUJAMBA_GATE=jam_gate)
@@ -580,15 +586,11 @@ def main():
                 shutil.rmtree(pack_dir, ignore_errors=True)
         finally:
             for rel in serve_wavs:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(os.path.join(ROOT, rel))
-                except OSError:
-                    pass
             if not rec_existed:
-                try:
+                with contextlib.suppress(OSError):
                     os.rmdir(rec_dir)
-                except OSError:
-                    pass
 
         # the request gate reads the PARSED path — an absolute-form
         # request line must not skip the /api header check
@@ -746,11 +748,9 @@ def main():
                              f"(want {want})")
         post("/api/patch", json.dumps(
             {"name": "smoke labels", "delete": True}).encode())
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(os.path.join(ROOT, "build", "patches",
                                    "smoke labels.json"))
-        except OSError:
-            pass
 
         # ---- #47: scale quantize ------------------------------------
         # The q() helper lives in the shared STUDIO_JS block served on
@@ -832,10 +832,8 @@ if (out[1].label !== 'AB')
             # list
             status, _, body = get("/api/patches")
             names = []
-            try:
+            with contextlib.suppress(Exception):
                 names = [p.get("name") for p in json.loads(body)]
-            except Exception:
-                pass
             if status != 200 or pname not in names:
                 fails.append(f"GET /api/patches: status {status}, names {names!r}")
 
@@ -890,10 +888,8 @@ if (out[1].label !== 'AB')
                 fails.append(f"GET /api/patch after delete: status {status} "
                              "(want 404)")
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(pfile)
-            except OSError:
-                pass
 
         # ---- #43: user samples --------------------------------------
         sname = "smoke poot"
@@ -1019,10 +1015,8 @@ if (out[1].label !== 'AB')
                 fails.append(f"sample re-delete: status {status} (want 404)")
         finally:
             for p in (swav, sdef):
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(p)
-                except OSError:
-                    pass
 
         # ---- #49: NINJAM jam bridge ----------------------------------
         # The server was booted with KUJAMBA pointing at the fake (top of
@@ -1115,16 +1109,19 @@ if (out[1].label !== 'AB')
             mode = os.stat(jam_cfg).st_mode & 0o777
             if mode != 0o600:
                 fails.append(f"jam: kujamba.toml mode {mode:o} (want 600)")
-            cfg_txt = open(jam_cfg).read()
+            with open(jam_cfg) as f:
+                cfg_txt = f.read()
             if jam_pass not in cfg_txt or "stinker" not in cfg_txt:
                 fails.append("jam: kujamba.toml missing creds")
         for fn in (os.listdir(jam_dir) if os.path.isdir(jam_dir) else []):
             if fn in ("kujamba.toml", "transcript.log"):
                 continue   # the transcript is kujamba's own log
             pth = os.path.join(jam_dir, fn)
-            if os.path.isfile(pth) and \
-                    jam_pass.encode() in open(pth, "rb").read():
-                fails.append(f"jam: password in build/jam/{fn}")
+            if os.path.isfile(pth):
+                with open(pth, "rb") as f:
+                    leaked = jam_pass.encode() in f.read()
+                if leaked:
+                    fails.append(f"jam: password in build/jam/{fn}")
 
         # build/jam/ is not served over HTTP: the creds file and the
         # transcript exist on disk right now yet must 404 (incl. dot and
@@ -1162,7 +1159,8 @@ if (out[1].label !== 'AB')
                     elif w.getnframes() != 176400:
                         fails.append(f"jam: loop.wav {w.getnframes()} "
                                      "frames (want 176400)")
-        open(jam_gate, "w").close()
+        with open(jam_gate, "w"):
+            pass
         if stem_ids:
             st = jam_get(lambda s: s.get("loopSec") == 3.0, timeout=60)
             if st.get("loopSec") != 3.0:
@@ -1196,8 +1194,9 @@ if (out[1].label !== 'AB')
             fails.append(f"jam stop: status {status} {p!r}")
         fake_pid = None
         try:
-            fake_pid = int(open(pidfile).read().strip())
-        except Exception:
+            with open(pidfile) as f:
+                fake_pid = int(f.read().strip())
+        except (OSError, ValueError):
             fails.append("jam: fake kujamba never wrote its pidfile")
         if fake_pid:
             deadline = time.time() + 5
@@ -1297,19 +1296,15 @@ if (out[1].label !== 'AB')
             # retire tombstones persist in the manifest — clear ours so a
             # previous run can't poison this one
             for p in lib_files:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(p)
-                except OSError:
-                    pass
-            try:
+            with contextlib.suppress(Exception):
                 with open(lib_manifest, "r", encoding="utf-8") as f:
                     m0 = json.load(f)
                 m0["retired"] = [
                     r for r in m0.get("retired") or [] if unretired(r)]
                 with open(lib_manifest, "w", encoding="utf-8") as f:
                     f.write(json.dumps(m0))
-            except Exception:
-                pass
 
             if status != 200 or man.get("ok") is not True \
                     or not isinstance(man.get("entries"), list):
@@ -1520,11 +1515,9 @@ if (out[1].label !== 'AB')
                              "boot")
         finally:
             for p in lib_files:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(p)
-                except OSError:
-                    pass
-            try:
+            with contextlib.suppress(Exception):
                 post("/api/library/default", json.dumps(
                     {"id": prev_default}).encode())
                 post("/api/library/rescan")
@@ -1534,8 +1527,6 @@ if (out[1].label !== 'AB')
                     r for r in m0.get("retired") or [] if unretired(r)]
                 with open(lib_manifest, "w", encoding="utf-8") as f:
                     f.write(json.dumps(m0))
-            except Exception:
-                pass
 
         if fails:
             for f in fails:
@@ -1558,10 +1549,9 @@ if (out[1].label !== 'AB')
             proc.kill()
             proc.wait()
         # belt & suspenders: a leaked fake kujamba would idle forever
-        try:
-            os.kill(int(open(pidfile).read().strip()), 9)
-        except Exception:
-            pass
+        with contextlib.suppress(OSError, ValueError):
+            with open(pidfile) as f:
+                os.kill(int(f.read().strip()), 9)
         shutil.rmtree(fake_dir, ignore_errors=True)
 
 

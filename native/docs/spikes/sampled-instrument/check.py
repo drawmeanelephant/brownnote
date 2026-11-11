@@ -74,7 +74,7 @@ def main():
             retained = temp / "retained.wav"
             retained.write_bytes((out / "sustain.wav").read_bytes())
             command([sys.executable, "-c",
-                     "import wave,sys; w=wave.open(sys.argv[1]); "
+                     "import wave,sys; w=wave.open(sys.argv[1]); " +
                      "assert w.getnframes()==72000; assert any(w.readframes(72000))",
                      retained], capture_output=True)
         report = json.loads((out / "measurements.json").read_text())

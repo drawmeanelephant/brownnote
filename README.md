@@ -220,6 +220,13 @@ sanitized and runs the whole battery. With clang/libFuzzer,
 `make fuzz-libfuzzer` fuzzes the same target properly.
 `tests/gen_corpus.py` regenerates the seed corpus.
 
+`make studio-check` runs the browser studio's smoke, security and
+DAST suites (`tests/studio_smoke.py`, `tests/studio_security.py`,
+`tests/dast_studio.py`) over loopback HTTP. `make hygiene` runs the
+repository gates — formatting, TODO format, large files, dependency
+versions, AGENTS.md, OpenAPI parity, secrets, complexity and
+duplicate-code scans — and is what CI runs on every push.
+
 The suite covers: build; raw-mode plumbing identity against `/bin/cat`
 (byte-identical); fuzz through the real bench (output changes, sane
 RMS); unknown-effect error propagation (the bench's candidate list, and

@@ -8,15 +8,14 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import unittest
 import wave
-from unittest import mock
+from unittest import TestCase, main, mock, skipUnless
 
 sys.dont_write_bytecode = True
 import package_macos as package
 
 
-class PackageTests(unittest.TestCase):
+class PackageTests(TestCase):
     def test_shell_entry_points_explain_their_arguments(self):
         for name in ["package-macos.sh", "smoke-package.sh"]:
             result = subprocess.run([str(Path(__file__).with_name(name)), "--help"],
@@ -165,8 +164,8 @@ class PackageTests(unittest.TestCase):
             self.assertEqual((result / "brownnote-native").read_bytes(), b"test")
             self.assertTrue((result / "brownnote-native").stat().st_mode & 0o111)
 
-    @unittest.skipUnless(package.platform.system() == "Darwin"
-                         and package.platform.machine() == "arm64", "macOS arm64 boundary")
+    @skipUnless(package.platform.system() == "Darwin"
+                and package.platform.machine() == "arm64", "macOS arm64 boundary")
     def test_bad_checksum_fails_cli_and_records_failure_without_executing(self):
         with tempfile.TemporaryDirectory() as temp:
             artifact = Path(temp) / "damaged.tar.gz"
@@ -183,4 +182,4 @@ class PackageTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()
