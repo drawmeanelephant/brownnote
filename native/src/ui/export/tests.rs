@@ -4,14 +4,15 @@
 //! produced bundle back with the existing manifest and WAV readers; the SMF
 //! header is read directly because the writers publish standard MIDI files.
 use super::*;
-use crate::ui::{projects, transport};
+use crate::ui::{media::Media, projects, transport};
 use brownnote_native::{
+    engine::Sample,
     export::manifest::{
         AssetId, AudioRole, LossRecord, MANIFEST_NAME, MEDIA_DIR, Manifest, PartKind,
     },
     export::midi::MIDI_PATH,
-    import::MediaPublisher,
-    kit::decode_wav_max,
+    import::{ImportService, MediaPublisher},
+    kit::{decode_wav_max, encode_wav},
     live_audio,
     pedals::{
         offline::{Backend, Hash256, Plugin, Stage as OfflineStage},
@@ -26,7 +27,10 @@ use brownnote_native::{
 use rune::{Env, Key, KeyEvent, Mods, Runtime};
 use std::{
     collections::BTreeMap,
-    sync::atomic::{AtomicU64, Ordering::Relaxed},
+    sync::{
+        atomic::{AtomicU64, Ordering::Relaxed},
+        mpsc,
+    },
     time::Instant,
 };
 
@@ -565,6 +569,172 @@ fn export_controls_refuse_armed_passes_pending_work_and_busy_projects() {
         rt.state.export.error
     );
     assert!(!rt.state.export.busy());
+}
+
+/// Releases the worker a [`gate`] is holding. Dropping it is the release, so
+/// an unwinding test never leaves a thread parked forever.
+struct Release(Option<mpsc::Sender<()>>);
+impl Drop for Release {
+    fn drop(&mut self) {
+        if let Some(send) = self.0.take() {
+            let _ = send.send(());
+        }
+    }
+}
+
+/// A channel pair that parks one worker at a known point: the worker reports
+/// entry on the receiver and then blocks until the `Release` drops. Neither
+/// case sleeps or races the disk, so both refusals are deterministic.
+fn gate() -> (Arc<dyn Fn() + Send + Sync>, mpsc::Receiver<()>, Release) {
+    let (entered, waiting) = mpsc::channel();
+    let (release, open) = mpsc::channel::<()>();
+    let open = Mutex::new(open);
+    let hold: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        let _ = entered.send(());
+        if let Ok(open) = open.lock() {
+            let _ = open.recv();
+        }
+    });
+    (hold, waiting, Release(Some(release)))
+}
+
+/// Replace the sample importer with one whose reader parks on a [`gate`].
+fn blocked_import(rt: &mut Runtime<State>) -> (mpsc::Receiver<()>, Release) {
+    let (hold, waiting, release) = gate();
+    let ui_thread = std::thread::current().id();
+    let reader = Arc::new(
+        move |path: &Path, _: &brownnote_native::import::Cancellation| {
+            assert_ne!(std::thread::current().id(), ui_thread);
+            hold();
+            fs::read(path)
+        },
+    );
+    let service = ImportService::with_reader(rt.state.media.owned.clone(), reader).unwrap();
+    rt.state.media = Media::with_service(rt.state.media.owned.clone(), Ok(service));
+    (waiting, release)
+}
+
+/// Poll the shipped frame loop until `done`, with a wall-clock bound for the
+/// real worker threads the gates release.
+fn wait_until(rt: &mut Runtime<State>, what: &str, done: impl Fn(&State) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !done(&rt.state) {
+        assert!(Instant::now() < deadline, "{what} timed out");
+        rt.frame(0.001);
+        std::thread::yield_now();
+    }
+    rt.frame(0.0);
+}
+
+/// The busy-work refusal as the mounted panel reports and shows it: the typed
+/// copy, no destination directory and no export worker left running.
+fn assert_work_pending_refusal(rt: &Runtime<State>, destination: &Path) {
+    let error = rt.state.export.error.clone().unwrap_or_default();
+    assert!(error.contains("Finish or cancel"), "{error}");
+    assert!(error.contains("Nothing was written."), "{error}");
+    let shown = label(rt, "export-error");
+    assert!(shown.contains("Finish or cancel"), "{shown}");
+    assert!(
+        !destination.exists(),
+        "the refusal created {}",
+        destination.display()
+    );
+    assert!(
+        !rt.state.export.busy(),
+        "the refusal left an export running"
+    );
+}
+
+/// A retried export after the held work finished writes the complete bundle.
+fn assert_export_succeeds(rt: &mut Runtime<State>, destination: &Path) {
+    tap(rt, "export-start");
+    finish(rt);
+    assert!(
+        rt.state.export.error.is_none(),
+        "{:?}",
+        rt.state.export.error
+    );
+    assert_eq!(read_manifest(destination).version, 3);
+    assert!(destination.join(MIDI_PATH).exists(), "notes.mid is missing");
+}
+
+#[test]
+fn export_controls_refuse_an_in_flight_sample_import_and_export_once_it_finishes() {
+    let root = Root::new();
+    let mut rt = runtime();
+    record_take(&mut rt, 2);
+    let sample = root.0.join("busy sound.wav");
+    let wav = encode_wav(&Sample {
+        data: vec![0.4; 8_000].into(),
+        rate: 44_100,
+    })
+    .unwrap();
+    fs::write(&sample, wav).unwrap();
+
+    // The importer's reader parks on the gate, so media.busy() cannot clear
+    // between the pointer press and the export action's capture.
+    let (entered, release) = blocked_import(&mut rt);
+    rt.state.import_sample(0, Some(sample)).unwrap();
+    entered.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(rt.state.media.busy(), "the import was not in flight");
+
+    show(&mut rt);
+    let destination = root.0.join("while-importing");
+    set_destination(&mut rt, &destination);
+    tap(&mut rt, "export-start");
+    assert_work_pending_refusal(&rt, &destination);
+    assert!(rt.state.media.busy(), "the refusal disturbed the import");
+
+    drop(release);
+    wait_until(&mut rt, "sample import", |s| !s.media.busy());
+    assert_eq!(rt.state.pad_name(0), "busy sound.wav");
+    assert_export_succeeds(&mut rt, &destination);
+}
+
+#[test]
+fn export_controls_refuse_an_in_flight_instrument_load_and_export_once_it_finishes() {
+    let root = Root::new();
+    let mut rt = runtime();
+    record_take(&mut rt, 3);
+    let path = root.0.join("mechanics.sf2");
+    fs::write(&path, FIXTURE).unwrap();
+
+    // LOAD SF2 spawns the real loader; its hook parks before the file read.
+    tap(&mut rt, "instrument-toggle");
+    run(&mut rt, 0.5);
+    rt.state.instrument.path = TextEdit::new(path.to_string_lossy());
+    let (hold, entered, release) = gate();
+    rt.state.instrument.load_hook = Some(hold);
+    tap(&mut rt, "instrument-load");
+    entered.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(rt.state.instrument.busy(), "the load was not in flight");
+
+    // Back to the pads slot with the load still running, as a person can.
+    key(&mut rt, Key::Escape);
+    run(&mut rt, 0.3);
+    show(&mut rt);
+    let destination = root.0.join("while-loading");
+    set_destination(&mut rt, &destination);
+    tap(&mut rt, "export-start");
+    assert_work_pending_refusal(&rt, &destination);
+    assert!(
+        rt.state.instrument.busy(),
+        "the refusal disturbed the instrument load"
+    );
+
+    drop(release);
+    wait_until(&mut rt, "instrument load", |s| !s.instrument.busy());
+    assert!(
+        rt.state.instrument.error.is_none(),
+        "{:?}",
+        rt.state.instrument.error
+    );
+    let status = crate::ui::instrument::status(&rt.state);
+    assert!(
+        status.contains("PLAYING AT"),
+        "the font did not mount: {status}"
+    );
+    assert_export_succeeds(&mut rt, &destination);
 }
 
 #[test]
