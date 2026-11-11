@@ -33,6 +33,13 @@ event's asset, or its onset differs by more than one sample, the bundle is
 refused. Dry hits, stems and the reference mix stay in the copied `media/`
 for comparison and are not imported as tracks.
 
+Every bundle asset must match its manifest size and hash and be a complete,
+non-empty PCM16 or float32 mono/stereo WAV at 8-192 kHz, the native app's own
+range. Only media the target loads, event assets and explicit sampler-mapping
+assets, must also be at 44.1 or 48 kHz. An event's `source` is retained
+provenance, so an 8 or 96 kHz original beside its 48 kHz `HitWet` render is
+copied byte for byte but never imported (#232).
+
 ## Mapping boundary
 
 The manifest does not describe sampler roots, key ranges, play modes, plugin
@@ -152,7 +159,9 @@ To repeat the check, prepare the app as described above, then also set
 `BROWNNOTE_SOUNDCRAFT_EDIT_EVIDENCE=/absolute/scratch/adapter-edit.json`.
 The adapter edit check runs from the same opt-in test. The live-take case is a
 second opt-in test; set `BROWNNOTE_SOUNDCRAFT_LIVE_EVIDENCE` to its evidence
-path. `make native-soundcraft-test` runs both.
+path. A third opt-in test runs writer bundles with 8, 96 and 192 kHz pad
+sources through the same edit/save/reopen/relocation script (#232).
+`make native-soundcraft-test` runs all three.
 
 ## Maintainer real-app gate
 

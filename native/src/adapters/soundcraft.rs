@@ -181,7 +181,35 @@ fn rounded(nanos: u64, numerator: u64, denominator: u64) -> Result<(i64, bool)> 
     ))
 }
 
-fn load(bundle: &Path) -> Result<Input> {
+/// Rate and frame count of a complete, finite PCM16/float32 mono/stereo WAV
+/// in the native app's own 8..=192 kHz range.
+fn wav_shape(id: AssetId, bytes: &[u8]) -> Result<(u32, u32)> {
+    let mut reader = hound::WavReader::new(io::Cursor::new(bytes))
+        .map_err(|error| invalid(format!("{id}: {error}")))?;
+    let spec = reader.spec();
+    let frames = reader.duration();
+    // hound trusts the data chunk header, so only reading every sample
+    // catches a truncated file.
+    let complete = frames > 0
+        && (1..=2).contains(&spec.channels)
+        && (8_000..=192_000).contains(&spec.sample_rate)
+        && reader.len() == frames * u32::from(spec.channels)
+        && match (spec.sample_format, spec.bits_per_sample) {
+            (hound::SampleFormat::Int, 16) => reader.samples::<i16>().all(|s| s.is_ok()),
+            (hound::SampleFormat::Float, 32) => {
+                reader.samples::<f32>().all(|s| s.is_ok_and(f32::is_finite))
+            }
+            _ => false,
+        };
+    if !complete {
+        return Err(invalid(format!(
+            "{id}: not a complete PCM16/float32 mono/stereo 8-192 kHz WAV"
+        )));
+    }
+    Ok((spec.sample_rate, frames))
+}
+
+fn load(bundle: &Path, mappings: &[SamplerMapping]) -> Result<Input> {
     let root = fs::canonicalize(bundle)?;
     let bytes = read_regular(&root.join(MANIFEST_NAME), 16 * 1024 * 1024)?;
     let manifest = Manifest::decode(&bytes).map_err(|error| invalid(error.to_string()))?;
@@ -190,6 +218,14 @@ fn load(bundle: &Path) -> Result<Input> {
     {
         return Err(invalid("invalid bundle tempo or sample rate"));
     }
+    // Only media the target loads must sit in its proven 44.1/48 kHz slice.
+    // Retained sources are provenance: verified and copied, never imported.
+    let imported: BTreeSet<AssetId> = manifest
+        .events
+        .iter()
+        .filter_map(|event| event.asset)
+        .chain(mappings.iter().map(|mapping| mapping.asset))
+        .collect();
     let mut media = BTreeMap::new();
     for asset in &manifest.assets {
         let path = root.join(&asset.path);
@@ -200,22 +236,13 @@ fn load(bundle: &Path) -> Result<Input> {
         if bytes.len() as u64 != asset.bytes || AssetId::of(&bytes) != asset.id {
             return Err(invalid(format!("media size/hash mismatch: {}", asset.id)));
         }
-        let reader = hound::WavReader::new(io::Cursor::new(&bytes))
-            .map_err(|error| invalid(format!("{}: {error}", asset.id)))?;
-        let spec = reader.spec();
-        if reader.duration() == 0
-            || !(1..=2).contains(&spec.channels)
-            || ![44_100, 48_000].contains(&spec.sample_rate)
-            || !matches!(
-                (spec.sample_format, spec.bits_per_sample),
-                (hound::SampleFormat::Int, 16) | (hound::SampleFormat::Float, 32)
-            )
-        {
+        let (rate, frames) = wav_shape(asset.id, &bytes)?;
+        if imported.contains(&asset.id) && ![44_100, 48_000].contains(&rate) {
             return Err(invalid(
                 "media outside proven PCM16/float32 mono/stereo 44.1/48k WAV slice",
             ));
         }
-        let frames = (u64::from(reader.duration()) * RATE).div_ceil(u64::from(spec.sample_rate));
+        let frames = (u64::from(frames) * RATE).div_ceil(u64::from(rate));
         media.insert(
             asset.id,
             Media {
@@ -305,7 +332,7 @@ impl Drop for Staging {
 /// Owns a fresh no-audio GUI process and its isolated profile. Never connects to
 /// an existing app. A failure never publishes an output session directory.
 pub fn convert(request: &Request) -> Result<Report> {
-    let input = load(&request.bundle)?;
+    let input = load(&request.bundle, &request.mappings)?;
     if request.timeout.is_zero() {
         return Err(invalid("timeout must be positive"));
     }

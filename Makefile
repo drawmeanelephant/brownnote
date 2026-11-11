@@ -113,7 +113,8 @@ native-plugin-host:
 # so `--include-ignored` still passes without BROWNNOTE_SOUNDCRAFT_RUN_PINNED=1.
 CPAL_DEVICE_TEST = cpal_device_callback_timing_with_the_live_instrument
 SOUNDCRAFT_SKIPS = --skip pinned_app_recipe_and_adapter \
-	--skip pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio
+	--skip pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio \
+	--skip pinned_app_converts_writer_bundles_with_off_slice_sources
 
 native-test: native-plugin-host
 	$(CARGO) fmt --manifest-path native/Cargo.toml --check
@@ -178,6 +179,7 @@ native-ladspa-workflow-test: native-plugin-host
 native-soundcraft-test:
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_recipe_and_adapter -- --ignored --exact
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio -- --ignored --exact
+	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_converts_writer_bundles_with_off_slice_sources -- --ignored --exact
 
 # ------------------------------------------------------------------
 # Quality gates.  CI runs these through `make hygiene`; the pre-commit
