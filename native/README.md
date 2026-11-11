@@ -65,6 +65,10 @@ says what to build.
   and Space reach its controls. **BACK TO PADS** restores the pads.
   Device or rate changes stop current voices. See the
   [output guide](docs/output-selection.md) for preference paths and recovery.
+- The **brownnote** wordmark is the way home. It presses every **BACK TO
+  PADS** at once: whichever panel is open closes, a running export or import
+  is cancelled the way that panel's own button cancels it, and the pads are
+  playable again in one press.
 - Play `1234` / `QWER` / `ASDF` / `ZXCV`, matching the four grid rows.
   Keyboard hits use full velocity; held keys do not repeat.
 - Click higher on a pad for a louder hit (top 100%, bottom 40%).
