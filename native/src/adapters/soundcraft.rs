@@ -1,5 +1,6 @@
-//! Pinned, subprocess-only handoff from manifest v1. No private session JSON.
-//! Audio is authoritative; editable sampler/MIDI tracks start muted.
+//! Pinned, subprocess-only handoff from an export manifest. No private session
+//! JSON. Audio is authoritative; editable sampler/MIDI tracks start muted. A
+//! stated master gain is applied once, on a master fader.
 
 mod process;
 
@@ -21,6 +22,8 @@ pub const COMMIT: &str = "04878f8fda885c95f8be5893bbfe4ea4e062a814";
 pub const PIN: &str = include_str!("soundcraft/pin.json");
 const RATE: u64 = 48_000;
 const PPQ: u64 = 960;
+/// SoundCraft's fader floor: a volume at or below it renders silence.
+const MIN_DB: f64 = -144.0;
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
@@ -112,6 +115,14 @@ pub struct Note {
     pub velocity: u8,
 }
 
+/// The bundle's static master gain on the one SoundCraft master fader.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MasterFader {
+    pub track: u64,
+    pub gain: f32,
+    pub volume_db: f64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Report {
     pub soundcraft_version: String,
@@ -120,6 +131,7 @@ pub struct Report {
     pub session: PathBuf,
     pub audio: Vec<AudioClip>,
     pub midi: Vec<MidiPart>,
+    pub master: Option<MasterFader>,
     pub bundle_losses: Vec<LossRecord>,
     pub records: Vec<Record>,
 }
@@ -346,8 +358,8 @@ pub fn convert(request: &Request) -> Result<Report> {
     }
     let mut report = Report {
         soundcraft_version: VERSION.into(), soundcraft_commit: COMMIT.into(),
-        target_validation: "v0.19.0 GUI checked through its control protocol (no audio device) on 2026-11-09: #95 recipe plus adapter edit/save/reopen/relocation. Maintainer listening and hand-driven UI edits are still outstanding.".into(),
-        session: "session.scraft".into(), audio: Vec::new(), midi: Vec::new(),
+        target_validation: "v0.19.0 GUI checked through its control protocol (no audio device) on 2026-11-09: #95 recipe plus adapter edit/save/reopen/relocation; on 2026-11-11: master-fader bounces matching the bundle reference. Maintainer listening and hand-driven UI edits are still outstanding.".into(),
+        session: "session.scraft".into(), audio: Vec::new(), midi: Vec::new(), master: None,
         bundle_losses: input.manifest.losses.clone(), records: Vec::new(),
     };
     report.record(None, None, "boundary", "Full source manifest/media retained. Session uses 48 kHz and 960 PPQ. MIDI/sampler tracks are muted editable approximations, never sound-equivalent replacements.");
@@ -599,6 +611,31 @@ fn build(
             notes,
         });
     }
+    master_fader(app, manifest, report)
+}
+
+/// Hit clips are pre-master, so a stated master gain lands exactly once, on a
+/// fader that scales the whole main mix. Never inferred from loss prose.
+fn master_fader(app: &mut process::App, manifest: &Manifest, report: &mut Report) -> Result<()> {
+    let Some(gain) = manifest.master_gain else {
+        if !report.audio.is_empty() {
+            report.record(None, None, "unsupported", "Bundle states no master gain (manifest before v4, or no audio entries). Clips import pre-master with no master fader, so the session can play louder than the project's master.");
+        }
+        return Ok(());
+    };
+    let volume_db = (20.0 * f64::from(gain).log10()).max(MIN_DB);
+    let reply = app.call(
+        "track.new",
+        json!({"kind": "master", "name": "Brownnote master"}),
+    )?;
+    let track = number(&reply["tracks"][0], "master track")?;
+    app.call("mix.volume", json!({"tracks": [track], "db": volume_db}))?;
+    report.master = Some(MasterFader {
+        track,
+        gain,
+        volume_db,
+    });
+    report.record(None, None, "conversion", format!("Project master gain {gain} applied once, on one SoundCraft master fader at {volume_db:.4} dB. Hit clips stay pre-master with their baked gain, velocity and pan. The bundle reference also clamps to [-1,1] after the master; SoundCraft does not, so the two differ only where the reference clipped."));
     Ok(())
 }
 
@@ -644,8 +681,23 @@ fn verify(
     let tracks = state["tracks"]
         .as_array()
         .ok_or_else(|| invalid("inspection missing tracks"))?;
-    if tracks.len() != report.audio.len() + report.midi.len() {
+    if tracks.len() != report.audio.len() + report.midi.len() + usize::from(report.master.is_some())
+    {
         return Err(invalid("saved track count differs"));
+    }
+    let masters: Vec<_> = tracks.iter().filter(|t| t["kind"] == "master").collect();
+    match (&report.master, masters.as_slice()) {
+        (None, []) => {}
+        // Inserts, automation or an inactive fader would change what it renders.
+        (Some(master), [track])
+            if track["id"] == master.track
+                && track["inactive"] == false
+                && track["inserts"] == json!([])
+                && track["automation"] == json!([])
+                && track["volume_db"]
+                    .as_f64()
+                    .is_some_and(|db| (db - master.volume_db).abs() <= 1e-4) => {}
+        _ => return Err(invalid("saved master fader differs")),
     }
     let mut audio_tracks = BTreeSet::new();
     for audio in &report.audio {

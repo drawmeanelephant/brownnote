@@ -313,10 +313,12 @@ fn export_controls_export_a_complete_bundle_and_report_its_receipt() {
         rt.state.export.error
     );
 
-    // The bundle is complete: manifest v3, notes.mid, media/.
+    // The bundle is complete: manifest v4, notes.mid, media/.
     let manifest = read_manifest(&destination);
-    assert_eq!(manifest.version, 3);
+    assert_eq!(manifest.version, 4);
     assert_eq!(manifest.timing.tempo_milli_bpm, before.2);
+    // The project master travels as data, not only in loss prose.
+    assert_eq!(manifest.master_gain, Some(before.1));
     assert!(destination.join(MIDI_PATH).is_file());
     assert!(destination.join(MEDIA_DIR).is_dir());
     assert!(
@@ -332,7 +334,7 @@ fn export_controls_export_a_complete_bundle_and_report_its_receipt() {
 
     // The receipt names the manifest id and the counts.
     let status = label(&rt, "export-status");
-    assert!(status.contains("Manifest 3"), "{status}");
+    assert!(status.contains("Manifest 4"), "{status}");
     assert!(
         status.contains(&manifest.events.len().to_string()),
         "{status}"
@@ -682,7 +684,7 @@ fn assert_export_succeeds(rt: &mut Runtime<State>, destination: &Path) {
         "{:?}",
         rt.state.export.error
     );
-    assert_eq!(read_manifest(destination).version, 3);
+    assert_eq!(read_manifest(destination).version, 4);
     assert!(destination.join(MIDI_PATH).exists(), "notes.mid is missing");
 }
 
@@ -785,6 +787,7 @@ fn export_controls_use_one_captured_snapshot_and_honour_captured_edits() {
         let State { edit, takes, .. } = &mut rt.state;
         edit.model.set_muted(takes, take, true).unwrap();
     }
+    let master = rt.state.master;
     rt.state.master = 0.25;
     hold.release();
     finish(&mut rt);
@@ -800,6 +803,11 @@ fn export_controls_use_one_captured_snapshot_and_honour_captured_edits() {
         "an edit made during the export leaked into the bundle"
     );
     assert!(manifest.events.iter().all(|event| event.id.take == take.0));
+    assert_eq!(
+        manifest.master_gain,
+        Some(master),
+        "a master change made during the export leaked into the bundle"
+    );
 
     // The mute belongs to the captured state now: exporting again writes no
     // part, event or audio for that take (D4/D12).
@@ -823,7 +831,8 @@ fn export_controls_use_one_captured_snapshot_and_honour_captured_edits() {
         "a muted take contributed audio: {:?}",
         manifest.audio
     );
-    assert_eq!(manifest.version, 3);
+    assert_eq!(manifest.version, 4);
+    assert_eq!(manifest.master_gain, Some(0.25));
 }
 
 #[test]
@@ -1007,7 +1016,10 @@ fn export_controls_write_a_retained_live_take_as_its_sample_clips_part() {
         rt.state.export.error
     );
     let manifest = read_manifest(&destination);
-    assert_eq!(manifest.version, 3, "a live take note part requires v3");
+    assert_eq!(
+        manifest.version, 4,
+        "a live take note part requires v3 or later"
+    );
     assert!(
         manifest.parts.iter().any(|part| matches!(
             &part.kind,

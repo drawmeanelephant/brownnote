@@ -1,6 +1,6 @@
 # SoundCraft adapter
 
-This adapter consumes the current #109 export `manifest.json` (v3, with v1/v2
+This adapter consumes the current #109 export `manifest.json` (v4, with v1–v3
 read support) and content-hash WAV media.
 It owns a fresh GUI process through explicit `--app` and `--cli` paths. It never
 connects to a personal session, starts audio, uses CLI `run`, or writes private
@@ -32,6 +32,16 @@ instrument renders arrive the same way. If a `HitWet` entry disagrees with its
 event's asset, or its onset differs by more than one sample, the bundle is
 refused. Dry hits, stems and the reference mix stay in the copied `media/`
 for comparison and are not imported as tracks.
+
+A v4 bundle states the project's static master gain as `master_gain`, including
+the default 0.8. Hit clips are pre-master, so the adapter applies that gain
+exactly once. It adds one SoundCraft master track and sets its fader to
+`20 * log10(gain)` dB; gain 0 becomes the target's -144 dB silence floor. Each
+hit clip keeps its baked gain, velocity and pan. Reopen inspection requires
+exactly that one active master track at that level, with no inserts or
+automation. A v1–v3 bundle states no master gain. The adapter then adds no
+master fader and records the missing gain as unsupported; it never reads the
+gain from loss prose.
 
 ## Mapping boundary
 
@@ -152,7 +162,32 @@ To repeat the check, prepare the app as described above, then also set
 `BROWNNOTE_SOUNDCRAFT_EDIT_EVIDENCE=/absolute/scratch/adapter-edit.json`.
 The adapter edit check runs from the same opt-in test. The live-take case is a
 second opt-in test; set `BROWNNOTE_SOUNDCRAFT_LIVE_EVIDENCE` to its evidence
-path. `make native-soundcraft-test` runs both.
+path. The master gain check below is a third; set
+`BROWNNOTE_SOUNDCRAFT_MASTER_EVIDENCE` to its evidence path.
+`make native-soundcraft-test` runs all three.
+
+## Master gain check, 11 November 2026
+
+The pinned v0.19.0 app and CLI, both matching [pin.json](pin.json) before
+launch, ran all three opt-in tests through `make native-soundcraft-test` on
+macOS 27.3 on Apple silicon with a desktop session. All three passed. The edit
+check's writer bundle now carries the default 0.8 master, so its reopen and
+relocation comparisons include the master track.
+
+The master gain test converts the writer bundle at master gains 0, 0.25, the
+default 0.8 and 1.0. For each gain, a fresh no-audio GUI reopens the converted
+session and bounces the main mix with `file.bounce_mix`: frames 0 to the
+reference's 60,000, 32-bit float, no dither or normalization. Every bounce
+matches the writer's reference mix within 1e-6 per sample; the largest error
+is 1.5e-8, at 0.25. Gain 0 sets the fader to -144 dB and bounces silence.
+Evidence: [evidence/master-bounce.json](evidence/master-bounce.json).
+
+Before the master, the fixture's reference peaks at 0.63, so nothing clipped
+and this check does not cover clipping. At the pinned commit,
+`crates/mix/src/lib.rs` scales the main mix by each active master fader
+without a clamp; the reference clamps after its master, so the two can differ
+where the reference clipped. No audio device was opened, and nobody has
+listened to the result.
 
 ## Maintainer real-app gate
 
@@ -174,10 +209,14 @@ export BROWNNOTE_SOUNDCRAFT_CLI=/absolute/soundcraft-cli
 export BROWNNOTE_SOUNDCRAFT_PYTHON=/absolute/venv/bin/python
 export BROWNNOTE_SOUNDCRAFT_EVIDENCE=/absolute/scratch/app.json
 export BROWNNOTE_SOUNDCRAFT_LIVE_EVIDENCE=/absolute/scratch/live-take.json
+export BROWNNOTE_SOUNDCRAFT_MASTER_EVIDENCE=/absolute/scratch/master-bounce.json
 cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
   pinned_app_recipe_and_adapter -- --ignored --exact
 cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
   pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio \
+  -- --ignored --exact
+cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
+  pinned_app_bounce_matches_the_writer_reference_at_each_master_gain \
   -- --ignored --exact
 ```
 
@@ -193,7 +232,9 @@ The live-take test builds its bundle through the live-take export path and
 checks the same pinned app against a `live_instrument_notes` part: one
 unsupported record naming the plugin and its note count, the retained take and
 the pad hit as two separate audio clips, no MIDI part, and no machine path in
-the report.
+the report. The master gain test converts writer bundles at master 0, 0.25,
+0.8 and 1.0, bounces each reopened session's main mix from the same pinned app
+and compares it with the writer's reference mix sample by sample.
 Neither a skipped test nor fake-process results satisfy this gate.
 
 Finally use a positive synthetic adapter output (the spike's final relocated

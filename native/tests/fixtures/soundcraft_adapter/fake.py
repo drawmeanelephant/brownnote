@@ -113,11 +113,17 @@ elif method == "file.import_audio":
     state["sources"].append({"id": sid, "path": params["path"], "loaded": True})
     reply = {"imported": [{"track": tid, "clip": cid, "frames": frames}]}
 elif method == "track.new":
-    assert params["kind"] == "instrument"
+    assert params["kind"] in ("instrument", "master"), params
     tid = ident()
-    state["tracks"].append({"id": tid, "kind": "instrument", "mute": False,
-                            "clips": []})
+    state["tracks"].append({"id": tid, "kind": params["kind"], "mute": False,
+                            "volume_db": 0.0, "inactive": False, "inserts": [],
+                            "automation": [], "clips": []})
     reply = {"tracks": [tid]}
+elif method == "mix.volume":
+    assert set(params) == {"tracks", "db"}, params
+    for tid in params["tracks"]:
+        track(tid)["volume_db"] = min(max(float(params["db"]), -144.0), 12.0)
+    reply = {"tracks": len(params["tracks"])}
 elif method == "mix.mute":
     assert set(params) == {"tracks", "value"} and params["value"] is True
     for tid in params["tracks"]:
@@ -162,7 +168,10 @@ elif method == "session.open":
     if config.get("corrupt") == "media":
         state["sources"][0]["path"] = "/outside.wav"
     if config.get("corrupt") == "mute":
-        state["tracks"][-1]["mute"] = False
+        next(t for t in reversed(state["tracks"])
+             if t["kind"] == "instrument")["mute"] = False
+    if config.get("corrupt") == "master":
+        next(t for t in state["tracks"] if t["kind"] == "master")["volume_db"] += 6.0
 elif method == "session.inspect":
     assert params == {"detail": "full"}
     reply = state

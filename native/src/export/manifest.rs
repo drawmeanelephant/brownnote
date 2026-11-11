@@ -12,9 +12,11 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, fmt, path::PathBuf, str::FromStr};
 
 /// Current manifest format version.
-pub const MANIFEST_FORMAT_VERSION: u32 = 3;
+pub const MANIFEST_FORMAT_VERSION: u32 = 4;
 /// Every manifest version this build can read.
-pub const KNOWN_VERSIONS: &[u32] = &[1, 2, MANIFEST_FORMAT_VERSION];
+pub const KNOWN_VERSIONS: &[u32] = &[1, 2, 3, MANIFEST_FORMAT_VERSION];
+/// First version that states the reference mix's static master gain.
+const MASTER_GAIN_VERSION: u32 = 4;
 /// Bundle-relative manifest file name.
 pub const MANIFEST_NAME: &str = "manifest.json";
 /// Bundle-relative directory holding copied media (D3).
@@ -311,6 +313,11 @@ pub struct Manifest {
     pub audio: Vec<AudioEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub midi: Option<MidiEntry>,
+    /// The project's static linear master gain, 0 to 1. Hit and stem audio
+    /// are pre-master; only the reference applies this gain, once, then clamps.
+    /// Required with any audio entry from v4; absent before v4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master_gain: Option<f32>,
 }
 
 impl Manifest {
@@ -325,6 +332,7 @@ impl Manifest {
             losses: Vec::new(),
             audio: Vec::new(),
             midi: None,
+            master_gain: None,
         }
     }
 
@@ -476,6 +484,15 @@ impl Manifest {
                 return Err(ManifestError::InvalidAudio);
             }
         }
+        match self.master_gain {
+            None if !self.audio.is_empty() && self.version >= MASTER_GAIN_VERSION => {
+                return Err(ManifestError::InvalidMaster);
+            }
+            Some(gain) if self.version < MASTER_GAIN_VERSION || !(0.0..=1.0).contains(&gain) => {
+                return Err(ManifestError::InvalidMaster);
+            }
+            _ => {}
+        }
         if let Some(midi) = &self.midi {
             let mut seen = BTreeSet::new();
             let mut indices = BTreeSet::new();
@@ -532,6 +549,7 @@ pub fn check_version(version: u32) -> Result<(), ManifestError> {
 pub enum ManifestError {
     ReadOnlyVersion(u32),
     InvalidAudio,
+    InvalidMaster,
     InvalidMidi,
     InvalidPluginIdentity(PartId),
     MalformedJson,

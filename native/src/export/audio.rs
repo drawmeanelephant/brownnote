@@ -11,8 +11,9 @@
 //! Absolute onsets round once to nearest output frame, ties later (<= 0.5
 //! frame). Every stem and the reference starts at frame zero of TimeOrigin
 //! and has the same length, including tails. Stems are unclamped float audio;
-//! the reference applies master gain then the native final [-1,1] clamp,
-//! without normalization/tanh. Hit entries belong on separate DAW tracks.
+//! the reference applies the master gain the manifest states, then the native
+//! final [-1,1] clamp, without normalization/tanh. Hit entries belong on
+//! separate DAW tracks.
 
 use super::{
     fixture::FixtureExport,
@@ -529,6 +530,7 @@ pub fn render(
         None,
         0,
     )?;
+    manifest.master_gain = Some(settings.master_gain);
     manifest.assets.sort_by_key(|a| a.id);
     Ok(generated)
 }
