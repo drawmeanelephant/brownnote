@@ -968,6 +968,40 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (ae) usage contract: flags that take a value report a brownnote:-
+#      prefixed diagnostic and exit EXIT_USAGE (2) when the value is
+#      missing; an unknown flag does the same; --help and -h exit 0.
+# ------------------------------------------------------------------
+ae_fail=""
+for ae_flag in --bench --effect --route --pot --mix; do
+	"$BIN" "$ae_flag" > /dev/null 2> "$TMP/ae.err"
+	ae_rc=$?
+	if [ "$ae_rc" -ne 2 ]; then
+		ae_fail="$ae_flag: exit $ae_rc, want 2"
+	elif ! grep -q "^brownnote: " "$TMP/ae.err"; then
+		ae_fail="$ae_flag: stderr lacks the brownnote: prefix"
+	fi
+done
+"$BIN" --unknown-flag > /dev/null 2> "$TMP/ae.err"
+ae_rc=$?
+if [ "$ae_rc" -ne 2 ]; then
+	ae_fail="--unknown-flag: exit $ae_rc, want 2"
+elif ! grep -q "^brownnote: unknown option --unknown-flag" "$TMP/ae.err"; then
+	ae_fail="--unknown-flag: diagnostic differs from the contract"
+fi
+"$BIN" --help > /dev/null 2>&1
+ae_rc=$?
+[ "$ae_rc" -eq 0 ] || ae_fail="--help: exit $ae_rc, want 0"
+"$BIN" -h > /dev/null 2>&1
+ae_rc=$?
+[ "$ae_rc" -eq 0 ] || ae_fail="-h: exit $ae_rc, want 0"
+if [ -z "$ae_fail" ]; then
+	ok "(ae) usage errors: missing values and unknown flags exit 2"
+else
+	bad "(ae) usage errors: $ae_fail"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then

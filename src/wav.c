@@ -238,7 +238,7 @@ static void decimate_frame(const float *in, size_t sub, size_t total,
 	long centre = (long)floor(p);
 	double norm = 0.0;
 
-	if (frac != *h_frac) {
+	if (*h_frac < 0.0 || frac < *h_frac || frac > *h_frac) {
 		for (size_t n = 0; n < taps; n++) {
 			double u =
 				(double)((long)n - (long)(taps - 1) / 2) - frac;

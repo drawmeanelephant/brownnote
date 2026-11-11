@@ -1119,15 +1119,15 @@ int main(int argc, char **argv)
 	const char *bench_flag = NULL;
 	const char *routes[MAX_ARGS];
 	const char *pots[MAX_ARGS], *mixes[MAX_ARGS];
-	int n_routes = 0, n_pots = 0, n_mixes = 0;
+	int i = 1, n_routes = 0, n_pots = 0, n_mixes = 0;
 	bool want_list = false;
 
 	bn_log_init();
 	bn_profile_begin();
 	atexit(bn_profile_dump);
 
-	for (int i = 1; i < argc; i++) {
-		const char *a = argv[i];
+	while (i < argc) {
+		const char *a = argv[i++];
 
 		if (!strcmp(a, "--help") || !strcmp(a, "-h")) {
 			usage(stdout);
@@ -1138,14 +1138,14 @@ int main(int argc, char **argv)
 			continue;
 		}
 		if (!strcmp(a, "--bench")) {
-			if (++i >= argc)
+			if (i >= argc)
 				die(EXIT_USAGE,
 				    "brownnote: --bench wants a path");
-			bench_flag = argv[i];
+			bench_flag = argv[i++];
 			continue;
 		}
 		if (!strcmp(a, "--effect") || !strcmp(a, "--route")) {
-			if (++i >= argc)
+			if (i >= argc)
 				die(EXIT_USAGE, "brownnote: %s wants a name",
 				    a);
 			if (n_routes >= MAX_ARGS)
@@ -1154,31 +1154,30 @@ int main(int argc, char **argv)
 			 * Alias first (case-insensitive, exact); anything
 			 * else goes to the bench's own matcher verbatim.
 			 */
-			routes[n_routes++] = resolve_alias(argv[i]) ?: argv[i];
+			const char *val = argv[i++];
+
+			routes[n_routes++] = resolve_alias(val) ?: val;
 			continue;
 		}
 		if (!strcmp(a, "--pot")) {
-			if (++i >= argc)
+			if (i >= argc)
 				die(EXIT_USAGE,
 				    "brownnote: --pot wants EFFECT:POT=VALUE");
 			if (n_pots >= MAX_ARGS)
 				die(EXIT_USAGE, "brownnote: too many --pot");
-			pots[n_pots++] = argv[i];
+			pots[n_pots++] = argv[i++];
 			continue;
 		}
 		if (!strcmp(a, "--mix")) {
-			if (++i >= argc)
+			if (i >= argc)
 				die(EXIT_USAGE,
 				    "brownnote: --mix wants EFFECT=VALUE");
 			if (n_mixes >= MAX_ARGS)
 				die(EXIT_USAGE, "brownnote: too many --mix");
-			mixes[n_mixes++] = argv[i];
+			mixes[n_mixes++] = argv[i++];
 			continue;
 		}
-		die(EXIT_USAGE,
-		    "brownnote: unknown option %s "
-		    "(try --help)",
-		    a);
+		die(EXIT_USAGE, "brownnote: unknown option %s (try --help)", a);
 	}
 
 	bn_profile_phase("args");
