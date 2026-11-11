@@ -67,6 +67,11 @@ pub struct Instrument {
     pub live: u64,
     pub notice: Option<String>,
     pub error: Option<String>,
+    /// Test seam: hold the loader thread before it reads the file, so a busy
+    /// instrument can be observed without racing a fast local read, as
+    /// `Export::hold` does for the export worker.
+    #[cfg(test)]
+    pub(crate) load_hook: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Instrument {
@@ -163,9 +168,17 @@ pub fn load(s: &mut State) {
         return;
     }
     let (send, receive) = mpsc::sync_channel(1);
+    #[cfg(test)]
+    let load_hook = s.instrument.load_hook.clone();
     let spawned = thread::Builder::new()
         .name("brownnote-instrument".into())
         .spawn(move || {
+            #[cfg(test)]
+            {
+                if let Some(hook) = load_hook {
+                    hook();
+                }
+            }
             let result = read(&path).and_then(|bytes| {
                 let font = Font::prepare(&bytes, None).map_err(|error| error.to_string())?;
                 let name = path
