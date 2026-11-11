@@ -39,13 +39,24 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Root(PathBuf);
 impl Root {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "brownnote-export-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
-        Self(root)
+        // A fixture root must not share the writer's `brownnote-export-<pid>-
+        // <n>` staging namespace: both counters start at zero in the same
+        // process, so an export running on another test thread could own the
+        // name first. The extra attempts also skip a leftover from an earlier
+        // run whose pid was recycled.
+        for _ in 0..16 {
+            let root = std::env::temp_dir().join(format!(
+                "brownnote-export-root-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Relaxed)
+            ));
+            match fs::create_dir(&root) {
+                Ok(()) => return Self(root),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("cannot create {}: {error}", root.display()),
+            }
+        }
+        panic!("no unique export fixture root after 16 attempts");
     }
 }
 impl Drop for Root {
