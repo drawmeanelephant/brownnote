@@ -57,13 +57,19 @@ audio. It can:
 - Render pad sounds offline through CLAP effects and through the selected
   LADSPA effect as pad pedal stages, retaining the wet audio (#113, #114).
 - Export a DAW-neutral bundle of clips, MIDI notes, retained audio, and a
-  manifest (#109), then turn that bundle into an editable session in a
-  pinned SoundCraft build with the `brownnote-soundcraft` tool (#110,
-  #111).
+  manifest from the in-app EXPORT panel (#109, #198), then turn that
+  bundle into an editable session in a pinned SoundCraft build with the
+  `brownnote-soundcraft` tool (#110, #111).
 
-Project data survives a quit only through an explicit SAVE and a later
-OPEN. Unsaved changes are not recovered, and autosave is not implemented
-(#100).
+Project data survives a quit through an explicit SAVE and a later OPEN.
+After a saved project has unsaved changes, background autosave writes a
+separate recovery copy every 60 seconds while the app is idle, and never
+writes into the saved project directory. A newer recovery copy is offered
+explicitly on OPEN, never applied silently, and saving it requires a new
+project directory. A session with no saved project still needs an initial
+explicit SAVE before recovery copies are written, quitting does not
+auto-save, and the real-machine kill-then-reopen listening check remains
+open (#100, #196).
 
 These paths are proven by automated tests and a packaged smoke run that
 uses a silent mixer. Audible output, physical device loss, and a named
