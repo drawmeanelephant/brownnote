@@ -22,9 +22,14 @@ Every event asset imports to a separate new audio track, even for the same pad.
 No destructive same-track packing is used. Full assets retain tails. A duration
 that differs from the full asset is reported, not silently trimmed; upstream
 must bake choke/envelope/rate into per-hit media. MIDI uses public clip/note
-commands at 960 PPQ, not a new SMF codec. Onsets/durations round to the nearest
-sample/tick with explicit conversion records. The bundle origin is not added
-again to already-relative event positions.
+commands at 960 PPQ, not a new SMF codec. Audio onsets round to the nearest
+sample. MIDI notes follow the bundle SMF's gate policy at the session tempo,
+which is the manifest's milli-BPM rather than the SMF's whole microseconds per
+quarter: the onset and the absolute end each round to the nearest tick, ties
+later, and a gate that rounds to zero gets one tick. A duration is never
+rounded on its own. Every rounded note and every lengthened gate gets an
+explicit conversion record. The bundle origin is not added again to
+already-relative event positions.
 
 #109 writer bundles set each event's asset to its `HitWet` render, so pad hits
 arrive with gain, velocity, pan, pitch and choke already baked. Frozen
@@ -47,7 +52,9 @@ cannot load a plugin from a bundle or carry its identity into a track, so each
 such part is recorded as an explicit unsupported mapping naming the plugin
 (backend, ID, version, short artifact hash) and its note count. The take's
 retained audio clip is the fallback, the notes are never written as MIDI, and
-no machine path is reported.
+no machine path is reported. These notes must still have a valid pitch,
+channel, velocity and positive duration, but they are never converted to
+ticks, so a short gate cannot block the retained take.
 
 Optionally pass `--mappings /absolute/mappings.json`, an adapter-local JSON array:
 
