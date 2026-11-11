@@ -225,6 +225,23 @@ pub fn setup(s: &mut State, wake: rune::Waker) {
     s.pedals.load();
 }
 
+/// The wordmark button: every panel's BACK TO PADS at once. Each panel keeps
+/// its own leave path, so a running export or import is cancelled exactly as
+/// that panel's button cancels it, and the pad grid is the visible result.
+pub fn back_to_pads(s: &mut State) {
+    if s.projects.visible {
+        projects::close(s);
+    }
+    export::close(s);
+    media::controls::close(s);
+    s.devices.visible = false;
+    s.instrument.visible = false;
+    s.live.visible = false;
+    s.midi_panel = false;
+    midi::close(s);
+    s.edit_panel = false;
+}
+
 pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if projects::on_key(s, event, tx) {
         return true;

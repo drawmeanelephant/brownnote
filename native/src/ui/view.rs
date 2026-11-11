@@ -87,6 +87,11 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         }
         grid = grid.child(line);
     }
+    // AppKit draws the traffic lights over the content on macOS, and `--chrome`
+    // wants 4 pt of clearance around them: start the header after the zoom
+    // button plus a normal gap. A titled window reports no inset, and the
+    // root's own 20 pt left inset is what this padding adds to.
+    let titlebar = (cx.titlebar_inset() + 12.0 - 20.0).max(0.0);
     let mut root = col()
         .key("window")
         .role("window")
@@ -100,20 +105,34 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .h(42.0)
                 .justify_between()
                 .center_y()
+                .pl(titlebar)
                 .child(
-                    row().gap(12.0).center_y().child(logo()).child(
-                        col()
-                            .gap(3.0)
-                            .child(
-                                text("brownnote")
-                                    .font(TextStyle::new(27.0, 800.0))
-                                    .color(ink("#eef1dd")),
-                            )
-                            .child(
-                                caption("FLATULENCE SYNTHESIZER     /     BN–01")
-                                    .color(ink("#b9c99e")),
+                    // The wordmark is the way home: it closes every panel at
+                    // once, so a jam is always one press away.
+                    el().key("home")
+                        .role("button")
+                        .label("Back to pads")
+                        .focusable(true)
+                        .h(42.0)
+                        .px(6.0)
+                        .radius(9.0)
+                        .hover(ink("#31403a"))
+                        .on_press(|s: &mut State| super::back_to_pads(s))
+                        .child(
+                            row().gap(12.0).center_y().child(logo()).child(
+                                col()
+                                    .gap(3.0)
+                                    .child(
+                                        text("brownnote")
+                                            .font(TextStyle::new(27.0, 800.0))
+                                            .color(ink("#eef1dd")),
+                                    )
+                                    .child(
+                                        caption("FLATULENCE SYNTHESIZER     /     BN–01")
+                                            .color(ink("#b9c99e")),
+                                    ),
                             ),
-                    ),
+                        ),
                 )
                 .child(controls),
         )

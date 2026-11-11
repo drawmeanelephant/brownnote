@@ -682,6 +682,11 @@ pub fn on_key(s: &mut State, midi: &Midi, event: &KeyEvent, _tx: &mut Tx) -> boo
     }
 }
 
+/// Close the input-settings panel, as Escape does.
+pub(crate) fn close(s: &mut State) {
+    s.midi.inner_mut().visible = false;
+}
+
 /// Header toggle, mounted next to the audio-output header.
 pub fn header<S: 'static>(_s: &State, midi: &Midi) -> El {
     let inner = midi.inner();

@@ -496,3 +496,54 @@ fn silence_zero_gain_and_a_stopped_voice_light_nothing() {
     assert_eq!(rt.state.peak, 0.0);
     assert!(!rt.state.meter.lit(), "a stopped voice lights nothing");
 }
+
+#[test]
+fn the_wordmark_button_closes_every_panel_and_returns_to_pads() {
+    let mut rt = runtime();
+    for toggle in [
+        "output-toggle",
+        "instrument-toggle",
+        "live-toggle",
+        "projects-toggle",
+        "export-toggle",
+    ] {
+        tap(&mut rt, toggle);
+    }
+    // The import, take-edit and MIDI panels are plain view flags.
+    rt.state.media.controls.visible = true;
+    rt.state.edit_panel = true;
+    rt.state.midi_panel = true;
+    rt.frame(0.0);
+    assert!(
+        rt.find("pads").is_none(),
+        "a panel is still replacing the pad grid"
+    );
+
+    {
+        let elements = rt.elements();
+        let home = elements
+            .iter()
+            .find(|element| element.key.as_deref() == Some("home"))
+            .expect("the wordmark is not a control");
+        assert_eq!(home.role, "button", "the wordmark is not a button");
+        assert!(home.focusable, "the wordmark cannot be reached by keyboard");
+    }
+
+    tap(&mut rt, "home");
+
+    assert!(!rt.state.projects.visible, "the projects panel stayed open");
+    assert!(!rt.state.export.visible, "the export panel stayed open");
+    assert!(!rt.state.devices.visible, "the output panel stayed open");
+    assert!(
+        !rt.state.instrument.visible,
+        "the instrument panel stayed open"
+    );
+    assert!(!rt.state.live.visible, "the live panel stayed open");
+    assert!(
+        !rt.state.media.controls.visible,
+        "the import panel stayed open"
+    );
+    assert!(!rt.state.edit_panel, "the take edit panel stayed open");
+    assert!(!rt.state.midi_panel, "the MIDI panel stayed open");
+    assert!(rt.find("pads").is_some(), "the pad grid did not come back");
+}

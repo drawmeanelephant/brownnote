@@ -38,7 +38,7 @@ fn open(s: &mut State) {
     s.media.controls.error = None;
 }
 
-fn close(s: &mut State) {
+pub(crate) fn close(s: &mut State) {
     s.cancel_import(s.media.controls.target);
     s.media.controls.visible = false;
     s.media.controls.error = None;
