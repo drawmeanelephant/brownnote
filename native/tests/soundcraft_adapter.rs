@@ -435,11 +435,22 @@ fn partial_process_protocol_and_timeout_failures_never_publish() -> TestResult {
 }
 
 #[test]
-fn reopen_inspection_rejects_changed_clips_notes_media_or_mutes() -> TestResult {
-    for corrupt in ["position", "notes", "media", "mute"] {
+fn reopen_inspection_rejects_changed_clips_notes_media_mutes_or_master() -> TestResult {
+    for (corrupt, expected) in [
+        ("position", "saved audio clip count/position/length differs"),
+        ("notes", "saved MIDI notes differ"),
+        ("media", "not relocatable Audio Files/ media"),
+        ("mute", "saved MIDI clip differs"),
+        ("master", "saved master fader differs"),
+    ] {
         let fixture = Fixture::new()?;
+        let mut request = fixture.request.clone();
+        if corrupt == "master" {
+            request.bundle = writer_bundle(&fixture.root, Document::default().master)?;
+        }
         fixture.config(json!({"corrupt":corrupt}))?;
-        assert!(convert(&fixture.request).is_err(), "{corrupt}");
+        let error = convert(&request).err().ok_or("accepted a changed reopen")?;
+        assert!(error.to_string().contains(expected), "{corrupt}: {error}");
         fixture.no_output();
     }
     Ok(())
@@ -515,17 +526,18 @@ fn float_wav(channels: u16, values: &[f32]) -> Result<Vec<u8>, Box<dyn Error>> {
 /// A bundle written by the real #109 project/takes/edit path, not a hand-built
 /// manifest: two overlapping hits on one pad (a third deleted, one nudged) and
 /// three overlapping instrument notes, two with frozen project renders.
-fn writer_bundle(root: &std::path::Path) -> Result<PathBuf, Box<dyn Error>> {
+fn writer_bundle(root: &std::path::Path, master: f32) -> Result<PathBuf, Box<dyn Error>> {
     let decay: Vec<f32> = (0..12_000)
         .map(|i| 0.6 * (1.0 - i as f32 / 12_000.0))
         .collect();
-    writer_bundle_with_source(root, float_wav(1, &decay)?)
+    writer_bundle_with_source(root, float_wav(1, &decay)?, master)
 }
 
 /// [`writer_bundle`] with `source` as pad 3's original, unprocessed sample.
 fn writer_bundle_with_source(
     root: &std::path::Path,
     source: Vec<u8>,
+    master: f32,
 ) -> Result<PathBuf, Box<dyn Error>> {
     let frozen = float_wav(2, &[0.2, -0.1].repeat(24_000))?;
     let media: BTreeMap<_, _> = [source.clone(), frozen.clone()]
@@ -549,6 +561,7 @@ fn writer_bundle_with_source(
                 },
             })
             .collect(),
+        master,
         ..Document::default()
     };
     document.pads[3].sample = Some(SampleAssignment {
@@ -765,7 +778,7 @@ fn live_take_bundle(
     Ok((bundle, plugin))
 }
 
-/// A manifest v3 bundle from the real export path for one live-instrument pass:
+/// A manifest v4 bundle from the real export path for one live-instrument pass:
 /// the take's retained audio, the notes that pass played and the pad hit it
 /// played from the same take. The pad's own signal is the pad mixer's, not the
 /// plugin's capture, so it is a pad clip beside the take, never a note.
@@ -960,15 +973,121 @@ fn assert_writer_bundle_report(report: &Report) {
     }));
 }
 
+/// SoundCraft v0.19.0's fader law (`soundcraft_dsp::db_to_gain`): f32
+/// 10^(dB/20), with -144 dB or below as silence.
+fn soundcraft_gain(volume_db: f64) -> f32 {
+    let db = volume_db as f32;
+    if db.is_nan() || db <= -144.0 {
+        0.0
+    } else {
+        10f32.powf(db.min(200.0) / 20.0)
+    }
+}
+
+fn stereo_float(bytes: &[u8]) -> Result<Vec<[f32; 2]>, Box<dyn Error>> {
+    let mut reader = hound::WavReader::new(Cursor::new(bytes))?;
+    let spec = reader.spec();
+    if (
+        spec.channels,
+        spec.sample_rate,
+        spec.bits_per_sample,
+        spec.sample_format,
+    ) != (2, 48_000, 32, hound::SampleFormat::Float)
+    {
+        return Err(format!("expected 48 kHz float32 stereo, got {spec:?}").into());
+    }
+    let samples = reader.samples::<f32>().collect::<Result<Vec<_>, _>>()?;
+    let (frames, remainder) = samples.as_chunks::<2>();
+    if !remainder.is_empty() {
+        return Err("stereo WAV with a partial frame".into());
+    }
+    Ok(frames.to_vec())
+}
+
+fn reference_mix(
+    bundle: &std::path::Path,
+    manifest: &Manifest,
+) -> Result<Vec<[f32; 2]>, Box<dyn Error>> {
+    let reference = manifest
+        .audio
+        .iter()
+        .find(|entry| entry.role == AudioRole::Reference)
+        .ok_or("bundle without a reference mix")?;
+    stereo_float(&fs::read(bundle.join(reference.asset.relative_path()))?)
+}
+
+/// What an unautomated SoundCraft session plays on its main output: every
+/// imported clip, read from the session's own `Audio Files/`, summed at its
+/// start on a 0 dB centred track, then the master fader. Muted MIDI is silent.
+fn render_session(
+    output: &std::path::Path,
+    manifest: &Manifest,
+    report: &Report,
+    frames: usize,
+) -> Result<Vec<[f32; 2]>, Box<dyn Error>> {
+    let mut mix = vec![[0.0f32; 2]; frames];
+    for clip in &report.audio {
+        let asset = manifest
+            .event(clip.event)
+            .and_then(|event| event.asset)
+            .ok_or("clip without event media")?;
+        let audio = stereo_float(&fs::read(
+            output.join("Audio Files").join(format!("{asset}.wav")),
+        )?)?;
+        let start = usize::try_from(clip.start)?;
+        let span = mix
+            .get_mut(start..start + audio.len())
+            .ok_or("clip outlasts the reference")?;
+        for (out, frame) in span.iter_mut().zip(&audio) {
+            out[0] += frame[0];
+            out[1] += frame[1];
+        }
+    }
+    let gain = report
+        .master
+        .as_ref()
+        .map_or(1.0, |master| soundcraft_gain(master.volume_db));
+    for value in mix.iter_mut().flatten() {
+        *value *= gain;
+    }
+    Ok(mix)
+}
+
+/// Largest per-sample difference; NaN is kept so it can never pass.
+fn max_error(actual: &[[f32; 2]], expected: &[[f32; 2]]) -> f32 {
+    actual
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .map(|(a, e)| (a - e).abs())
+        .fold(0.0, |worst, error| {
+            if error.is_nan() || error > worst {
+                error
+            } else {
+                worst
+            }
+        })
+}
+
+fn peak(frames: &[[f32; 2]]) -> f32 {
+    frames
+        .iter()
+        .flatten()
+        .fold(0.0, |peak, value| peak.max(value.abs()))
+}
+
 #[test]
 fn real_writer_bundle_imports_every_effective_hit_and_note() -> TestResult {
     let fixture = Fixture::new()?;
-    let bundle = writer_bundle(&fixture.root)?;
+    let bundle = writer_bundle(&fixture.root, Document::default().master)?;
     let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
     let mut request = fixture.request.clone();
     request.bundle = bundle.clone();
     let report = convert(&request)?;
     assert_writer_bundle_report(&report);
+    // The default 80% master travels as data and lands on one fader.
+    assert_eq!(manifest.master_gain, Some(Document::default().master));
+    assert_eq!(report.master.as_ref().map(|m| m.gain), manifest.master_gain);
     for clip in &report.audio {
         let hit = manifest
             .audio
@@ -986,6 +1105,90 @@ fn real_writer_bundle_imports_every_effective_hit_and_note() -> TestResult {
         fs::read(bundle.join(&midi.path))?
     );
     assert_eq!(report.bundle_losses, manifest.losses);
+    Ok(())
+}
+
+/// #231: mixed the way the target mixes it, the converted session reproduces
+/// the writer's reference. Hits stay pre-master on separate tracks and exactly
+/// one master fader applies the master once, never twice or not at all.
+#[test]
+fn converted_writer_mix_matches_the_reference_at_master_0_quarter_default_and_unity() -> TestResult
+{
+    for master in [0.0, 0.25, Document::default().master, 1.0] {
+        let fixture = Fixture::new()?;
+        let bundle = writer_bundle(&fixture.root, master)?;
+        let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
+        let mut request = fixture.request.clone();
+        request.bundle = bundle.clone();
+        let report = convert(&request)?;
+        assert_writer_bundle_report(&report);
+        assert_eq!(report.master.as_ref().map(|m| m.gain), Some(master));
+        // Every clip is the writer's pre-master hit render, byte for byte, with
+        // its own gain, velocity and pan already baked in.
+        for clip in &report.audio {
+            let hit = manifest
+                .audio
+                .iter()
+                .find(|a| a.role == AudioRole::HitWet && a.event == Some(clip.event))
+                .ok_or("clip without a HitWet render")?;
+            let media = request
+                .output
+                .join("Audio Files")
+                .join(format!("{}.wav", hit.asset));
+            assert_eq!(AssetId::of(&fs::read(media)?), hit.asset);
+        }
+        let expected = reference_mix(&bundle, &manifest)?;
+        let actual = render_session(&request.output, &manifest, &report, expected.len())?;
+        // The overlapping hits peak near 0.63 before the master and never
+        // clip, so the target's unclamped mix must equal the reference.
+        let reference_peak = peak(&expected);
+        assert!(
+            (0.6 * master..=0.65 * master).contains(&reference_peak),
+            "master {master}: reference peak {reference_peak}"
+        );
+        let error = max_error(&actual, &expected);
+        assert!(error <= 1e-6, "master {master}: max sample error {error}");
+    }
+    Ok(())
+}
+
+/// A bundle from before v4 states no master gain. The adapter adds no master
+/// fader and says so; it never recovers the gain from the writer's prose.
+#[test]
+fn pre_v4_bundle_without_master_gain_is_reported_and_gets_no_master_fader() -> TestResult {
+    let fixture = Fixture::new()?;
+    let bundle = writer_bundle(&fixture.root, 0.25)?;
+    let path = bundle.join("manifest.json");
+    let mut legacy: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    legacy["version"] = json!(3);
+    legacy
+        .as_object_mut()
+        .ok_or("manifest is not an object")?
+        .remove("master_gain")
+        .ok_or("writer bundle without master_gain")?;
+    fs::write(&path, serde_json::to_vec(&legacy)?)?;
+    let mut request = fixture.request.clone();
+    request.bundle = bundle;
+    let report = convert(&request)?;
+    assert_writer_bundle_report(&report);
+    assert!(report.bundle_losses.iter().any(|loss| matches!(
+        loss,
+        LossRecord::BakedProcessing { detail, .. } if detail.contains("reference master 0.25")
+    )));
+    assert!(report.master.is_none());
+    assert!(
+        !fixture
+            .calls()?
+            .iter()
+            .any(|call| call["params"]["kind"] == "master")
+    );
+    assert!(
+        report
+            .records
+            .iter()
+            .any(|record| record.kind == "unsupported"
+                && record.detail.contains("states no master gain"))
+    );
     Ok(())
 }
 
@@ -1048,7 +1251,7 @@ fn unavailable_live_plugin_is_reported_and_the_retained_take_still_converts() ->
 #[test]
 fn disagreeing_writer_hit_alignment_is_rejected_before_publication() -> TestResult {
     let fixture = Fixture::new()?;
-    let bundle = writer_bundle(&fixture.root)?;
+    let bundle = writer_bundle(&fixture.root, Document::default().master)?;
     let path = bundle.join("manifest.json");
     let mut manifest = Manifest::decode(&fs::read(&path)?)?;
     let hit = manifest
@@ -1093,7 +1296,8 @@ fn retained_source_at_any_native_rate_converts_from_48k_hit_wet() -> TestResult 
         let fixture = Fixture::new()?;
         let source = pcm16_tone(rate)?;
         let source_id = AssetId::of(&source);
-        let bundle = writer_bundle_with_source(&fixture.root, source.clone())?;
+        let bundle =
+            writer_bundle_with_source(&fixture.root, source.clone(), Document::default().master)?;
         let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
         let hits: Vec<_> = manifest
             .events
@@ -1165,7 +1369,6 @@ fn retained_source_at_any_native_rate_converts_from_48k_hit_wet() -> TestResult 
     }
     Ok(())
 }
-
 
 /// (onset, gate, pitch, channel, velocity), with times in 960 PPQ ticks.
 type SmfNote = (i64, i64, u8, u8, u8);
@@ -1509,7 +1712,7 @@ fn imported_media_outside_the_slice_or_any_truncated_wav_fails_before_launch() -
         let fixture = Fixture::new()?;
         let source = pcm16_tone(96_000)?;
         let source_id = AssetId::of(&source);
-        let bundle = writer_bundle_with_source(&fixture.root, source)?;
+        let bundle = writer_bundle_with_source(&fixture.root, source, Document::default().master)?;
         let path = bundle.join("manifest.json");
         let mut manifest = Manifest::decode(&fs::read(&path)?)?;
         let hit = manifest
@@ -1695,7 +1898,6 @@ fn failures_after_a_one_tick_gate_reaches_the_target_never_publish() -> TestResu
     Ok(())
 }
 
-
 #[test]
 #[ignore = "requires explicit BROWNNOTE_SOUNDCRAFT_APP/CLI/PYTHON; launches the actual pinned GUI"]
 fn pinned_app_recipe_and_adapter() -> TestResult {
@@ -1724,7 +1926,7 @@ fn pinned_app_recipe_and_adapter() -> TestResult {
     assert_eq!((report.audio.len(), report.midi[0].notes.len()), (2, 2));
 
     // A real #109 writer bundle, converted, then edited in the actual GUI.
-    let bundle = writer_bundle(&fixture.root)?;
+    let bundle = writer_bundle(&fixture.root, Document::default().master)?;
     let mut request = fixture.request.clone();
     request.bundle = bundle.clone();
     request.mappings.clear();
@@ -1767,7 +1969,8 @@ fn pinned_app_converts_writer_bundles_with_off_slice_sources() -> TestResult {
     for rate in [8_000, 96_000, 192_000] {
         let mut fixture = Fixture::new()?;
         let source = pcm16_tone(rate)?;
-        fixture.request.bundle = writer_bundle_with_source(&fixture.root, source.clone())?;
+        fixture.request.bundle =
+            writer_bundle_with_source(&fixture.root, source.clone(), Document::default().master)?;
         fixture.request.app = app.clone().into();
         fixture.request.cli = cli.clone().into();
         fixture.request.timeout = Duration::from_secs(45);
@@ -1799,7 +2002,7 @@ fn pinned_app_converts_writer_bundles_with_off_slice_sources() -> TestResult {
 }
 
 /// #171's open decision, answered by the actual pinned app instead of the fake:
-/// a manifest v3 bundle built by the live-take export path converts without
+/// a current v4 bundle built by the live-take export path converts without
 /// losing the take, names the plugin it cannot load, and never invents MIDI.
 #[test]
 #[ignore = "requires explicit BROWNNOTE_SOUNDCRAFT_APP/CLI/PYTHON; launches the actual pinned GUI"]
@@ -1984,5 +2187,113 @@ fn pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio() -> Tes
     });
     fs::write(&evidence, serde_json::to_vec_pretty(&payload)?)?;
     println!("Actual-app live-take evidence: {}", evidence.display());
+    Ok(())
+}
+
+/// #231 through the actual pinned app: each converted writer bundle, reopened
+/// and bounced by the real GUI, matches the writer's reference mix at master
+/// 0, 0.25, the default 0.8 and unity.
+#[test]
+#[ignore = "requires explicit BROWNNOTE_SOUNDCRAFT_APP/CLI/PYTHON; launches the actual pinned GUI"]
+fn pinned_app_bounce_matches_the_writer_reference_at_each_master_gain() -> TestResult {
+    if std::env::var_os("BROWNNOTE_SOUNDCRAFT_RUN_PINNED").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return Err("set BROWNNOTE_SOUNDCRAFT_RUN_PINNED=1 explicitly".into());
+    }
+    let app = std::env::var_os("BROWNNOTE_SOUNDCRAFT_APP").ok_or("set BROWNNOTE_SOUNDCRAFT_APP")?;
+    let cli = std::env::var_os("BROWNNOTE_SOUNDCRAFT_CLI").ok_or("set BROWNNOTE_SOUNDCRAFT_CLI")?;
+    let python =
+        std::env::var_os("BROWNNOTE_SOUNDCRAFT_PYTHON").ok_or("set BROWNNOTE_SOUNDCRAFT_PYTHON")?;
+    let pin: Value = serde_json::from_str(PIN)?;
+    let app_hash = Hash256::of(&fs::read(&app)?).to_string();
+    let cli_hash = Hash256::of(&fs::read(&cli)?).to_string();
+    assert_eq!(pin["binary_sha256"]["SoundCraft"], app_hash);
+    assert_eq!(pin["binary_sha256"]["soundcraft-cli"], cli_hash);
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/soundcraft_adapter/bounce_output.py");
+
+    let fixture = Fixture::new()?;
+    let mut results = Vec::new();
+    for master in [0.0, 0.25, Document::default().master, 1.0] {
+        let dir = fixture.root.join(format!("master {master}"));
+        fs::create_dir(&dir)?;
+        let mut request = fixture.request.clone();
+        request.app = app.clone().into();
+        request.cli = cli.clone().into();
+        request.timeout = Duration::from_secs(45);
+        request.bundle = writer_bundle(&dir, master)?;
+        request.output = dir.join("output");
+        let manifest = Manifest::decode(&fs::read(request.bundle.join("manifest.json"))?)?;
+        let report = convert(&request)?;
+        assert_writer_bundle_report(&report);
+        let fader = report.master.as_ref().ok_or("no master fader")?;
+        let record = report
+            .records
+            .iter()
+            .find(|record| record.detail.starts_with("Project master gain"))
+            .ok_or("master fader was not reported")?;
+        let expected = reference_mix(&request.bundle, &manifest)?;
+        let bounce = dir.join("bounce.wav");
+        let status = Command::new(&python)
+            .arg(&script)
+            .arg(&app)
+            .arg(&cli)
+            .arg(request.output.join("session.scraft"))
+            .arg(expected.len().to_string())
+            .arg(&bounce)
+            .arg(dir.join("bounce-probe.json"))
+            .status()?;
+        assert!(
+            status.success(),
+            "actual-app bounce at master {master} failed"
+        );
+        let actual = stereo_float(&fs::read(&bounce)?)?;
+        results.push(json!({
+            "master_gain": master,
+            "fader": {"gain": fader.gain, "volume_db": fader.volume_db},
+            "record": record.detail,
+            "reference_frames": expected.len(),
+            "bounce_frames": actual.len(),
+            "reference_peak": peak(&expected),
+            "bounce_peak": peak(&actual),
+            "max_abs_error": max_error(&actual, &expected),
+        }));
+    }
+
+    let evidence = std::env::var_os("BROWNNOTE_SOUNDCRAFT_MASTER_EVIDENCE")
+        .map_or_else(|| fixture.root.join("master-bounce.json"), PathBuf::from);
+    let payload = json!({
+        "check": "#231 static master gain: actual-app bounces of converted writer bundles against the writer's reference mix",
+        "pin": {"tag": pin["tag"], "commit": COMMIT, "version": VERSION},
+        "binaries": {
+            "SoundCraft": {"sha256": app_hash, "matches_pin": true},
+            "soundcraft-cli": {"sha256": cli_hash, "matches_pin": true},
+        },
+        "launch": ["SoundCraft", "--no-audio", "--control", "0"],
+        "bounce": {"method": "file.bounce_mix", "source": "main", "start": 0,
+                   "end": "reference frames", "bit_depth": "32f", "dither": false,
+                   "normalize": false},
+        "tolerance": 1e-6,
+        "results": results,
+        "app_exit": 0,
+        "app_exit_source": "convert requires a clean exit from both adapter GUI runs; \
+                            bounce_output.py asserts a clean exit from the bounce run",
+        "listening": "none: no audio device was opened",
+    });
+    fs::write(&evidence, serde_json::to_vec_pretty(&payload)?)?;
+    println!("Actual-app master bounce evidence: {}", evidence.display());
+    for result in &results {
+        assert_eq!(
+            result["bounce_frames"], result["reference_frames"],
+            "{result}"
+        );
+        assert!(
+            result["max_abs_error"]
+                .as_f64()
+                .is_some_and(|error| error <= 1e-6),
+            "{result}"
+        );
+    }
     Ok(())
 }

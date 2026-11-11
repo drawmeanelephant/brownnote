@@ -1,0 +1,91 @@
+{
+  "app_exit": 0,
+  "app_exit_source": "convert requires a clean exit from both adapter GUI runs; bounce_output.py asserts a clean exit from the bounce run",
+  "binaries": {
+    "SoundCraft": {
+      "matches_pin": true,
+      "sha256": "9f6d84732fc70144fdacb51e65721ce69ee979b4b7e93d3d5d65f68138d6fa3c"
+    },
+    "soundcraft-cli": {
+      "matches_pin": true,
+      "sha256": "c240115d0a2794688939d2f7b20f1530d4f0e523555858a830ca142550394d8f"
+    }
+  },
+  "bounce": {
+    "bit_depth": "32f",
+    "dither": false,
+    "end": "reference frames",
+    "method": "file.bounce_mix",
+    "normalize": false,
+    "source": "main",
+    "start": 0
+  },
+  "check": "#231 static master gain: actual-app bounces of converted writer bundles against the writer's reference mix",
+  "launch": [
+    "SoundCraft",
+    "--no-audio",
+    "--control",
+    "0"
+  ],
+  "listening": "none: no audio device was opened",
+  "pin": {
+    "commit": "04878f8fda885c95f8be5893bbfe4ea4e062a814",
+    "tag": "v0.19.0",
+    "version": "0.19.0"
+  },
+  "results": [
+    {
+      "bounce_frames": 60000,
+      "bounce_peak": 0.0,
+      "fader": {
+        "gain": 0.0,
+        "volume_db": -144.0
+      },
+      "master_gain": 0.0,
+      "max_abs_error": 0.0,
+      "record": "Project master gain 0 applied once, on one SoundCraft master fader at -144.0000 dB. Hit clips stay pre-master with their baked gain, velocity and pan. The bundle reference also clamps to [-1,1] after the master; SoundCraft does not, so the two differ only where the reference clipped.",
+      "reference_frames": 60000,
+      "reference_peak": 0.0
+    },
+    {
+      "bounce_frames": 60000,
+      "bounce_peak": 0.15789641439914703,
+      "fader": {
+        "gain": 0.25,
+        "volume_db": -12.041199826559248
+      },
+      "master_gain": 0.25,
+      "max_abs_error": 1.4901161193847656e-8,
+      "record": "Project master gain 0.25 applied once, on one SoundCraft master fader at -12.0412 dB. Hit clips stay pre-master with their baked gain, velocity and pan. The bundle reference also clamps to [-1,1] after the master; SoundCraft does not, so the two differ only where the reference clipped.",
+      "reference_frames": 60000,
+      "reference_peak": 0.15789639949798584
+    },
+    {
+      "bounce_frames": 60000,
+      "bounce_peak": 0.5052685141563416,
+      "fader": {
+        "gain": 0.800000011920929,
+        "volume_db": -1.9382001307312877
+      },
+      "master_gain": 0.800000011920929,
+      "max_abs_error": 0.0,
+      "record": "Project master gain 0.8 applied once, on one SoundCraft master fader at -1.9382 dB. Hit clips stay pre-master with their baked gain, velocity and pan. The bundle reference also clamps to [-1,1] after the master; SoundCraft does not, so the two differ only where the reference clipped.",
+      "reference_frames": 60000,
+      "reference_peak": 0.5052685141563416
+    },
+    {
+      "bounce_frames": 60000,
+      "bounce_peak": 0.6315855979919434,
+      "fader": {
+        "gain": 1.0,
+        "volume_db": 0.0
+      },
+      "master_gain": 1.0,
+      "max_abs_error": 0.0,
+      "record": "Project master gain 1 applied once, on one SoundCraft master fader at 0.0000 dB. Hit clips stay pre-master with their baked gain, velocity and pan. The bundle reference also clamps to [-1,1] after the master; SoundCraft does not, so the two differ only where the reference clipped.",
+      "reference_frames": 60000,
+      "reference_peak": 0.6315855979919434
+    }
+  ],
+  "tolerance": 1e-6
+}

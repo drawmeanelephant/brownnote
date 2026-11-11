@@ -687,7 +687,7 @@ pub fn panel(s: &State) -> El {
         .scroll(rune::ScrollSpec {
             stick_bottom: false,
         })
-        .child(caption("NEUTRAL BUNDLE · MANIFEST v3, notes.mid, media/ · OFF-THREAD"))
+        .child(caption("NEUTRAL BUNDLE · MANIFEST v4, notes.mid, media/ · OFF-THREAD"))
         .child(
             text_input(&s.export.destination, TextStyle::new(12.0, 500.0))
                 .key("export-destination")

@@ -14,10 +14,12 @@ quantization, nudge, velocity, deletion, mute, removal, and loop visibility.
 
 ## Files and joins
 
-- `manifest.json`: version 3, with read-only v1/v2 support. Real 128-bit take
+- `manifest.json`: version 4, with read-only v1–v3 support. Real 128-bit take
   and instrument IDs use decimal strings; v1's numeric IDs remain readable.
   The added audio/MIDI joins and original source references require v2. A
   live-take notes part names the external plugin identity and requires v3.
+  `master_gain`, the project's static linear master gain from 0 to 1,
+  requires v4 and must be present whenever the bundle has audio.
 - `notes.mid`: format 1, 960 PPQ, 4/4, one constant-tempo conductor.
   Only instrument parts produce MIDI. Live-instrument note parts stay out on
   purpose: an SMF track cannot carry the plugin identity, so writing one would
@@ -120,10 +122,12 @@ carries that performance, so they add no fallback hit and no loss. Pad and
 sample hits from such a take are rendered from their own media like any other
 hit. Unrecoverable dry audio is also reported, not replaced with wet audio.
 The reference sums wet audio, applies the project's static master gain, and
-clamps to [-1,1], without normalization or tanh. Stems remain pre-master and
-unclamped. This offline handoff preserves all hits; it does not simulate finite
-live voice-pool stealing, master automation, or unavailable shared nonlinear
-master effects. It is not a listening or SoundCraft-import claim (D19).
+clamps to [-1,1], without normalization or tanh. Hit clips and stems remain
+pre-master and unclamped. The manifest states that gain as `master_gain`, so
+a consumer can apply it exactly once without reading loss prose. This offline
+handoff preserves all hits; it does not simulate finite live voice-pool
+stealing, master automation, or unavailable shared nonlinear master effects.
+It is not a listening or SoundCraft-import claim (D19).
 
 Rendering happens off the audio callback and holds decoded/rendered files in
 memory. RIFF sizes, output-frame allocations, invalid settings, and non-finite

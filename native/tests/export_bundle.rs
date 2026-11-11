@@ -1786,6 +1786,61 @@ fn legacy_v1_manifests_read_and_new_audio_midi_joins_reject_tampering() {
 }
 
 #[test]
+fn written_manifest_states_master_gain_once_and_rejects_missing_or_invalid_values() {
+    let fixture = two_part_fixture();
+    let settings = AudioSettings {
+        master_gain: 0.25,
+        ..AudioSettings::default()
+    };
+    let mut writer = MemoryWriter::new();
+    writer.seed_source(&fixture);
+    let req = request(Path::new(SOURCE_ROOT), Path::new("/out/master"));
+    bundle::write_bundle_with_settings(&mut writer, &req, &fixture.export, &settings).unwrap();
+    let written = Manifest::decode(
+        writer
+            .file_bytes(&req.destination.join(MANIFEST_NAME))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(written.master_gain, Some(0.25));
+    // Applied once, to the reference only: the wet stem stays pre-master.
+    let wav = |role| {
+        let entry = written.audio.iter().find(|a| a.role == role).unwrap();
+        read_wav(
+            writer
+                .file_bytes(&req.destination.join(entry.asset.relative_path()))
+                .unwrap(),
+        )
+        .1
+    };
+    let (stem, reference) = (wav(AudioRole::StemWet), wav(AudioRole::Reference));
+    assert!(stem.iter().flatten().any(|value| value.abs() > 0.1));
+    for (stem, reference) in stem.iter().flatten().zip(reference.iter().flatten()) {
+        assert!((reference - stem * 0.25).abs() < 1e-6);
+    }
+    for gain in [None, Some(-0.25), Some(1.25), Some(f32::NAN)] {
+        let mut bad = written.clone();
+        bad.master_gain = gain;
+        assert_eq!(
+            bad.validate(),
+            Err(ManifestError::InvalidMaster),
+            "{gain:?}"
+        );
+    }
+    // Before v4 the field did not exist: such bundles read without it, and a
+    // v3 manifest that claims one is rejected rather than half-trusted.
+    let mut legacy = serde_json::to_value(&written).unwrap();
+    legacy["version"] = serde_json::json!(3);
+    assert_eq!(
+        Manifest::decode(&serde_json::to_vec(&legacy).unwrap()),
+        Err(ManifestError::InvalidMaster)
+    );
+    legacy.as_object_mut().unwrap().remove("master_gain");
+    let legacy = Manifest::decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+    assert_eq!((legacy.version, legacy.master_gain), (3, None));
+}
+
+#[test]
 fn pad_hits_cannot_be_mislabeled_as_instrument_notes() {
     let mut fixture = two_part_fixture();
     fixture.export.parts[1].event_ids.push(fixture.hit);
