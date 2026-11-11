@@ -144,7 +144,7 @@ omit it and older v1 fixtures load unchanged.
 ```toml
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "=0.10.9"
+sha2 = "=0.11.1"
 ```
 
 `serde_json` is a regular dependency, and the lockfile records the hash
