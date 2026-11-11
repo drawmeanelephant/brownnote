@@ -62,6 +62,7 @@ Only audio under build/{tune,presets,user,library}, recordings/, and
 the rendered build/jam/loop.wav is ever read off disk; everything else
 is a 404.
 """
+import contextlib
 import http.server
 import io
 import ipaddress
@@ -306,13 +307,13 @@ def list_tracks():
                 if not os.path.isfile(p):
                     continue
                 label = fn
-                try:
+                # the sidecar label is optional: a missing or corrupt
+                # .json must never hide the sample itself
+                with contextlib.suppress(Exception):
                     with open(_workspace_path(os.path.join(
                             USER_DIR, fn[:-4] + ".json")),
                               "r", encoding="utf-8") as f:
                         label = json.load(f).get("name") or fn
-                except Exception:
-                    pass
                 tracks.append({
                     "name": label,
                     "kind": "Sample",
@@ -489,10 +490,8 @@ def _atomic_write(path, data):
             f.write(data)
         os.replace(tmp, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 
@@ -506,10 +505,8 @@ def _atomic_copy(src, dst):
             shutil.copyfileobj(s, f)
         os.replace(tmp, dst)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 
@@ -698,6 +695,7 @@ def load_manifest():
         if isinstance(m, dict) and isinstance(m.get("entries"), list):
             return m
     except Exception:
+        # a missing or corrupt manifest is not fatal: callers rebuild it
         pass
     return {"v": 1, "default": None, "retired": [], "entries": []}
 
@@ -1307,15 +1305,12 @@ def render_sequence_to_mp3(payload):
             _atomic_copy(mp3_tmp,
                          os.path.join(ROOT, "brownnote_custom_groove.mp3"))
             os.replace(mp3_tmp, mp3_path)
-            mp3_tmp = None
     except BaseException:
         for t in (wav_tmp, mp3_tmp):
             if t is None:
                 continue
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(t)
-            except OSError:
-                pass
         raise
 
     if have_ffmpeg:
@@ -1402,10 +1397,8 @@ def _jam_clean_dir():
     for fn in os.listdir(JAM_DIR):
         if fn in ("kujamba.toml", "transcript.log", "loop.wav") \
                 or fn.startswith(".tmp-"):
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(os.path.join(JAM_DIR, fn))
-            except OSError:
-                pass
 
 
 def render_jam_loop(seq, bpm, bpi, out_path):
@@ -1449,10 +1442,8 @@ def render_jam_loop(seq, bpm, bpi, out_path):
             w.writeframes(pcm)
         os.replace(tmp, out_path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
     return round(want / SR, 3), partial
 
@@ -1474,10 +1465,8 @@ def _jam_render(proc, seq, bpm, bpi):
             return
         with JAM_LOCK:
             if JAM["proc"] is not proc:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(os.path.join(JAM_DIR, "loop.wav"))
-                except OSError:
-                    pass
                 return
             JAM["loopSec"] = sec
             # a budget-cut mix must not pass silently — late hits were
@@ -1595,10 +1584,8 @@ def _jam_kill(proc):
             os.killpg(proc.pid, signal.SIGKILL)
         except Exception:
             proc.kill()
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            pass
 
 
 def jam_status():
@@ -1732,11 +1719,9 @@ def _sweep_render_tmp():
         if not fn.startswith("studio-render-"):
             continue
         p = os.path.join(tmpdir, fn)
-        try:
+        with contextlib.suppress(OSError):
             if os.path.getmtime(p) < cutoff:
                 shutil.rmtree(p, ignore_errors=True)
-        except OSError:
-            pass
 
 
 def _run_group(cmd, timeout, env=None):
@@ -1838,6 +1823,8 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
         try:
             super().finish()
         except Exception:
+            # the client may close mid-response; the request is already
+            # logged below and there is nothing left to flush
             pass
         finally:
             started = getattr(self, "_t0", None)
@@ -1904,6 +1891,8 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                 ipaddress.ip_address(host_name)
                 host_ok = True
             except ValueError:
+                # a DNS name is never accepted in remote mode: DNS
+                # rebinding needs a name, so keep the request blocked
                 pass
         if not host_ok:
             self._send_json(403, {"ok": False, "error": (
@@ -2028,7 +2017,8 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
         page = (STUDIO_HTML if parsed.path in ("/", "/index.html")
                 else EXTRA_PAGES.get(parsed.path))
         if page is None:
-            return super().do_HEAD()
+            super().do_HEAD()
+            return
         body = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -2042,21 +2032,27 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
             return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/healthz":
-            return self._send_json(200, {"ok": True, "features": FEATURES})
+            self._send_json(200, {"ok": True, "features": FEATURES})
+            return
         if parsed.path == "/metrics":
-            return self._send_text(metrics_text())
+            self._send_text(metrics_text())
+            return
         if parsed.path == "/api/jam" and not FEATURES["jam"]:
-            return self._send_json(404, {
+            self._send_json(404, {
                 "ok": False, "error": "jam is disabled by STUDIO_FEATURES"})
+            return
         if parsed.path in ("/", "/index.html"):
-            return self._send_html(STUDIO_HTML)
+            self._send_html(STUDIO_HTML)
+            return
         if parsed.path in EXTRA_PAGES:
-            return self._send_html(EXTRA_PAGES[parsed.path])
+            self._send_html(EXTRA_PAGES[parsed.path])
+            return
         if parsed.path == "/api/state":
             try:
                 ensure_stems()
             except Exception as e:
-                return self._send_json(503, {"ok": False, "error": str(e)})
+                self._send_json(503, {"ok": False, "error": str(e)})
+                return
             stems = stem_defs()
             try:
                 default = resolve_default(get_manifest(), stems)
@@ -2064,17 +2060,19 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                 # the manifest pick is advisory — a broken scan must not
                 # take down every page that boots off /api/state
                 default = resolve_default({}, stems)
-            return self._send_json(200, {
+            self._send_json(200, {
                 "stems": stems,
                 "tracks": list_tracks(),
                 "default": default,
             })
+            return
         if parsed.path == "/api/library":
             try:
                 m = get_manifest()
             except Exception as e:
-                return self._send_json(503, {"ok": False, "error": str(e)})
-            return self._send_json(200, {
+                self._send_json(503, {"ok": False, "error": str(e)})
+                return
+            self._send_json(200, {
                 "ok": True,
                 "v": m.get("v", 1),
                 "builtAt": m.get("builtAt"),
@@ -2082,26 +2080,33 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                 "defaultSet": m.get("default"),
                 "entries": m["entries"],
             })
+            return
         if parsed.path == "/api/jam":
-            return self._send_json(200, jam_status())
+            self._send_json(200, jam_status())
+            return
         if parsed.path == "/api/patches":
-            return self._send_json(200, list_patches())
+            self._send_json(200, list_patches())
+            return
         if parsed.path == "/api/patch":
             qs = urllib.parse.parse_qs(parsed.query)
             name = qs.get("name", [""])[0]
             path = patch_path(name)
             if path is None:
-                return self._send_json(400, {
+                self._send_json(400, {
                     "ok": False,
                     "error": "bad patch name (want [A-Za-z0-9 _+-], 1-64 chars)",
                 })
+                return
             if not os.path.isfile(path):
-                return self._send_json(404, {"ok": False, "error": f"no patch named '{name}'"})
+                self._send_json(404, {"ok": False, "error": f"no patch named '{name}'"})
+                return
             try:
                 with open(path, "r", encoding="utf-8") as f:
-                    return self._send_json(200, json.load(f))
+                    self._send_json(200, json.load(f))
+                    return
             except Exception as e:
-                return self._send_json(500, {"ok": False, "error": f"corrupt patch file: {e}"})
+                self._send_json(500, {"ok": False, "error": f"corrupt patch file: {e}"})
+                return
         # build/jam/ holds the 0600 creds file and the child transcript;
         # only the rendered loop may cross HTTP.  Normalize like
         # translate_path does so %XX/case/dot variants can't slip past.
@@ -2109,8 +2114,10 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
             urllib.parse.unquote(parsed.path)).lower()
         if norm != "/build/jam/loop.wav" and \
                 (norm == "/build/jam" or norm.startswith("/build/jam/")):
-            return self.send_error(404)
-        return super().do_GET()
+            self.send_error(404)
+            return
+        super().do_GET()
+        return
 
     def _handle_upload_sample(self, parsed):
         raw_body, err = self._read_body(SAMPLE_MAX_BYTES, "sample body")
@@ -2211,50 +2218,61 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
             return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/jam" and not FEATURES["jam"]:
-            return self._send_json(404, {
+            self._send_json(404, {
                 "ok": False, "error": "jam is disabled by STUDIO_FEATURES"})
+            return
         if (parsed.path in ("/api/upload-sample", "/api/library/intake")
                 and not FEATURES["upload"]):
-            return self._send_json(404, {
+            self._send_json(404, {
                 "ok": False, "error": "upload is disabled by STUDIO_FEATURES"})
+            return
         if parsed.path == "/api/upload-sample":
             analytics_event("upload_sample")
-            return self._handle_upload_sample(parsed)
+            self._handle_upload_sample(parsed)
+            return
         if parsed.path == "/api/library/intake":
             analytics_event("library_intake")
-            return self._handle_library_intake(parsed)
+            self._handle_library_intake(parsed)
+            return
         raw_body, err = self._read_body(
             POST_CAPS.get(parsed.path, BODY_MAX_BYTES))
         if err:
-            return self._send_json(err[0], {"ok": False, "error": err[1]})
+            self._send_json(err[0], {"ok": False, "error": err[1]})
+            return
         try:
             payload = json.loads((raw_body or b"{}").decode("utf-8"))
         except Exception as e:
-            return self._send_json(400, {"ok": False, "error": str(e)})
+            self._send_json(400, {"ok": False, "error": str(e)})
+            return
         if not isinstance(payload, dict):
-            return self._send_json(400, {
+            self._send_json(400, {
                 "ok": False, "error": "expected a JSON object"})
+            return
 
         try:
             if parsed.path == "/api/render-sequence":
                 res = render_sequence_to_mp3(payload)
                 res["tracks"] = list_tracks()
                 analytics_event("render_sequence")
-                return self._send_json(200, res)
+                self._send_json(200, res)
+                return
 
             if parsed.path == "/api/jam":
-                return self._handle_jam(payload)
+                self._handle_jam(payload)
+                return
 
             if parsed.path == "/api/render-preset":
                 mode = payload.get("mode", "fx")
                 name = payload.get("name", "doom")
                 if mode not in ("fx", "song"):
-                    return self._send_json(400, {
+                    self._send_json(400, {
                         "ok": False,
                         "error": "bad mode (want 'fx' or 'song')"})
+                    return
                 if not isinstance(name, str) or name not in RENDER_NAMES[mode]:
-                    return self._send_json(400, {
+                    self._send_json(400, {
                         "ok": False, "error": "unknown preset/genre name"})
+                    return
                 analytics_event("render_preset", mode=mode, name=name)
                 name = RENDER_NAMES[mode][name]
                 phrase = payload.get("phrase", "")
@@ -2291,94 +2309,115 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
                         cmd, timeout=45,
                         env=dict(os.environ, TMPDIR=render_tmp))
                     if rc is None:
-                        return self._send_json(504, {
+                        self._send_json(504, {
                             "ok": False, "error": "render timed out"})
+                        return
                     if rc != 0:
-                        return self._send_json(500, {
+                        self._send_json(500, {
                             "ok": False, "error": errtxt or out})
+                        return
                 finally:
                     shutil.rmtree(render_tmp, ignore_errors=True)
                 ts = int(time.time())
-                return self._send_json(200, {
+                self._send_json(200, {
                     "ok": True,
                     "url": f"/{out_rel}?t={ts}",
                     "log": out.strip(),
                     "tracks": list_tracks(),
                 })
+                return
 
             if parsed.path == "/api/patch":
                 name = payload.get("name")
                 path = patch_path(name)
                 if path is None:
-                    return self._send_json(400, {
+                    self._send_json(400, {
                         "ok": False,
                         "error": "bad patch name (want [A-Za-z0-9 _+-], 1-64 chars)",
                     })
+                    return
                 if payload.get("delete") is True:
                     if not os.path.isfile(path):
-                        return self._send_json(404, {"ok": False, "error": f"no patch named '{name}'"})
+                        self._send_json(404, {"ok": False, "error": f"no patch named '{name}'"})
+                        return
                     os.unlink(path)
                     analytics_event("patch_delete")
-                    return self._send_json(200, {"ok": True, "deleted": name})
+                    self._send_json(200, {"ok": True, "deleted": name})
+                    return
                 patch = payload.get("patch")
                 if not isinstance(patch, dict):
-                    return self._send_json(400, {"ok": False, "error": "missing 'patch' object"})
+                    self._send_json(400, {"ok": False, "error": "missing 'patch' object"})
+                    return
                 if patch.get("v") != 1:
-                    return self._send_json(400, {
+                    self._send_json(400, {
                         "ok": False,
                         "error": f"unsupported patch schema v={patch.get('v')!r} (want 1)",
                     })
+                    return
                 extra = sorted(set(patch) - PATCH_KEYS)
                 if extra:
-                    return self._send_json(400, {"ok": False, "error": f"unknown patch keys: {extra}"})
+                    self._send_json(400, {"ok": False, "error": f"unknown patch keys: {extra}"})
+                    return
                 for sect, kind in (("seq", dict), ("desk", dict), ("pads", list)):
                     if sect in patch and patch[sect] is not None \
                             and not isinstance(patch[sect], kind):
-                        return self._send_json(400, {"ok": False, "error": f"patch.{sect} must be a {kind.__name__}"})
+                        self._send_json(400, {"ok": False, "error": f"patch.{sect} must be a {kind.__name__}"})
+                        return
                 if isinstance(patch.get("pads"), list):
                     pads_err = validate_patch_pads(patch["pads"])
                     if pads_err:
-                        return self._send_json(400, {
+                        self._send_json(400, {
                             "ok": False, "error": pads_err})
+                        return
                 save_patch(name, patch)
                 analytics_event("patch_save")
-                return self._send_json(200, {"ok": True, "name": name, "patches": list_patches()})
+                self._send_json(200, {"ok": True, "name": name, "patches": list_patches()})
+                return
 
             if parsed.path == "/api/library/rescan":
                 m = scan_library()
-                return self._send_json(200, {
+                self._send_json(200, {
                     "ok": True,
                     "entries": len(m["entries"]),
                     "default": resolve_default(m, stem_defs()),
                 })
+                return
 
             if parsed.path == "/api/library/promote":
                 try:
                     sid = promote_entry(payload.get("id"),
                                         payload.get("name"))
                 except KeyError:
-                    return self._send_json(404, {
+                    self._send_json(404, {
                         "ok": False,
                         "error": f"no library entry '{payload.get('id')}'"})
+                    return
                 except ValueError as e:
-                    return self._send_json(400, {"ok": False, "error": str(e)})
+                    self._send_json(400, {"ok": False, "error": str(e)})
+                    return
                 stem = next((s for s in stem_defs() if s["id"] == sid), None)
-                return self._send_json(200, {"ok": True, "stem": stem})
+                self._send_json(200, {"ok": True, "stem": stem})
+                return
 
             if parsed.path == "/api/library/default":
                 sid = payload.get("id")
                 if sid is not None and not isinstance(sid, str):
-                    return self._send_json(400, {
+                    self._send_json(400, {
                         "ok": False, "error": "default 'id' must be a stem id or null"})
+                    return
                 try:
                     resolved = set_default_stem(sid)
                 except ValueError as e:
-                    return self._send_json(400, {"ok": False, "error": str(e)})
-                return self._send_json(200, {"ok": True, "default": resolved})
+                    self._send_json(400, {"ok": False, "error": str(e)})
+                    return
+                self._send_json(200, {"ok": True, "default": resolved})
+                return
 
-            return self._send_json(404, {"ok": False, "error": "unknown endpoint"})
+            self._send_json(404, {"ok": False, "error": "unknown endpoint"})
+            return
         except Exception as e:
-            return self._send_json(500, {"ok": False, "error": str(e)})
+            self._send_json(500, {"ok": False, "error": str(e)})
+            return
 
 
 class ReusableTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -6676,6 +6715,8 @@ if __name__ == "__main__":
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
+            # Ctrl-C is the intended way to stop the studio; shutdown is
+            # handled by the finally block below
             pass
         finally:
             jam_stop()
