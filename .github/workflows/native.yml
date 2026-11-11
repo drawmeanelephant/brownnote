@@ -121,6 +121,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.0
+          # check.py runs `cargo fmt --all --check` and `cargo clippy` on the
+          # pinned spike workspace, so both components must be installed.
+          components: rustfmt, clippy
 
       - uses: actions/cache@v4
         with:
