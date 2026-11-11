@@ -1,0 +1,109 @@
+name: incident
+
+# Turns a red main-branch run into a tracked issue, and closes it when the
+# branch is green again. This is the error-to-issue path: nobody has to notice
+# a failed deploy in the Actions list for it to be visible, labelled, and
+# assignable. See docs/deployment.md.
+on:
+  workflow_run:
+    workflows:
+      - ci
+      - native
+      - native-package
+      - Documentation
+      - release
+      - codeql
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+jobs:
+  open:
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Job-level so the step `if:` below can see it; a secret used only in a
+    # step-level `env:` is empty while that step's `if:` is evaluated.
+    env:
+      ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+    steps:
+      - uses: actions/github-script@v7
+        id: report
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const title = `incident: ${run.name} failed on ${run.head_branch}`;
+            const body = [
+              `Workflow **${run.name}** failed on \`${run.head_branch}\`.`,
+              '',
+              `- run: ${run.html_url}`,
+              `- commit: \`${run.head_sha}\``,
+              `- event: ${run.event}`,
+              `- attempt: ${run.run_attempt}`,
+              '',
+              'Failed jobs are listed in the run. This issue closes itself when',
+              `\`${run.name}\` next succeeds on \`${run.head_branch}\`.`,
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: 'incident', per_page: 100,
+            });
+            const existing = open.find((i) => i.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: existing.number,
+                body: `Still failing: ${run.html_url} (commit \`${run.head_sha}\`)`,
+              });
+              core.setOutput('issue', existing.number);
+            } else {
+              const created = await github.rest.issues.create({
+                owner, repo, title, body, labels: ['incident', 'P1'],
+              });
+              core.setOutput('issue', created.data.number);
+            }
+            core.setOutput('title', title);
+            core.setOutput('url', run.html_url);
+
+      - name: Page a webhook if one is configured
+        if: env.ALERT_WEBHOOK_URL != ''
+        env:
+          TITLE: ${{ steps.report.outputs.title }}
+          RUN_URL: ${{ steps.report.outputs.url }}
+          ISSUE: ${{ steps.report.outputs.issue }}
+        run: |
+          [ -n "$ALERT_WEBHOOK_URL" ] || exit 0
+          body=$(jq -nc --arg t "$TITLE" --arg u "$RUN_URL" --arg i "$ISSUE" \
+            '{text: ("ALERT " + $t + " — " + $u + " (issue #" + $i + ")")}')
+          curl -fsS -X POST -H 'content-type: application/json' \
+            --data "$body" "$ALERT_WEBHOOK_URL"
+
+  close:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const title = `incident: ${run.name} failed on ${run.head_branch}`;
+            const { owner, repo } = context.repo;
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: 'incident', per_page: 100,
+            });
+            const issue = open.find((i) => i.title === title);
+            if (!issue) return;
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: issue.number,
+              body: `Recovered: ${run.html_url} (commit \`${run.head_sha}\`)`,
+            });
+            await github.rest.issues.update({
+              owner, repo, issue_number: issue.number, state: 'closed',
+            });

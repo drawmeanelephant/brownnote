@@ -51,10 +51,11 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "log.h"
 #include "wav.h"
 
 #ifdef __APPLE__
-#include <mach-o/dyld.h>	/* _NSGetExecutablePath */
+#include <mach-o/dyld.h> /* _NSGetExecutablePath */
 #endif
 
 /*
@@ -88,24 +89,35 @@ static void die(int code, const char *fmt, ...)
 	vfprintf(stderr, fmt, ap);
 	va_end(ap);
 	fputc('\n', stderr);
+	/* The plain message above is the user contract; the structured
+	 * line only appears when BROWNNOTE_LOG was deliberately set. */
+	if (bn_log_configured())
+		bn_log(BN_LOG_ERROR, "event=fatal exit=%d", code);
 	exit(code);
 }
 
 static void usage(FILE *out)
 {
 	fprintf(out,
-"usage: brownnote [--effect NAME]... [--pot EFFECT:POT=VALUE]...\n"
-"                 [--mix EFFECT=VAL]... [--bench PATH] [--list]\n"
-"\n"
-"  --effect NAME   route an effect, in order given (aliases accepted;\n"
-"                  exact GuitarPedal names also work)\n"
-"  --pot E:P=V     set a pot, passed to the bench verbatim\n"
-"  --mix E=V       set a mix 0..120, passed to the bench verbatim\n"
-"  --bench PATH    bench binary to run\n"
-"  --list          list the effects the bench knows, from the bench\n"
-"\n"
-"stdin: raw float32 stereo 48 kHz, or a RIFF/WAVE file (auto-detected).\n"
-"stdout: same shape as the input, processed by the routed effects.\n");
+		"usage: brownnote [--effect NAME]... [--pot "
+		"EFFECT:POT=VALUE]...\n"
+		"                 [--mix EFFECT=VAL]... [--bench PATH] "
+		"[--list]\n"
+		"\n"
+		"  --effect NAME   route an effect, in order given (aliases "
+		"accepted;\n"
+		"                  exact GuitarPedal names also work)\n"
+		"  --pot E:P=V     set a pot, passed to the bench verbatim\n"
+		"  --mix E=V       set a mix 0..120, passed to the bench "
+		"verbatim\n"
+		"  --bench PATH    bench binary to run\n"
+		"  --list          list the effects the bench knows, from the "
+		"bench\n"
+		"\n"
+		"stdin: raw float32 stereo 48 kHz, or a RIFF/WAVE file "
+		"(auto-detected).\n"
+		"stdout: same shape as the input, processed by the routed "
+		"effects.\n");
 }
 
 /* ------------------------------------------------------------------ */
@@ -134,6 +146,9 @@ static const struct alias {
 	const char *alias;
 	const char *effect;
 } aliases[] = {
+	/* clang-format off */
+	/* scripts/gen_alias_table.sh and tests/run_tests.sh parse this table one
+	 * entry per line; keep that shape. */
 	{ "fuzz",	"Rat Sketch" },
 	{ "distortion",	"Rat Sketch" },
 	{ "overdrive",	"Klonlike" },
@@ -154,7 +169,19 @@ static const struct alias {
 	{ "amp",	"Frenchie Amp" },
 	{ "preamp",	"Preamp" },
 	{ "tone",	"Tone 1" },
+	/* clang-format on */
 };
+
+/*
+ * Optional --list extra, enabled with BROWNNOTE_FLAGS=alias-table=on.
+ * Off by default so --list stays exactly the bench's own answer.
+ */
+static void print_alias_table(void)
+{
+	printf("\nBrownnote aliases (exact bench names win):\n");
+	for (size_t i = 0; i < sizeof(aliases) / sizeof(aliases[0]); i++)
+		printf("  %-12s -> %s\n", aliases[i].alias, aliases[i].effect);
+}
 
 static const char *resolve_alias(const char *name)
 {
@@ -215,12 +242,12 @@ static void on_signal(int sig)
 		bool gone = false;
 
 		kill(bench_pid, sig);
-		for (int i = 0; i < 40 && !gone; i++) {	/* ~2 s of grace */
+		for (int i = 0; i < 40 && !gone; i++) { /* ~2 s of grace */
 			pid_t r = waitpid(bench_pid, NULL, WNOHANG);
 			if (r == bench_pid || (r < 0 && errno == ECHILD))
 				gone = true;
 			else {
-				struct timespec tick = { .tv_nsec = 50000000 };
+				struct timespec tick = {.tv_nsec = 50000000};
 				nanosleep(&tick, NULL);
 			}
 		}
@@ -255,8 +282,9 @@ static const char *find_bench(const char *flag)
 	if (_NSGetExecutablePath(path, &sz) == 0) {
 		char *slash = strrchr(path, '/');
 		if (slash) {
-			snprintf(slash + 1, sizeof(path) - (slash + 1 - path),
-				 "../vendor/GuitarPedal/Validation/bench/bench");
+			snprintf(
+				slash + 1, sizeof(path) - (slash + 1 - path),
+				"../vendor/GuitarPedal/Validation/bench/bench");
 			if (access(path, X_OK) == 0)
 				return path;
 		}
@@ -267,8 +295,9 @@ static const char *find_bench(const char *flag)
 		path[n] = 0;
 		char *slash = strrchr(path, '/');
 		if (slash) {
-			snprintf(slash + 1, sizeof(path) - (slash + 1 - path),
-				 "../vendor/GuitarPedal/Validation/bench/bench");
+			snprintf(
+				slash + 1, sizeof(path) - (slash + 1 - path),
+				"../vendor/GuitarPedal/Validation/bench/bench");
 			if (access(path, X_OK) == 0)
 				return path;
 		}
@@ -293,27 +322,27 @@ static const char *find_bench(const char *flag)
  * and bench output back to the input's shape on the way out (xf_out).
  */
 struct pump {
-	int in_fd;		/* our stdin, or -1 for memory source */
-	int out_fd;		/* our stdout, or -1 for memory sink */
+	int in_fd;  /* our stdin, or -1 for memory source */
+	int out_fd; /* our stdout, or -1 for memory sink */
 	int bench_in, bench_out, bench_err;
 
-	struct membuf queue;	/* bytes waiting for the bench */
+	struct membuf queue; /* bytes waiting for the bench */
 	size_t queue_pos;
-	bool in_eof;		/* no more input will be enqueued */
+	bool in_eof; /* no more input will be enqueued */
 
-	struct membuf *sink;	/* memory sink, or NULL for out_fd */
+	struct membuf *sink; /* memory sink, or NULL for out_fd */
 
 	/* input transform: stdin bytes -> queue bytes (WAV mode) */
-	void (*xf_in)(struct pump *pm, const unsigned char *src,
-		      size_t n, bool eof);
+	void (*xf_in)(struct pump *pm, const unsigned char *src, size_t n,
+		      bool eof);
 	void *xfi_ctx;
 	/* output transform: bench bytes -> our stdout (WAV mode) */
-	void (*xf_out)(struct pump *pm, const unsigned char *src,
-		       size_t n, bool eof);
+	void (*xf_out)(struct pump *pm, const unsigned char *src, size_t n,
+		       bool eof);
 	void *xfo_ctx;
 };
 
-#define QUEUE_LIMIT (256 * 1024)	/* back off reading stdin past this */
+#define QUEUE_LIMIT (256 * 1024) /* back off reading stdin past this */
 
 /*
  * Write all of buf to fd.  EPIPE means the program downstream went
@@ -362,7 +391,7 @@ static bool drain_err(int from)
 			if (errno == EINTR)
 				continue;
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
-				return false;	/* nothing right now */
+				return false; /* nothing right now */
 			return true;
 		}
 		if (n == 0)
@@ -376,7 +405,7 @@ static bool drain_err(int from)
 			if (w < 0) {
 				if (errno == EINTR)
 					continue;
-				broken = true;	/* discard from here on */
+				broken = true; /* discard from here on */
 				break;
 			}
 			off += w;
@@ -449,7 +478,8 @@ static int pump_run(struct pump *pm, pid_t pid)
 		if (r < 0) {
 			if (errno == EINTR)
 				continue;
-			die(EXIT_FAILURE, "brownnote: poll: %s", strerror(errno));
+			die(EXIT_FAILURE, "brownnote: poll: %s",
+			    strerror(errno));
 		}
 
 		/*
@@ -460,16 +490,14 @@ static int pump_run(struct pump *pm, pid_t pid)
 		 * so an event the loop does not act on comes right back
 		 * and the pump busy-spins at 100% CPU forever.
 		 */
-		if (pi_out >= 0 &&
-		    (pfd[pi_out].revents &
-		     (POLLIN | POLLHUP | POLLERR | POLLNVAL))) {
+		if (pi_out >= 0 && (pfd[pi_out].revents &
+				    (POLLIN | POLLHUP | POLLERR | POLLNVAL))) {
 			unsigned char buf[65536];
 			ssize_t rd;
 			do {
 				rd = read(pm->bench_out, buf, sizeof(buf));
 			} while (rd < 0 && errno == EINTR);
-			if (rd < 0 && (errno == EAGAIN ||
-				       errno == EWOULDBLOCK))
+			if (rd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
 				rd = 0;
 			if (rd < 0)
 				die(EXIT_FAILURE, "brownnote: read bench: %s",
@@ -486,9 +514,8 @@ static int pump_run(struct pump *pm, pid_t pid)
 				write_fd(pm->out_fd, buf, rd);
 			}
 		}
-		if (pi_err >= 0 &&
-		    (pfd[pi_err].revents &
-		     (POLLIN | POLLHUP | POLLERR | POLLNVAL))) {
+		if (pi_err >= 0 && (pfd[pi_err].revents &
+				    (POLLIN | POLLHUP | POLLERR | POLLNVAL))) {
 			if (drain_err(pm->bench_err))
 				err_open = false;
 		}
@@ -496,13 +523,15 @@ static int pump_run(struct pump *pm, pid_t pid)
 		    (pfd[pi_in].revents & (POLLOUT | POLLERR | POLLNVAL))) {
 			size_t have = pm->queue.len - pm->queue_pos;
 			if (have > 65536)
-				have = 65536;	/* bounded, never sit on a full pipe */
+				have = 65536; /* bounded, never sit on a full
+						 pipe */
 			ssize_t w = write(pm->bench_in,
 					  pm->queue.p + pm->queue_pos, have);
 			if (w < 0) {
 				if (errno == EINTR || errno == EAGAIN ||
 				    errno == EWOULDBLOCK) {
-					/* nothing written; fine, poll will retry */
+					/* nothing written; fine, poll will
+					 * retry */
 				} else if (errno == EPIPE) {
 					/* the bench died; drain and report */
 					close(pm->bench_in);
@@ -526,8 +555,8 @@ static int pump_run(struct pump *pm, pid_t pid)
 			do {
 				rd = read(pm->in_fd, buf, sizeof(buf));
 			} while (rd < 0 && errno == EINTR);
-			if (rd < 0 && (errno == EAGAIN ||
-				       errno == EWOULDBLOCK)) {
+			if (rd < 0 &&
+			    (errno == EAGAIN || errno == EWOULDBLOCK)) {
 				/*
 				 * Nothing there after all.  On a fd poll
 				 * can describe, that is an ordinary
@@ -562,7 +591,7 @@ static int pump_run(struct pump *pm, pid_t pid)
 
 	/* Drain the bench's stderr summary that lands after stdout EOF. */
 	for (;;) {
-		struct pollfd p = { .fd = pm->bench_err, .events = POLLIN };
+		struct pollfd p = {.fd = pm->bench_err, .events = POLLIN};
 		if (pm->bench_err < 0 || poll(&p, 1, 250) != 1)
 			break;
 		if (drain_err(pm->bench_err))
@@ -607,17 +636,22 @@ static int run_bench(char **argv, struct pump *pm)
 				strerror(errno));
 			_exit(127);
 		}
-		close(in_pipe[0]); close(in_pipe[1]);
-		close(out_pipe[0]); close(out_pipe[1]);
-		close(err_pipe[0]); close(err_pipe[1]);
+		close(in_pipe[0]);
+		close(in_pipe[1]);
+		close(out_pipe[0]);
+		close(out_pipe[1]);
+		close(err_pipe[0]);
+		close(err_pipe[1]);
+		/* One correlation id across both processes of a run. */
+		setenv("BROWNNOTE_TRACE_ID", bn_trace_id(), 1);
 		execv(argv[0], argv);
 		/*
 		 * fd 2 is the err pipe here, so this reaches the user
 		 * through the pump's stderr relay: a typo'd --bench or
 		 * BROWNNOTE_BENCH used to die as a silent 127.
 		 */
-		fprintf(stderr, "brownnote: cannot exec %s: %s\n",
-			argv[0], strerror(errno));
+		fprintf(stderr, "brownnote: cannot exec %s: %s\n", argv[0],
+			strerror(errno));
 		_exit(127);
 	}
 
@@ -629,6 +663,8 @@ static int run_bench(char **argv, struct pump *pm)
 	fcntl(in_pipe[1], F_SETFL, O_NONBLOCK);
 	fcntl(out_pipe[0], F_SETFL, O_NONBLOCK);
 	fcntl(err_pipe[0], F_SETFL, O_NONBLOCK);
+
+	bn_log(BN_LOG_DEBUG, "spawn bench=%s pid=%ld", argv[0], (long)pid);
 
 	pm->bench_in = in_pipe[1];
 	pm->bench_out = out_pipe[0];
@@ -661,11 +697,11 @@ static int run_bench(char **argv, struct pump *pm)
 
 /* The bench's end: float32 stereo -> resample -> collapse -> s16. */
 struct wavout {
-	struct wav_resample *rs;	/* 48000 -> input rate, stereo */
-	unsigned out_channels;		/* the input's channel count */
+	struct wav_resample *rs; /* 48000 -> input rate, stereo */
+	unsigned out_channels;	 /* the input's channel count */
 	unsigned out_rate;
 	uint64_t pcm_bytes;
-	unsigned char fstash[8];	/* partial bench frame */
+	unsigned char fstash[8]; /* partial bench frame */
 	unsigned fstash_len;
 	unsigned char pbuf[8192];
 	size_t pbuf_len;
@@ -714,7 +750,7 @@ static void wavout_pcm(struct wavout *o)
 	 */
 	if (o->pcm_bytes + o->pbuf_len > (uint64_t)UINT32_MAX - 36)
 		die(EXIT_USAGE, "brownnote: output passed the WAV "
-		    "format's 4 GiB limit");
+				"format's 4 GiB limit");
 	wavout_header(o);
 	write_fd(1, o->pbuf, o->pbuf_len);
 	o->pcm_bytes += o->pbuf_len;
@@ -750,15 +786,16 @@ static void wavout_emit(void *ctx, const float *f, size_t n)
  * only when the bench succeeded — like the batch path, a failed
  * bench produces no output.
  */
-static void wavout_feed(struct pump *pm, const unsigned char *src,
-			size_t n, bool eof)
+static void wavout_feed(struct pump *pm, const unsigned char *src, size_t n,
+			bool eof)
 {
 	struct wavout *o = pm->xfo_ctx;
 	float fb[512];
 
 	if (!o) {
 		if (n)
-			die(EXIT_FAILURE, "brownnote: bench produced "
+			die(EXIT_FAILURE,
+			    "brownnote: bench produced "
 			    "output before the WAV header parsed");
 		return;
 	}
@@ -802,12 +839,11 @@ static void wavout_finish(struct pump *pm)
 		return;
 	o->finished = true;
 	if (o->fstash_len)
-		die(EXIT_FAILURE,
-		    "brownnote: bench returned a partial frame");
+		die(EXIT_FAILURE, "brownnote: bench returned a partial frame");
 	wav_resample_finish(o->rs);
 	wavout_pcm(o);
 	if (!o->wrote_header)
-		wavout_header(o);	/* a silent bench: header alone */
+		wavout_header(o); /* a silent bench: header alone */
 	if (o->seekable) {
 		unsigned char sz[4];
 
@@ -830,15 +866,15 @@ struct wavsrc {
 	struct pump *pm;
 	struct wav_parse ps;
 	bool parsed;
-	uint64_t data_left;	/* audio bytes still expected */
+	uint64_t data_left; /* audio bytes still expected */
 	uint64_t data_bytes;
 	unsigned frame_bytes;	/* 2 * channels */
-	unsigned char fpart[4];	/* partial input frame */
+	unsigned char fpart[4]; /* partial input frame */
 	unsigned fpart_len;
 	float fbuf[2048];
 	struct wav_resample *rs;
 	struct wavout *xfo;
-	bool defer_align;	/* pipe input: check alignment at end */
+	bool defer_align; /* pipe input: check alignment at end */
 	bool finished;
 };
 
@@ -875,14 +911,20 @@ static void wavsrc_begin(struct wavsrc *s)
 	if (!ps->have_fmt)
 		die(EXIT_USAGE, "brownnote: WAV is missing fmt or data");
 	if (ps->format != 1 || ps->bits != 16)
-		die(EXIT_USAGE, "brownnote: WAV must be PCM s16le "
-		    "(got format %u, %u bits)", ps->format, ps->bits);
+		die(EXIT_USAGE,
+		    "brownnote: WAV must be PCM s16le "
+		    "(got format %u, %u bits)",
+		    ps->format, ps->bits);
 	if (ps->w.channels < 1 || ps->w.channels > 2)
-		die(EXIT_USAGE, "brownnote: WAV must be mono or stereo "
-		    "(got %u channels)", ps->w.channels);
+		die(EXIT_USAGE,
+		    "brownnote: WAV must be mono or stereo "
+		    "(got %u channels)",
+		    ps->w.channels);
 	if (ps->w.rate < 8000 || ps->w.rate > 192000)
-		die(EXIT_USAGE, "brownnote: WAV rate %u out of range "
-		    "(8000..192000)", ps->w.rate);
+		die(EXIT_USAGE,
+		    "brownnote: WAV rate %u out of range "
+		    "(8000..192000)",
+		    ps->w.rate);
 
 	s->frame_bytes = 2 * ps->w.channels;
 	s->data_left = ps->data_decl;
@@ -899,18 +941,18 @@ static void wavsrc_begin(struct wavsrc *s)
 			s->data_left = avail;
 		if (s->data_left % s->frame_bytes)
 			die(EXIT_USAGE, "brownnote: WAV data length "
-			    "not frame-aligned");
+					"not frame-aligned");
 	} else {
 		s->defer_align = true;
 	}
 
-	s->rs = wav_resample_new(ps->w.channels, ps->w.rate, 48000,
-				 wavsrc_emit, s);
+	s->rs = wav_resample_new(ps->w.channels, ps->w.rate, 48000, wavsrc_emit,
+				 s);
 	s->xfo = calloc(1, sizeof(*s->xfo));
 	if (!s->rs || !s->xfo)
 		die(EXIT_FAILURE, "brownnote: out of memory");
-	s->xfo->rs = wav_resample_new(2, 48000, ps->w.rate,
-				    wavout_emit, s->xfo);
+	s->xfo->rs =
+		wav_resample_new(2, 48000, ps->w.rate, wavout_emit, s->xfo);
 	if (!s->xfo->rs)
 		die(EXIT_FAILURE, "brownnote: out of memory");
 	s->xfo->out_channels = ps->w.channels;
@@ -930,16 +972,14 @@ static void wavsrc_done(struct wavsrc *s)
 		return;
 	s->finished = true;
 	if (s->defer_align && s->data_bytes % s->frame_bytes)
-		die(EXIT_USAGE,
-		    "brownnote: WAV data length not frame-aligned");
+		die(EXIT_USAGE, "brownnote: WAV data length not frame-aligned");
 	if (s->rs)
 		wav_resample_finish(s->rs);
 	s->pm->in_eof = true;
 }
 
 /* Convert audio bytes to floats and push them through the resampler. */
-static void wavsrc_audio(struct wavsrc *s, const unsigned char *src,
-			 size_t n)
+static void wavsrc_audio(struct wavsrc *s, const unsigned char *src, size_t n)
 {
 	unsigned ch = s->ps.w.channels;
 
@@ -977,8 +1017,8 @@ static void wavsrc_audio(struct wavsrc *s, const unsigned char *src,
  * The pump's stdin transform: parse until the data chunk, then
  * stream audio.  At EOF, finish whatever state we are in.
  */
-static void wavsrc_feed(struct pump *pm, const unsigned char *src,
-			size_t n, bool eof)
+static void wavsrc_feed(struct pump *pm, const unsigned char *src, size_t n,
+			bool eof)
 {
 	struct wavsrc *s = pm->xfi_ctx;
 
@@ -998,7 +1038,7 @@ static void wavsrc_feed(struct pump *pm, const unsigned char *src,
 		if (s->ps.state == WAV_PS_ERR)
 			die(EXIT_USAGE, "brownnote: %s", s->ps.err);
 		if (s->ps.state != WAV_PS_DATA)
-			return;		/* still in the header */
+			return; /* still in the header */
 		wavsrc_begin(s);
 	}
 	if (n) {
@@ -1038,7 +1078,7 @@ static ssize_t read_input(void *buf, size_t n)
 		if (errno == EINTR)
 			continue;
 		if (errno == EAGAIN || errno == EWOULDBLOCK) {
-			struct pollfd p = { .fd = 0, .events = POLLIN };
+			struct pollfd p = {.fd = 0, .events = POLLIN};
 			poll(&p, 1, -1);
 			continue;
 		}
@@ -1061,7 +1101,7 @@ static bool host_is_little_endian(void)
 	const union {
 		uint16_t u;
 		unsigned char b[2];
-	} probe = { .u = 1 };
+	} probe = {.u = 1};
 
 	return probe.b[0] == 1;
 }
@@ -1082,6 +1122,10 @@ int main(int argc, char **argv)
 	int n_routes = 0, n_pots = 0, n_mixes = 0;
 	bool want_list = false;
 
+	bn_log_init();
+	bn_profile_begin();
+	atexit(bn_profile_dump);
+
 	for (int i = 1; i < argc; i++) {
 		const char *a = argv[i];
 
@@ -1095,13 +1139,15 @@ int main(int argc, char **argv)
 		}
 		if (!strcmp(a, "--bench")) {
 			if (++i >= argc)
-				die(EXIT_USAGE, "brownnote: --bench wants a path");
+				die(EXIT_USAGE,
+				    "brownnote: --bench wants a path");
 			bench_flag = argv[i];
 			continue;
 		}
 		if (!strcmp(a, "--effect") || !strcmp(a, "--route")) {
 			if (++i >= argc)
-				die(EXIT_USAGE, "brownnote: %s wants a name", a);
+				die(EXIT_USAGE, "brownnote: %s wants a name",
+				    a);
 			if (n_routes >= MAX_ARGS)
 				die(EXIT_USAGE, "brownnote: too many %s", a);
 			/*
@@ -1113,7 +1159,8 @@ int main(int argc, char **argv)
 		}
 		if (!strcmp(a, "--pot")) {
 			if (++i >= argc)
-				die(EXIT_USAGE, "brownnote: --pot wants EFFECT:POT=VALUE");
+				die(EXIT_USAGE,
+				    "brownnote: --pot wants EFFECT:POT=VALUE");
 			if (n_pots >= MAX_ARGS)
 				die(EXIT_USAGE, "brownnote: too many --pot");
 			pots[n_pots++] = argv[i];
@@ -1121,21 +1168,27 @@ int main(int argc, char **argv)
 		}
 		if (!strcmp(a, "--mix")) {
 			if (++i >= argc)
-				die(EXIT_USAGE, "brownnote: --mix wants EFFECT=VALUE");
+				die(EXIT_USAGE,
+				    "brownnote: --mix wants EFFECT=VALUE");
 			if (n_mixes >= MAX_ARGS)
 				die(EXIT_USAGE, "brownnote: too many --mix");
 			mixes[n_mixes++] = argv[i];
 			continue;
 		}
-		die(EXIT_USAGE, "brownnote: unknown option %s "
-			"(try --help)", a);
+		die(EXIT_USAGE,
+		    "brownnote: unknown option %s "
+		    "(try --help)",
+		    a);
 	}
 
+	bn_profile_phase("args");
 	const char *bench = find_bench(bench_flag);
 	if (!bench)
 		die(EXIT_USAGE, "brownnote: no bench binary found "
-			"(--bench PATH, BROWNNOTE_BENCH, or "
-			"vendor/GuitarPedal/Validation/bench/bench)");
+				"(--bench PATH, BROWNNOTE_BENCH, or "
+				"vendor/GuitarPedal/Validation/bench/bench)");
+	bn_profile_phase("resolve");
+	bn_log(BN_LOG_DEBUG, "bench=%s trace=%s", bench, bn_trace_id());
 
 	signal(SIGPIPE, SIG_IGN);
 
@@ -1160,6 +1213,9 @@ int main(int argc, char **argv)
 		int status;
 		while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
 			;
+		if (bn_feature("alias-table"))
+			print_alias_table();
+		bn_profile_phase("list");
 		return WIFEXITED(status) ? WEXITSTATUS(status) : 127;
 	}
 
@@ -1176,6 +1232,9 @@ int main(int argc, char **argv)
 		got += n;
 	}
 	bool wav_mode = (got == 4 && !memcmp(head, "RIFF", 4));
+	bn_profile_phase("peek");
+	bn_log(BN_LOG_INFO, "mode=%s bench=%s", wav_mode ? "wav" : "raw",
+	       bench);
 
 	/* Assemble the bench command line. */
 	char *bargv[BARGV_MAX];
@@ -1217,7 +1276,8 @@ int main(int argc, char **argv)
 		 * — refuse rather than emit garbage.
 		 */
 		if (!host_is_little_endian())
-			die(EXIT_USAGE, "brownnote: raw mode needs a "
+			die(EXIT_USAGE,
+			    "brownnote: raw mode needs a "
 			    "little-endian host (the bench's wire format "
 			    "is native-endian float32); WAV mode is "
 			    "unaffected");
@@ -1226,6 +1286,7 @@ int main(int argc, char **argv)
 		pm.in_fd = 0;
 		pm.out_fd = 1;
 		bench_status = run_bench(bargv, &pm);
+		bn_profile_phase("bench");
 		if (bench_status)
 			return bench_status;
 		return 0;
@@ -1256,8 +1317,10 @@ int main(int argc, char **argv)
 		wavsrc_feed(&pm, head, got, false);
 
 	bench_status = run_bench(bargv, &pm);
+	bn_profile_phase("bench");
 	if (bench_status)
 		return bench_status;
 	wavout_finish(&pm);
+	bn_profile_phase("output");
 	return 0;
 }

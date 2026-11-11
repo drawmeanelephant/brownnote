@@ -1,0 +1,344 @@
+openapi: 3.1.0
+info:
+  title: Brownnote Studio API
+  version: "1.0"
+  summary: Local studio backend for the sequencer, desk, pads and library.
+  description: |
+    Served by `scripts/studio.py` on 127.0.0.1:8765. The API mutates local
+    state under `build/`, so every `/api/*` request must be same-origin and
+    carry `X-Studio-Client: 1`; both checks are enforced by the server, not
+    by the client. Responses carry `X-Request-ID`, which also appears in the
+    structured server log.
+
+    This schema is the contract agents and tests code against. Keep it in
+    sync with `scripts/studio.py`; `tests/check_openapi.py` verifies that
+    every route the server dispatches is described here.
+servers:
+  - url: http://127.0.0.1:8765
+    description: Default loopback studio
+security:
+  - studioClient: []
+paths:
+  /healthz:
+    get:
+      summary: Liveness and enabled feature flags
+      operationId: healthz
+      security: []
+      responses:
+        "200":
+          description: Process is serving requests.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, features]
+                properties:
+                  ok: { type: boolean, const: true }
+                  features:
+                    type: object
+                    additionalProperties: { type: boolean }
+  /metrics:
+    get:
+      summary: Prometheus text exposition
+      operationId: metrics
+      security: []
+      responses:
+        "200":
+          description: Request counters and uptime.
+          content:
+            text/plain:
+              schema: { type: string }
+  /api/state:
+    get:
+      summary: Stems, tracks and the resolved default sample
+      operationId: getState
+      responses:
+        "200":
+          description: Studio bootstrap payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stems, tracks, default]
+                properties:
+                  stems: { type: array, items: { type: object } }
+                  tracks: { type: array, items: { type: object } }
+                  default: { type: string }
+        "503":
+          $ref: "#/components/responses/Error"
+  /api/library:
+    get:
+      summary: Library manifest
+      operationId: getLibrary
+      responses:
+        "200":
+          description: Catalogue of usable WAV/MP3 files.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, entries, default, defaultSet]
+                properties:
+                  ok: { type: boolean }
+                  entries: { type: array, items: { type: object } }
+                  default: { type: [string, "null"] }
+                  defaultSet: { type: boolean }
+  /api/patches:
+    get:
+      summary: Saved patch names and mtimes
+      operationId: listPatches
+      responses:
+        "200":
+          description: Patch index.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [name, mtime]
+                  properties:
+                    name: { type: string }
+                    mtime: { type: number }
+  /api/patch:
+    get:
+      summary: Read one saved patch
+      operationId: getPatch
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: { type: string, pattern: "^[A-Za-z0-9 _+-]{1,64}$" }
+      responses:
+        "200":
+          description: The patch object.
+          content:
+            application/json:
+              schema: { type: object }
+        "404":
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Save or delete a patch
+      operationId: updatePatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                delete: { type: boolean }
+                patch:
+                  type: object
+                  required: [v]
+                  properties:
+                    v: { type: integer, const: 1 }
+      responses:
+        "200":
+          description: Saved or deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  name: { type: string }
+                  deleted: { type: string }
+                  patches: { type: array, items: { type: object } }
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/upload-sample:
+    post:
+      summary: Add a 44.1 kHz mono s16 WAV as a user stem
+      operationId: uploadSample
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          audio/wav:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: The created stem.
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/library/intake:
+    post:
+      summary: Add a WAV to the library intake directory
+      operationId: libraryIntake
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          audio/wav:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: The created entry.
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/library/rescan:
+    post:
+      summary: Rebuild the library manifest
+      operationId: libraryRescan
+      responses:
+        "200":
+          description: Entry count and resolved default.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  entries: { type: integer }
+                  default: { type: [string, "null"] }
+  /api/library/promote:
+    post:
+      summary: Turn a catalogue entry into a stem
+      operationId: libraryPromote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+                name: { type: string }
+      responses:
+        "200":
+          description: The promoted stem.
+          content:
+            application/json:
+              schema: { type: object }
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/library/default:
+    post:
+      summary: Choose the canonical sample
+      operationId: libraryDefault
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: [string, "null"] }
+      responses:
+        "200":
+          description: The resolved default.
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/render-sequence:
+    post:
+      summary: Render a sequence to MP3
+      operationId: renderSequence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Render result with a URL and track list.
+          content:
+            application/json:
+              schema: { type: object }
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/render-preset:
+    post:
+      summary: Render a named preset or genre song
+      operationId: renderPreset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode, name]
+              properties:
+                mode: { type: string, enum: [fx, song] }
+                name: { type: string }
+      responses:
+        "200":
+          description: Render result with a URL and log.
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/jam:
+    get:
+      summary: NINJAM session status
+      operationId: jamStatus
+      responses:
+        "200":
+          description: State, bpm/bpi and last result.
+          content:
+            application/json:
+              schema: { type: object }
+        "404":
+          description: Jam is disabled by STUDIO_FEATURES.
+    post:
+      summary: Join, re-render, or leave a NINJAM session
+      operationId: jamControl
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                host: { type: string }
+                user: { type: string }
+                pass: { type: string }
+                seq: { type: boolean }
+                stop: { type: boolean }
+      responses:
+        "200":
+          description: Jam state after the action.
+          content:
+            application/json:
+              schema: { type: object }
+        "404":
+          description: Jam is disabled by STUDIO_FEATURES.
+components:
+  securitySchemes:
+    studioClient:
+      type: apiKey
+      in: header
+      name: X-Studio-Client
+      description: Set to 1 by the served pages' fetch wrapper.
+  responses:
+    Error:
+      description: Request rejected; the body carries a message.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok, error]
+            properties:
+              ok: { type: boolean, const: false }
+              error: { type: string }

@@ -1,12 +1,19 @@
 CC ?= cc
-CFLAGS ?= -O2 -Wall -Wextra -std=gnu11 -D_DEFAULT_SOURCE
+# Dead code is a build error: -Wall already reports unused statics and
+# variables, and the suite must not keep code nobody calls.
+CFLAGS ?= -O2 -Wall -Wextra -Werror=unused-function \
+	-Werror=unused-variable -std=gnu11 -D_DEFAULT_SOURCE
 LDFLAGS ?=
 LDLIBS ?= -lm
 CARGO ?= cargo
+PYTHON ?= python3
+CLANG_FORMAT ?= clang-format
 
 BIN = build/brownnote
 UNIT = build/unit_wav
+UNIT_LOG = build/unit_log
 FUZZ = build/fuzz_wav
+COV_DIR = build/coverage
 
 # sanitizer flags per the hardening issue: run the whole suite, the
 # unit tests and the fuzz corpus under ASan+UBSan
@@ -18,20 +25,27 @@ all: $(BIN)
 build:
 	@mkdir -p build
 
-$(BIN): build/brownnote.o build/wav.o
+$(BIN): build/brownnote.o build/wav.o build/log.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-build/brownnote.o: src/brownnote.c src/wav.h | build
+build/brownnote.o: src/brownnote.c src/wav.h src/log.h | build
 	$(CC) $(CFLAGS) -c -o $@ src/brownnote.c
 
 build/wav.o: src/wav.c src/wav.h | build
 	$(CC) $(CFLAGS) -c -o $@ src/wav.c
 
+build/log.o: src/log.c src/log.h | build
+	$(CC) $(CFLAGS) -c -o $@ src/log.c
+
 $(UNIT): tests/unit_wav.c build/wav.o src/wav.h | build
 	$(CC) $(CFLAGS) $(LDFLAGS) -Isrc -o $@ tests/unit_wav.c build/wav.o $(LDLIBS)
 
-unit: $(UNIT)
+$(UNIT_LOG): tests/unit_log.c build/log.o src/log.h | build
+	$(CC) $(CFLAGS) $(LDFLAGS) -Isrc -o $@ tests/unit_log.c build/log.o $(LDLIBS)
+
+unit: $(UNIT) $(UNIT_LOG)
 	$(UNIT)
+	$(UNIT_LOG)
 
 test: all unit
 	BENCH="$${BENCH:-vendor/GuitarPedal/Validation/bench/bench}" \
@@ -94,18 +108,23 @@ native-plugin-host:
 # it opens the default output device and fails under BROWNNOTE_REQUIRE_CLAP=1
 # unless BROWNNOTE_LIVE_CPAL=1, so it runs only through
 # `make native-clap-live-cpal-test` on a machine with audio hardware.
+# The two pinned SoundCraft GUI tests are skipped by name too: they need the
+# pinned app, CLI and Python and run only through `make native-soundcraft-test`,
+# so `--include-ignored` still passes without BROWNNOTE_SOUNDCRAFT_RUN_PINNED=1.
 CPAL_DEVICE_TEST = cpal_device_callback_timing_with_the_live_instrument
+SOUNDCRAFT_SKIPS = --skip pinned_app_recipe_and_adapter \
+	--skip pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio
 
 native-test: native-plugin-host
 	$(CARGO) fmt --manifest-path native/Cargo.toml --check
 	$(CARGO) clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
-	$(CLAP_TEST_ENV) $(LADSPA_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored --skip pinned_app_recipe_and_adapter --skip $(CPAL_DEVICE_TEST)
+	$(CLAP_TEST_ENV) $(LADSPA_TEST_ENV) $(CARGO) test --manifest-path native/Cargo.toml -- --include-ignored --skip $(CPAL_DEVICE_TEST) $(SOUNDCRAFT_SKIPS)
 
 # The render deadline and signal fixtures repeated in fresh processes with a
 # slow `dirname` on PATH, which is how a startup timing regression shows up.
 # It rebuilds with `--lib --no-run` and repeats three cases three times each,
-# so it stays out of `native-test`; the `native` job in
-# `.github/workflows/ci.yml` runs it as its own step.
+# so it stays out of `native-test`; the `native-core` job in
+# `.github/workflows/native.yml` runs it as its own step.
 native-render-timeout:
 	python3 native/tests/check_render_timeout.py
 
@@ -160,4 +179,110 @@ native-soundcraft-test:
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_recipe_and_adapter -- --ignored --exact
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio -- --ignored --exact
 
-.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio native native-test native-render-timeout native-soundcraft-test native-plugin-host native-clap-effect-test native-plugin-workflow-test native-clap-live-test native-clap-live-cpal-test native-ladspa-plate-test native-ladspa-workflow-test
+# ------------------------------------------------------------------
+# Quality gates.  CI runs these through `make hygiene`; the pre-commit
+# hook runs the staged-file subset.
+# ------------------------------------------------------------------
+
+fmt:
+	$(CLANG_FORMAT) -i src/*.c src/*.h tests/*.c
+	$(CARGO) fmt --manifest-path native/Cargo.toml
+	$(CARGO) fmt --all --manifest-path native/plugin-host/Cargo.toml
+
+fmt-check: fmt-check-c fmt-check-rust
+
+fmt-check-c:
+	$(CLANG_FORMAT) --dry-run --Werror src/*.c src/*.h tests/*.c
+
+fmt-check-rust:
+	$(CARGO) fmt --manifest-path native/Cargo.toml --check
+	$(CARGO) fmt --all --manifest-path native/plugin-host/Cargo.toml --check
+
+hooks:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-commit
+	@echo "pre-commit hook installed (core.hooksPath=.githooks)"
+
+# One command from a fresh clone to a built tree with the hooks installed.
+setup: hooks
+	@test -d vendor/GuitarPedal || \
+		git clone --depth 1 https://github.com/torvalds/GuitarPedal vendor/GuitarPedal
+	@test -x vendor/GuitarPedal/Validation/bench || \
+		$(MAKE) -C vendor/GuitarPedal/Validation bench
+	$(MAKE) all
+	@echo "setup: ok — 'make test' is the gate"
+
+studio-check:
+	$(PYTHON) tests/studio_smoke.py
+	$(PYTHON) tests/studio_security.py
+	$(PYTHON) tests/dast_studio.py
+
+# Against an already-running studio, for a deployed or remote instance:
+#   make dast STUDIO_URL=127.0.0.1:8765
+dast:
+	$(PYTHON) tests/dast_studio.py --url $(STUDIO_URL)
+
+check-todos:
+	scripts/check_todos.sh
+
+check-large:
+	$(PYTHON) scripts/check_large_files.py
+
+check-versions:
+	$(PYTHON) scripts/check_versions.py
+
+check-agents:
+	$(PYTHON) tests/check_agents_md.py
+
+check-openapi:
+	$(PYTHON) tests/check_openapi.py
+
+check-secrets:
+	$(PYTHON) scripts/check_secrets.py
+
+complexity: complexity-c complexity-rust
+
+# lizard arrives as a console script (pipx, venv or a distro package); fall
+# back to the module form when only the library is installed.
+LIZARD ?= $(shell command -v lizard 2>/dev/null || printf '%s -m lizard' "$(PYTHON)")
+
+complexity-c:
+	$(PYTHON) scripts/check_complexity.py
+
+complexity-rust:
+	$(CARGO) clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings -W clippy::cognitive_complexity
+
+dup:
+	npx --yes jscpd@4 --config .jscpd.json
+
+unused-deps:
+	$(CARGO) machete native
+	$(CARGO) machete native/plugin-host
+
+native-coverage:
+	$(CARGO) llvm-cov --manifest-path native/Cargo.toml --lcov \
+		--output-path native/target/lcov.info --fail-under-lines 60
+
+coverage: 
+	@mkdir -p $(COV_DIR)
+	$(CC) $(CFLAGS) --coverage -Isrc -c -o $(COV_DIR)/wav.o src/wav.c
+	$(CC) $(CFLAGS) --coverage -Isrc -c -o $(COV_DIR)/log.o src/log.c
+	$(CC) $(CFLAGS) --coverage $(LDFLAGS) -Isrc -o $(COV_DIR)/unit_wav \
+		tests/unit_wav.c $(COV_DIR)/wav.o $(LDLIBS)
+	$(CC) $(CFLAGS) --coverage $(LDFLAGS) -Isrc -o $(COV_DIR)/unit_log \
+		tests/unit_log.c $(COV_DIR)/log.o $(LDLIBS)
+	$(COV_DIR)/unit_wav >/dev/null
+	$(COV_DIR)/unit_log >/dev/null
+	$(PYTHON) scripts/coverage_gate.py --dir $(COV_DIR) --minimum 70 \
+		--source src/wav.c --source src/log.c
+
+sizes: native
+	$(CARGO) tree --manifest-path native/Cargo.toml --duplicates
+	$(PYTHON) scripts/check_binary_size.py \
+		--binary native/target/release/brownnote-native --budget-mb 160
+
+hygiene: fmt-check check-todos check-large check-versions check-agents \
+	check-openapi check-secrets complexity dup
+	@echo "hygiene: ok"
+
+.PHONY: all test unit fuzz fuzz-libfuzzer sanitize clean presets studio studio-check dast native native-test native-render-timeout native-soundcraft-test native-plugin-host native-clap-effect-test native-plugin-workflow-test native-clap-live-test native-clap-live-cpal-test native-ladspa-plate-test native-ladspa-workflow-test fmt fmt-check fmt-check-c fmt-check-rust hooks setup check-todos check-large check-versions check-agents check-openapi check-secrets complexity complexity-c complexity-rust dup unused-deps coverage native-coverage sizes hygiene

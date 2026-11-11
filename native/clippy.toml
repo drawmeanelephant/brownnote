@@ -1,2 +1,6 @@
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
+# Ceiling for `clippy::cognitive_complexity`, enforced with -W in
+# `make complexity-rust`. The most complex function today scores 39; raise
+# this only by splitting a function, never to accommodate a new one.
+cognitive-complexity-threshold = 40

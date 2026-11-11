@@ -57,10 +57,8 @@ int16_t f_to_s16(float v);
  * needed (equal rates, or no input frames) — the caller keeps the
  * input buffer.  Returns (size_t)-1 on allocation failure.
  */
-size_t resample_frames(const float *in, size_t in_frames,
-		       unsigned channels,
-		       unsigned in_rate, unsigned out_rate,
-		       float **out_p);
+size_t resample_frames(const float *in, size_t in_frames, unsigned channels,
+		       unsigned in_rate, unsigned out_rate, float **out_p);
 
 /* ------------------------------------------------------------------ */
 /* Streaming resampler.                                                */
@@ -80,14 +78,14 @@ struct wav_resample;
 typedef void (*wav_emit_fn)(void *ctx, const float *frames, size_t n);
 
 /* Returns NULL on allocation failure. */
-struct wav_resample *wav_resample_new(unsigned channels,
-				      unsigned in_rate, unsigned out_rate,
-				      wav_emit_fn emit, void *emit_ctx);
+struct wav_resample *wav_resample_new(unsigned channels, unsigned in_rate,
+				      unsigned out_rate, wav_emit_fn emit,
+				      void *emit_ctx);
 
 /* Feed input frames; output comes back through the emit callback.
  * Returns false on allocation failure. */
-bool wav_resample_push(struct wav_resample *rs,
-		       const float *in, size_t in_frames);
+bool wav_resample_push(struct wav_resample *rs, const float *in,
+		       size_t in_frames);
 
 /* End of input: emits the edge-clamped tail, if any. */
 void wav_resample_finish(struct wav_resample *rs);
@@ -109,21 +107,21 @@ void wav_resample_free(struct wav_resample *rs);
  * file), and fmt must precede data.
  */
 enum wav_ps {
-	WAV_PS_RIFF,	/* collecting the 12-byte RIFF header */
-	WAV_PS_HDR,	/* collecting an 8-byte chunk header */
-	WAV_PS_FMT,	/* collecting a fmt chunk body */
-	WAV_PS_SKIP,	/* skipping a chunk body */
-	WAV_PS_DATA,	/* data chunk reached */
+	WAV_PS_RIFF, /* collecting the 12-byte RIFF header */
+	WAV_PS_HDR,  /* collecting an 8-byte chunk header */
+	WAV_PS_FMT,  /* collecting a fmt chunk body */
+	WAV_PS_SKIP, /* skipping a chunk body */
+	WAV_PS_DATA, /* data chunk reached */
 	WAV_PS_ERR
 };
 
 struct wav_parse {
-	unsigned char hdr[12];	/* RIFF header, then chunk headers */
+	unsigned char hdr[12]; /* RIFF header, then chunk headers */
 	unsigned hdr_have;
-	uint64_t pos;		/* bytes consumed */
-	uint64_t skip;		/* body bytes left to skip */
-	uint64_t data_off;	/* absolute offset of the data body */
-	uint64_t data_decl;	/* declared data chunk size */
+	uint64_t pos;	    /* bytes consumed */
+	uint64_t skip;	    /* body bytes left to skip */
+	uint64_t data_off;  /* absolute offset of the data body */
+	uint64_t data_decl; /* declared data chunk size */
 	unsigned char fmt[16];
 	unsigned fmt_have;
 	uint16_t format, bits;
@@ -140,8 +138,7 @@ void wav_parse_init(struct wav_parse *ps);
  * n means the data chunk was reached (the rest of the block is
  * PCM — the caller takes over) or an error (ps->err).
  */
-size_t wav_parse_feed(struct wav_parse *ps, const unsigned char *p,
-		      size_t n);
+size_t wav_parse_feed(struct wav_parse *ps, const unsigned char *p, size_t n);
 
 /*
  * Input ended before the data chunk was reached: report the

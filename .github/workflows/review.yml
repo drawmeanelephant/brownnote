@@ -1,0 +1,103 @@
+name: review
+
+# Inline review comments on the diff, from the same linters the local pre-push
+# gate runs. A human still approves the PR; this makes the mechanical part of
+# the review land on the changed lines instead of in a CI log nobody reads.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: reviewdog/action-shellcheck@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          reporter: github-pr-review
+          fail_level: error
+          path: .
+          pattern: '*.sh'
+
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Compile every Python entry point
+        run: |
+          python3 -m py_compile scripts/*.py tests/*.py
+
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # clippy needs the system audio/graphics headers to compile the crate
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libxkbcommon-dev \
+            libwayland-dev libudev-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native -> target
+
+      # There is no reviewdog/action-clippy; run clippy here and pipe its JSON
+      # diagnostics through jq into reviewdog's rdjsonl format so the comments
+      # still land on the diff. pipefail keeps a compile error red even though
+      # the pipeline ends at reviewdog.
+      - uses: reviewdog/action-setup@d8edfce3dd5e1ec6978745e801f9c50b5ef80252 # v1.4.0
+        with:
+          reviewdog_version: v0.21.3
+
+      - name: Clippy with reviewdog
+        working-directory: native
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          cargo clippy --all-targets --message-format=json 2>/dev/null \
+            | jq -c '
+                select(.reason == "compiler-message")
+                | .message
+                | select(.level == "error" or .level == "warning")
+                | select((.spans | length) > 0)
+                | (.spans[] | select(.is_primary)) as $s
+                | {
+                    message: .message,
+                    location: {
+                      path: $s.file_name,
+                      range: {
+                        start: {line: $s.line_start, column: $s.column_start},
+                        end: {line: $s.line_end, column: $s.column_end}
+                      }
+                    },
+                    severity: (
+                      if .level == "error" then "ERROR"
+                      elif .level == "warning" then "WARNING"
+                      else "INFO" end
+                    ),
+                    code: {value: (.code.code // "")}
+                  }' \
+            | reviewdog -f=rdjsonl -reporter=github-pr-review -fail-level=error

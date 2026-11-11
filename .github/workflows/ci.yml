@@ -3,12 +3,19 @@ on:
   push:
   pull_request:
 
+# A new push supersedes the previous run: feedback comes from the newest
+# commit, not from a queue of stale ones.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -25,7 +32,7 @@ jobs:
         run: brew install shellcheck
 
       - name: ShellCheck
-        run: shellcheck tests/run_tests.sh
+        run: shellcheck tests/run_tests.sh scripts/*.sh
 
       - name: Clone GuitarPedal
         run: git clone --depth 1 https://github.com/torvalds/GuitarPedal vendor/GuitarPedal
@@ -41,13 +48,29 @@ jobs:
           # the 4 GiB wrap test is pure pipe I/O under streaming —
           # a few hundred KiB of heap at most, tens of seconds
           BROWNNOTE_HEAVY: "1"
-        run: make test
+        run: |
+          set -o pipefail
+          mkdir -p build
+          make test 2>&1 | tee build/test-output.txt
+
+      # Wall-clock per test comes from the suite's own timestamps; the log is
+      # kept on both outcomes so a slow run can be compared with the last green
+      # one without re-running CI.
+      - name: Upload suite log and timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-log-${{ matrix.os }}
+          path: build/test-output.txt
+          if-no-files-found: warn
+          retention-days: 14
 
   sanitize:
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     env:
       # exported so the suite's inner `make` keeps the flags; -O2 is
       # covered by the test job, this one is ASan+UBSan
@@ -82,87 +105,89 @@ jobs:
       - name: Fuzz corpus and mutations under sanitizers
         run: make fuzz
 
-  native:
-    # the one tested platform, per #77; Linux can follow in its own issue
-    runs-on: macos-latest
-    env:
-      # a missing bench fails instead of skipping, so the catalog and render
-      # tests really ran against upstream GuitarPedal
-      BROWNNOTE_REQUIRE_BENCH: "1"
-      CARGO_TERM_COLOR: always
+  # Style, schema, data-hygiene and duplication gates. Split from the C test
+  # job on purpose: it needs clang-format, lizard, node and Rust-free tooling,
+  # and runs in parallel with it.
+  hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
-      - name: Clone GuitarPedal
-        run: git clone --depth 1 https://github.com/torvalds/GuitarPedal vendor/GuitarPedal
-
-      - name: Build the bench
-        run: make -C vendor/GuitarPedal/Validation bench
-
-      - name: Build brownnote
-        run: make
-
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/setup-python@v5
         with:
-          toolchain: 1.99.0
-          components: rustfmt, clippy
+          python-version: '3.x'
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: native-${{ runner.os }}-${{ hashFiles('native/Cargo.lock') }}
-          restore-keys: native-${{ runner.os }}-
-
-      - name: Format
-        run: cargo fmt --manifest-path native/Cargo.toml --check
-
-      - name: Lint
-        run: cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
-
-      # no --include-ignored: the `#[ignore = "needs a GPU adapter"]` tests in
-      # native/tests/headless.rs need a window, and `make native-test` runs them
-      # locally
-      - name: Test
-        run: cargo test --manifest-path native/Cargo.toml
-
-      - name: Required pinned CLAP instrument and effect research
+      - name: Install hygiene tools
         run: |
-          python3 native/docs/spikes/clap/check.py \
-            --lock-file "$RUNNER_TEMP/brownnote-clap-validation.lock" \
-            --target-dir "$GITHUB_WORKSPACE/native/target"
+          sudo apt-get update
+          sudo apt-get install -y clang-format shellcheck
+          python3 -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/pip" install --upgrade lizard
+          echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
 
-      - name: Required CLAP helper and real-effect tests
-        env:
-          BROWNNOTE_CLAP_EFFECT: ${{ github.workspace }}/native/docs/spikes/clap/.work/plugins/Airwindows Consolidated.clap
-        run: make native-clap-effect-test
+      - name: Formatting (C)
+        run: make fmt-check-c
 
-      - name: Required plugin pad workflow and real-effect tests
-        env:
-          BROWNNOTE_CLAP_EFFECT: ${{ github.workspace }}/native/docs/spikes/clap/.work/plugins/Airwindows Consolidated.clap
-        run: make native-plugin-workflow-test
+      # The Rust halves of fmt/complexity live in native.yml, which has the
+      # toolchain and the caches; this job must stay Rust-free so a broken
+      # toolchain can't take the style gates down with it.
+      - name: Repository checks
+        run: make check-todos check-large check-versions check-agents check-openapi check-secrets
 
-      # Runs the live helper fixtures and the mounted app live lane for real:
-      # BROWNNOTE_REQUIRE_CLAP=1 makes a missing helper, fixture or live lane
-      # feature a failure, never a skip. The one test that needs audio hardware
-      # (`cpal_device_callback_timing_with_the_live_instrument`, which opens the
-      # default output device) is excluded by name in the target, because this
-      # runner has no guaranteed output device; it fails rather than skips when
-      # BROWNNOTE_REQUIRE_CLAP=1 is set without BROWNNOTE_LIVE_CPAL=1. Run it
-      # with `make native-clap-live-cpal-test` on a machine with audio.
-      - name: Required CLAP live-instrument helper tests
-        run: make native-clap-live-test
+      - name: Cyclomatic complexity
+        run: make complexity-c
 
-      - name: Required LADSPA helper and pinned Plate tests
-        run: make native-ladspa-plate-test
+      - name: Copy-paste detection
+        run: make dup
 
-      - name: Required LADSPA plugin pad workflow tests
-        run: make native-ladspa-workflow-test
+      - name: Upload duplication report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jscpd-report
+          path: jscpd-report/
+          if-no-files-found: warn
+          retention-days: 14
 
-      # Repeats the three render deadline/signal fixtures in fresh processes
-      # with a slow `dirname` on PATH, so a startup timing regression turns
-      # this job red instead of waiting for someone to run the script by hand.
-      - name: Required render deadline stress
-        run: make native-render-timeout
+  # The studio is the interactive surface: boot it, drive every route, and
+  # assert the security boundary, instead of trusting a unit test of helpers.
+  studio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install audio tooling
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Studio smoke and security suite
+        run: make studio-check
+
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # make coverage builds only the two instrumented translation units and
+      # their unit binaries, so it does not need the bench.
+      - name: Line coverage gate (70% on src/wav.c and src/log.c)
+        run: make coverage
+
+      - name: Upload gcov files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gcov
+          path: build/coverage/*.gcov
+          if-no-files-found: warn
+          retention-days: 14

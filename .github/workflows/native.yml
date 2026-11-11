@@ -1,0 +1,218 @@
+name: native
+
+# The Rust pad instrument is its own product surface with its own toolchain,
+# caches and runtimes. Keeping it in a separate workflow means a C-only change
+# gets a result from ci.yml in minutes, while a change under native/ still runs
+# the full plugin matrix. A push to main always runs it, so the slow paths are
+# never skipped on the branch that ships.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'native/**'
+      - 'src/**'
+      - 'Makefile'
+      - '.github/workflows/native.yml'
+  schedule:
+    - cron: '0 6 * * 1'
+
+concurrency:
+  group: native-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # a missing bench fails instead of skipping, so the catalog and render
+  # tests really ran against upstream GuitarPedal
+  BROWNNOTE_REQUIRE_BENCH: "1"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  native-core:
+    # the one tested platform, per #77; Linux can follow in its own issue
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone GuitarPedal
+        run: git clone --depth 1 https://github.com/torvalds/GuitarPedal vendor/GuitarPedal
+
+      - name: Build the bench
+        run: make -C vendor/GuitarPedal/Validation bench
+
+      - name: Build brownnote
+        run: make
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          components: rustfmt, clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+            native/plugin-host/target
+          key: native-core-${{ runner.os }}-${{ hashFiles('native/Cargo.lock', 'native/plugin-host/Cargo.lock') }}
+          restore-keys: native-core-${{ runner.os }}-
+
+      - name: Format
+        run: make fmt-check-rust
+
+      - name: Lint and cognitive complexity
+        run: make complexity-rust
+
+      - uses: taiki-e/install-action@nextest
+
+      # nextest runs each test in its own process and writes per-test timings
+      # to a JUnit report. The `ci` profile in native/.config/nextest.toml adds
+      # two retries, so a test that only fails sometimes is reported as FLAKY
+      # (and still fails the job) instead of looking like a hard break.
+      # no --include-ignored: the `#[ignore = "needs a GPU adapter"]` tests in
+      # native/tests/headless.rs need a window, and `make native-test` runs them
+      # locally
+      - name: Test with per-test timings
+        run: cargo nextest run --manifest-path native/Cargo.toml --profile ci
+
+      - name: Upload test timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-junit
+          path: native/target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Repeats the three render deadline/signal fixtures in fresh processes
+      # with a slow `dirname` on PATH, so a startup timing regression turns
+      # this job red instead of waiting for someone to run the script by hand.
+      - name: Required render deadline stress
+        run: make native-render-timeout
+
+      - name: Unused dependency check
+        run: |
+          cargo install cargo-machete --locked
+          make unused-deps
+
+      # A release build plus `cargo tree --duplicates` is the slowest step here
+      # and only matters for what ships, so it runs on main, not on PRs.
+      - name: Binary size budget and duplicate crates
+        if: github.event_name != 'pull_request'
+        run: make sizes
+
+  native-plugins:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone GuitarPedal
+        run: git clone --depth 1 https://github.com/torvalds/GuitarPedal vendor/GuitarPedal
+
+      - name: Build the bench
+        run: make -C vendor/GuitarPedal/Validation bench
+
+      - name: Build brownnote
+        run: make
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          # check.py runs `cargo fmt --all --check` and `cargo clippy` on the
+          # pinned spike workspace, so both components must be installed.
+          components: rustfmt, clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+            native/plugin-host/target
+          key: native-plugins-${{ runner.os }}-${{ hashFiles('native/Cargo.lock', 'native/plugin-host/Cargo.lock') }}
+          restore-keys: native-plugins-${{ runner.os }}-
+
+      - name: Required pinned CLAP instrument and effect research
+        run: |
+          python3 native/docs/spikes/clap/check.py \
+            --lock-file "$RUNNER_TEMP/brownnote-clap-validation.lock" \
+            --target-dir "$GITHUB_WORKSPACE/native/target"
+
+      - name: Required CLAP helper and real-effect tests
+        env:
+          BROWNNOTE_CLAP_EFFECT: ${{ github.workspace }}/native/docs/spikes/clap/.work/plugins/Airwindows Consolidated.clap
+        run: make native-clap-effect-test
+
+      - name: Required plugin pad workflow and real-effect tests
+        env:
+          BROWNNOTE_CLAP_EFFECT: ${{ github.workspace }}/native/docs/spikes/clap/.work/plugins/Airwindows Consolidated.clap
+        run: make native-plugin-workflow-test
+
+      # Runs the live helper fixtures and the mounted app live lane for real:
+      # BROWNNOTE_REQUIRE_CLAP=1 makes a missing helper, fixture or live lane
+      # feature a failure, never a skip. The one test that needs audio hardware
+      # (`cpal_device_callback_timing_with_the_live_instrument`, which opens the
+      # default output device) is excluded by name in the target, because this
+      # runner has no guaranteed output device; it fails rather than skips when
+      # BROWNNOTE_REQUIRE_CLAP=1 is set without BROWNNOTE_LIVE_CPAL=1. Run it
+      # with `make native-clap-live-cpal-test` on a machine with audio.
+      - name: Required CLAP live-instrument helper tests
+        run: make native-clap-live-test
+
+      - name: Required LADSPA helper and pinned Plate tests
+        run: make native-ladspa-plate-test
+
+      - name: Required LADSPA plugin pad workflow tests
+        run: make native-ladspa-workflow-test
+
+  # Coverage for the Rust side is enforced where it can afford to run the whole
+  # library test set: on main, weekly, and on demand.
+  native-coverage:
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          components: llvm-tools-preview
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: native-cov-${{ runner.os }}-${{ hashFiles('native/Cargo.lock') }}
+          restore-keys: native-cov-${{ runner.os }}-
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Clone GuitarPedal
+        run: git clone --depth 1 https://github.com/torvalds/GuitarPedal vendor/GuitarPedal
+
+      - name: Build the bench
+        run: make -C vendor/GuitarPedal/Validation bench
+
+      # BROWNNOTE_REQUIRE_BENCH=1 makes tests/pedals_live.rs run the real
+      # bench through build/brownnote, so the CLI must exist before the gate.
+      - name: Build brownnote
+        run: make
+
+      - name: Line coverage gate (60%)
+        run: make native-coverage
+
+      - name: Upload lcov report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-lcov
+          path: native/target/lcov.info
+          if-no-files-found: warn
+          retention-days: 14

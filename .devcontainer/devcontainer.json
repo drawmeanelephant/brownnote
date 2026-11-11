@@ -1,0 +1,32 @@
+{
+  "name": "brownnote",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "1.99.0",
+      "profile": "default"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.13"
+    }
+  },
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y build-essential clang clang-format shellcheck && make unit",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "ms-vscode.cpptools",
+        "timonwong.shellcheck"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "[c]": { "editor.defaultFormatter": "ms-vscode.cpptools" },
+        "[rust]": { "editor.defaultFormatter": "rust-lang.rust-analyzer" }
+      }
+    }
+  },
+  "remoteEnv": {
+    "BROWNNOTE_LOG": "info"
+  }
+}

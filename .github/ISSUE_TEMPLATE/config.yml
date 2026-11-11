@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security report
+    url: https://github.com/drawmeanelephant/brownnote/security/advisories/new
+    about: Report vulnerabilities privately; do not open a public issue.
+  - name: Documentation
+    url: https://drawmeanelephant.github.io/brownnote/
+    about: The field manual covers build, flags, formats, and the studio.
