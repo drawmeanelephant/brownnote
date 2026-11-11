@@ -492,7 +492,14 @@ fn writer_bundle(root: &std::path::Path) -> Result<PathBuf, Box<dyn Error>> {
     let decay: Vec<f32> = (0..12_000)
         .map(|i| 0.6 * (1.0 - i as f32 / 12_000.0))
         .collect();
-    let source = float_wav(1, &decay)?;
+    writer_bundle_with_source(root, float_wav(1, &decay)?)
+}
+
+/// [`writer_bundle`] with `source` as pad 3's original, unprocessed sample.
+fn writer_bundle_with_source(
+    root: &std::path::Path,
+    source: Vec<u8>,
+) -> Result<PathBuf, Box<dyn Error>> {
     let frozen = float_wav(2, &[0.2, -0.1].repeat(24_000))?;
     let media: BTreeMap<_, _> = [source.clone(), frozen.clone()]
         .into_iter()
@@ -1024,6 +1031,218 @@ fn disagreeing_writer_hit_alignment_is_rejected_before_publication() -> TestResu
     fixture.no_output();
     Ok(())
 }
+/// The 100 ms, 440 Hz mono PCM16 tone from #232.
+fn pcm16_tone(rate: u32) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut wav = hound::WavWriter::new(
+            &mut cursor,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: rate,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )?;
+        for i in 0..rate / 10 {
+            let phase = f64::from(i) * 440.0 * std::f64::consts::TAU / f64::from(rate);
+            wav.write_sample((12_000.0 * phase.sin()) as i16)?;
+        }
+        wav.finalize()?;
+    }
+    Ok(cursor.into_inner())
+}
+
+#[test]
+fn retained_source_at_any_native_rate_converts_from_48k_hit_wet() -> TestResult {
+    for rate in [8_000, 44_100, 48_000, 96_000, 192_000] {
+        let fixture = Fixture::new()?;
+        let source = pcm16_tone(rate)?;
+        let source_id = AssetId::of(&source);
+        let bundle = writer_bundle_with_source(&fixture.root, source.clone())?;
+        let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
+        let hits: Vec<_> = manifest
+            .events
+            .iter()
+            .filter(|event| event.source == Some(source_id))
+            .collect();
+        assert_eq!(hits.len(), 2, "{rate} Hz");
+        let mut wet = Vec::new();
+        for hit in &hits {
+            let entry = manifest
+                .audio
+                .iter()
+                .find(|a| a.role == AudioRole::HitWet && a.event == Some(hit.id))
+                .ok_or("hit without writer entry")?;
+            assert_eq!(hit.asset, Some(entry.asset), "{rate} Hz");
+            let spec = hound::WavReader::new(Cursor::new(fs::read(
+                bundle.join(entry.asset.relative_path()),
+            )?))?
+            .spec();
+            assert_eq!(
+                (spec.sample_rate, spec.sample_format, spec.bits_per_sample),
+                (48_000, hound::SampleFormat::Float, 32),
+                "{rate} Hz"
+            );
+            wet.push(entry);
+        }
+        let mut request = fixture.request.clone();
+        request.bundle = bundle.clone();
+        let report = convert(&request).map_err(|error| format!("{rate} Hz source: {error}"))?;
+        for entry in wet {
+            let clip = report
+                .audio
+                .iter()
+                .find(|clip| Some(clip.event) == entry.event)
+                .ok_or("pad hit was not imported")?;
+            assert_eq!(
+                (clip.start, clip.length),
+                (entry.start_frame as i64, entry.frames as i64),
+                "{rate} Hz"
+            );
+            assert!(
+                request
+                    .output
+                    .join("Audio Files")
+                    .join(format!("{}.wav", entry.asset))
+                    .is_file()
+            );
+        }
+        // Only the 48 kHz renders reach the target (the fake also refuses any
+        // other import rate); the source stays byte-identical provenance.
+        let source_name = format!("{source_id}.wav");
+        assert!(fixture.calls()?.iter().all(|call| {
+            call["method"] != "file.import_audio"
+                || !call["params"]["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with(&source_name))
+        }));
+        assert_eq!(
+            fs::read(request.output.join(source_id.relative_path()))?,
+            source
+        );
+        assert!(
+            !request
+                .output
+                .join("Audio Files")
+                .join(&source_name)
+                .exists()
+        );
+    }
+    Ok(())
+}
+
+/// Rewrite every reference to `old` so the bundle stays hash-consistent.
+fn replace_asset(
+    bundle: &std::path::Path,
+    manifest: &mut Manifest,
+    old: AssetId,
+    bytes: &[u8],
+) -> Result<AssetId, Box<dyn Error>> {
+    let new = AssetId::of(bytes);
+    fs::write(bundle.join(new.relative_path()), bytes)?;
+    let entry = manifest
+        .assets
+        .iter_mut()
+        .find(|asset| asset.id == old)
+        .ok_or("asset not in manifest")?;
+    (entry.id, entry.bytes, entry.path) = (new, bytes.len() as u64, new.relative_path());
+    for event in &mut manifest.events {
+        for slot in [&mut event.asset, &mut event.source] {
+            if *slot == Some(old) {
+                *slot = Some(new);
+            }
+        }
+    }
+    for entry in &mut manifest.audio {
+        if entry.asset == old {
+            entry.asset = new;
+        }
+    }
+    for loss in &mut manifest.losses {
+        if let LossRecord::BakedProcessing { asset, .. } = loss
+            && *asset == old
+        {
+            *asset = new;
+        }
+    }
+    Ok(new)
+}
+
+#[test]
+fn imported_media_outside_the_slice_or_any_truncated_wav_fails_before_launch() -> TestResult {
+    for bad in [
+        "source_as_hit",
+        "mapped_source",
+        "truncated_hit",
+        "truncated_source",
+    ] {
+        let fixture = Fixture::new()?;
+        let source = pcm16_tone(96_000)?;
+        let source_id = AssetId::of(&source);
+        let bundle = writer_bundle_with_source(&fixture.root, source)?;
+        let path = bundle.join("manifest.json");
+        let mut manifest = Manifest::decode(&fs::read(&path)?)?;
+        let hit = manifest
+            .events
+            .iter()
+            .find(|event| event.source == Some(source_id))
+            .and_then(|event| event.asset)
+            .ok_or("no pad hit")?;
+        let instrument = manifest
+            .parts
+            .iter()
+            .find(|part| matches!(part.kind, PartKind::InstrumentNotes { .. }))
+            .ok_or("no instrument part")?
+            .id;
+        let mut request = fixture.request.clone();
+        request.bundle = bundle.clone();
+        let truncate = |id: AssetId| -> Result<Vec<u8>, Box<dyn Error>> {
+            let bytes = fs::read(bundle.join(id.relative_path()))?;
+            Ok(bytes[..bytes.len() - 4].to_vec())
+        };
+        let expected = match bad {
+            // One asset both retained as source and imported keeps the gate.
+            "source_as_hit" => {
+                for event in &mut manifest.events {
+                    if event.asset == Some(hit) {
+                        event.asset = Some(source_id);
+                    }
+                }
+                for entry in &mut manifest.audio {
+                    if entry.asset == hit {
+                        entry.asset = source_id;
+                    }
+                }
+                "outside proven"
+            }
+            "mapped_source" => {
+                request.mappings.push(SamplerMapping {
+                    part: instrument,
+                    asset: source_id,
+                    ..fixture.mapping()
+                });
+                "outside proven"
+            }
+            "truncated_hit" => {
+                replace_asset(&bundle, &mut manifest, hit, &truncate(hit)?)?;
+                "not a complete"
+            }
+            "truncated_source" => {
+                replace_asset(&bundle, &mut manifest, source_id, &truncate(source_id)?)?;
+                "not a complete"
+            }
+            _ => unreachable!(),
+        };
+        fs::write(&path, manifest.encode()?)?;
+        let error = convert(&request).err().ok_or(format!("accepted {bad}"))?;
+        assert!(error.to_string().contains(expected), "{bad}: {error}");
+        assert!(!fixture.root.join("calls.jsonl").exists(), "{bad}");
+        fixture.no_output();
+    }
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires explicit BROWNNOTE_SOUNDCRAFT_APP/CLI/PYTHON; launches the actual pinned GUI"]
 fn pinned_app_recipe_and_adapter() -> TestResult {
@@ -1073,6 +1292,56 @@ fn pinned_app_recipe_and_adapter() -> TestResult {
         status.success(),
         "actual-app edit/save/reopen of adapter output failed"
     );
+    Ok(())
+}
+
+/// #232 against the actual pinned app: writer bundles whose pad source sits
+/// outside the import slice convert, then survive GUI edits, save, reopen and
+/// source-free relocation with relative `Audio Files/` media.
+#[test]
+#[ignore = "requires explicit BROWNNOTE_SOUNDCRAFT_APP/CLI/PYTHON; launches the actual pinned GUI"]
+fn pinned_app_converts_writer_bundles_with_off_slice_sources() -> TestResult {
+    if std::env::var_os("BROWNNOTE_SOUNDCRAFT_RUN_PINNED").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return Err("set BROWNNOTE_SOUNDCRAFT_RUN_PINNED=1 explicitly".into());
+    }
+    let app = std::env::var_os("BROWNNOTE_SOUNDCRAFT_APP").ok_or("set BROWNNOTE_SOUNDCRAFT_APP")?;
+    let cli = std::env::var_os("BROWNNOTE_SOUNDCRAFT_CLI").ok_or("set BROWNNOTE_SOUNDCRAFT_CLI")?;
+    let python =
+        std::env::var_os("BROWNNOTE_SOUNDCRAFT_PYTHON").ok_or("set BROWNNOTE_SOUNDCRAFT_PYTHON")?;
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for rate in [8_000, 96_000, 192_000] {
+        let mut fixture = Fixture::new()?;
+        let source = pcm16_tone(rate)?;
+        fixture.request.bundle = writer_bundle_with_source(&fixture.root, source.clone())?;
+        fixture.request.app = app.clone().into();
+        fixture.request.cli = cli.clone().into();
+        fixture.request.timeout = Duration::from_secs(45);
+        let report = convert(&fixture.request).map_err(|error| format!("{rate} Hz: {error}"))?;
+        assert_eq!(report.audio.len(), 4, "{rate} Hz");
+        assert_eq!(
+            fs::read(
+                fixture
+                    .request
+                    .output
+                    .join(AssetId::of(&source).relative_path())
+            )?,
+            source
+        );
+        let status = Command::new(&python)
+            .arg(root.join("tests/fixtures/soundcraft_adapter/edit_output.py"))
+            .arg(&fixture.request.app)
+            .arg(&fixture.request.cli)
+            .arg(&fixture.request.output)
+            .arg(&fixture.request.bundle)
+            .arg(fixture.root.join("adapter-edit.json"))
+            .status()?;
+        assert!(
+            status.success(),
+            "{rate} Hz: actual-app edit/save/reopen failed"
+        );
+    }
     Ok(())
 }
 
