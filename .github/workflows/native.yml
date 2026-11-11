@@ -49,7 +49,7 @@ jobs:
           toolchain: 1.99.0
           components: rustfmt, clippy
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -125,7 +125,7 @@ jobs:
           # pinned spike workspace, so both components must be installed.
           components: rustfmt, clippy
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -182,7 +182,7 @@ jobs:
           toolchain: 1.99.0
           components: llvm-tools-preview
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry

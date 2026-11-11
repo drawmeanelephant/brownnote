@@ -28,7 +28,7 @@ jobs:
         with:
           toolchain: 1.99.0
           components: rust-docs
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
