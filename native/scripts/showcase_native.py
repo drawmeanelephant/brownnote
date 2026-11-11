@@ -48,7 +48,7 @@ def one(name, args, k):
     if done.returncode != 0:
         sys.exit(f"failed {name}: {done.stderr}")
     with trace.open() as f:
-        _header, *frames = [json.loads(line) for line in f]
+        frames = [json.loads(line) for line in f]
     # Drop the launch frame: it carries window and pipeline setup.
     frames = frames[1:]
     tick = statistics.median(f["present_dt_ms"] for f in frames if f.get("present_dt_ms"))

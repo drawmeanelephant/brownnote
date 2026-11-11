@@ -306,14 +306,7 @@ def list_tracks():
                     continue
                 if not os.path.isfile(p):
                     continue
-                label = fn
-                # the sidecar label is optional: a missing or corrupt
-                # .json must never hide the sample itself
-                with contextlib.suppress(Exception):
-                    with open(_workspace_path(os.path.join(
-                            USER_DIR, fn[:-4] + ".json")),
-                              "r", encoding="utf-8") as f:
-                        label = json.load(f).get("name") or fn
+                label = _sidecar_label(fn)
                 tracks.append({
                     "name": label,
                     "kind": "Sample",
@@ -349,6 +342,18 @@ def _workspace_path(path):
         if os.path.islink(current):
             raise ValueError("symlinked studio path")
     return current
+
+
+def _sidecar_label(fn):
+    """Sidecar display label for a user sample, falling back to its filename."""
+    try:
+        path = _workspace_path(os.path.join(USER_DIR, fn[:-4] + ".json"))
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f).get("name") or fn
+    except (OSError, ValueError, AttributeError):
+        # the sidecar is optional: a missing or corrupt .json must never
+        # hide the sample itself
+        return fn
 
 
 def patch_path(name):
