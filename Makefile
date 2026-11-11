@@ -259,8 +259,14 @@ unused-deps:
 	$(CARGO) machete native
 	$(CARGO) machete native/plugin-host
 
+# The coverage target dir is pinned to native/target (instead of
+# cargo-llvm-cov's default native/target/llvm-cov-target) because
+# `paths::Resolver` only recognizes Cargo's native/target/{debug,release}[/deps]
+# layout when it looks for recordings/, build/brownnote and the bench. A
+# deeper target dir makes those tests fall back to a non-existent tools/ tree.
 native-coverage:
-	$(CARGO) llvm-cov --manifest-path native/Cargo.toml --lcov \
+	CARGO_LLVM_COV_TARGET_DIR=native/target \
+		$(CARGO) llvm-cov --manifest-path native/Cargo.toml --lcov \
 		--output-path native/target/lcov.info --fail-under-lines 60
 
 coverage: 
