@@ -79,7 +79,7 @@ jobs:
 
       - name: Upload test timings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-junit
           path: native/target/nextest/ci/junit.xml
@@ -210,7 +210,7 @@ jobs:
 
       - name: Upload lcov report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-lcov
           path: native/target/lcov.info

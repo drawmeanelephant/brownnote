@@ -58,7 +58,7 @@ jobs:
       # one without re-running CI.
       - name: Upload suite log and timings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: suite-log-${{ matrix.os }}
           path: build/test-output.txt
@@ -143,7 +143,7 @@ jobs:
 
       - name: Upload duplication report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jscpd-report
           path: jscpd-report/
@@ -185,7 +185,7 @@ jobs:
 
       - name: Upload gcov files
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gcov
           path: build/coverage/*.gcov
