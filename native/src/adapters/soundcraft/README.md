@@ -1,7 +1,7 @@
 # SoundCraft adapter
 
-This adapter consumes the current #109 export `manifest.json` (v3, with v1/v2
-read support) and content-hash WAV media.
+This adapter consumes the current #109 export `manifest.json` (v4, with
+v1/v2/v3 read support) and content-hash WAV media.
 It owns a fresh GUI process through explicit `--app` and `--cli` paths. It never
 connects to a personal session, starts audio, uses CLI `run`, or writes private
 SoundCraft session JSON.
@@ -21,10 +21,22 @@ Failures kill the owned process and remove only this invocation's staging.
 Every event asset imports to a separate new audio track, even for the same pad.
 No destructive same-track packing is used. Full assets retain tails. A duration
 that differs from the full asset is reported, not silently trimmed; upstream
-must bake choke/envelope/rate into per-hit media. MIDI uses public clip/note
-commands at 960 PPQ, not a new SMF codec. Onsets/durations round to the nearest
-sample/tick with explicit conversion records. The bundle origin is not added
+must bake choke/envelope/rate into per-hit media. A zero-duration one-shot is
+legal: its full retained asset is the imported sound. MIDI uses public
+clip/note commands at 960 PPQ, not a new SMF codec. It follows the writer's
+contract exactly: absolute onset and end round independently to the encoded
+tempo, and every gate gets at least one tick, so zero-length and sub-tick notes
+stay editable instead of blocking the handoff. The bundle origin is not added
 again to already-relative event positions.
+
+Only media the target actually imports must be in its proven PCM16/float32
+mono/stereo 44.1/48 kHz slice. Retained source-only provenance may be any
+native-supported 8-192 kHz WAV; its bytes are still hash/size-verified and
+copied into `media/`. The static `master_gain` is applied once to each imported
+pre-master clip track through the target's track volume, leaving per-hit gain,
+velocity, pan and the editable clips untouched. At zero it maps to the
+target's -144 dB fader floor and the report states that this is effectively
+silent rather than mathematically zero.
 
 #109 writer bundles set each event's asset to its `HitWet` render, so pad hits
 arrive with gain, velocity, pan, pitch and choke already baked. Frozen
@@ -179,6 +191,11 @@ cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
 cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
   pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio \
   -- --ignored --exact
+cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
+  pinned_app_master_gain_bounce_matches_the_reference -- --ignored --exact
+cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
+  pinned_app_accepts_writer_minimum_gates_and_source_only_rates \
+  -- --ignored --exact
 ```
 
 The wrapper imports the unchanged `Probe`, `scenario` and independent fixture
@@ -193,7 +210,11 @@ The live-take test builds its bundle through the live-take export path and
 checks the same pinned app against a `live_instrument_notes` part: one
 unsupported record naming the plugin and its note count, the retained take and
 the pad hit as two separate audio clips, no MIDI part, and no machine path in
-the report.
+the report. The master-gain test converts at master 0, 0.25, 0.8 and 1.0, then
+bounces each saved session offline through the pinned GUI and compares its peak
+with the bundle's reference. The minimum-gate test converts a writer bundle
+with a zero-length one-shot and zero/sub-tick instrument notes, then converts
+8, 96 and 192 kHz source-only bundles whose imported hits are 48 kHz.
 Neither a skipped test nor fake-process results satisfy this gate.
 
 Finally use a positive synthetic adapter output (the spike's final relocated

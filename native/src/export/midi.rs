@@ -56,6 +56,26 @@ fn tick(nanos: u64, micros: u64) -> Result<u64, MidiError> {
     u64::try_from((n + d / 2) / d).map_err(|_| MidiError::Overflow)
 }
 
+/// The encoded SMF tempo this writer uses for a milli-BPM value. Every tick
+/// conversion in the bundle goes through this value, not the exact fraction,
+/// so an adapter can reproduce the writer's ticks exactly.
+pub fn tempo_micros(tempo_milli_bpm: u64) -> Result<u64, MidiError> {
+    if tempo_milli_bpm == 0 {
+        return Err(MidiError::Tempo);
+    }
+    let micros = (60_000_000_000 + tempo_milli_bpm / 2) / tempo_milli_bpm;
+    if (1..=0xff_ffff).contains(&micros) {
+        Ok(micros)
+    } else {
+        Err(MidiError::Tempo)
+    }
+}
+
+/// Round one absolute nanosecond position to the writer's nearest tick.
+pub fn tick_at(nanos: u64, micros: u64) -> Result<u64, MidiError> {
+    tick(nanos, micros)
+}
+
 fn vlq(value: u64, out: &mut Vec<u8>) -> Result<(), MidiError> {
     if value > MAX_DELTA {
         return Err(MidiError::Overflow);
@@ -100,10 +120,7 @@ pub fn encode(manifest: &Manifest) -> Result<MidiOutput, MidiError> {
     if bpm == 0 {
         return Err(MidiError::Tempo);
     }
-    let micros = (60_000_000_000 + bpm / 2) / bpm;
-    if !(1..=0xff_ffff).contains(&micros) {
-        return Err(MidiError::Tempo);
-    }
+    let micros = tempo_micros(bpm)?;
     let mut conductor = vec![0];
     let tempo = (micros as u32).to_be_bytes();
     meta(&mut conductor, 0x51, &tempo[1..])?;
@@ -131,8 +148,8 @@ pub fn encode(manifest: &Manifest) -> Result<MidiOutput, MidiError> {
                 .start_nanos
                 .checked_add(event.duration_nanos)
                 .ok_or(MidiError::Overflow)?;
-            let start = tick(event.start_nanos, micros)?;
-            let rounded_end = tick(end_nanos, micros)?;
+            let start = tick_at(event.start_nanos, micros)?;
+            let rounded_end = tick_at(end_nanos, micros)?;
             let end = rounded_end.max(start.checked_add(1).ok_or(MidiError::Overflow)?);
             notes.push(Note {
                 event,

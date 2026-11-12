@@ -108,6 +108,7 @@ elif method == "file.import_audio":
     assert rate == 48000
     tid, cid, sid = ident(), ident(), ident()
     state["tracks"].append({"id": tid, "kind": "audio", "mute": False,
+                            "volume_db": 0.0,
                             "clips": [{"id": cid, "start": params["at"],
                                        "length": frames, "source": sid}]})
     state["sources"].append({"id": sid, "path": params["path"], "loaded": True})
@@ -116,12 +117,17 @@ elif method == "track.new":
     assert params["kind"] == "instrument"
     tid = ident()
     state["tracks"].append({"id": tid, "kind": "instrument", "mute": False,
-                            "clips": []})
+                            "volume_db": 0.0, "clips": []})
     reply = {"tracks": [tid]}
 elif method == "mix.mute":
     assert set(params) == {"tracks", "value"} and params["value"] is True
     for tid in params["tracks"]:
         track(tid)["mute"] = True
+elif method == "mix.volume":
+    assert set(params) == {"tracks", "db"}
+    assert -144.0 <= params["db"] <= 12.0
+    for tid in params["tracks"]:
+        track(tid)["volume_db"] = params["db"]
 elif method == "midi.new_clip":
     assert params["start"] == 0
     cid = ident()

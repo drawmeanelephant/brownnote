@@ -27,9 +27,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fs,
-    io::Cursor,
-    path::PathBuf,
-    process::Command,
+    io::{BufRead, BufReader, Cursor},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -449,7 +449,7 @@ fn rounded_timing_and_full_asset_duration_are_reported_not_hidden() -> TestResul
         report
             .records
             .iter()
-            .any(|r| r.detail.contains("MIDI onset/duration rounded"))
+            .any(|r| r.detail.contains("MIDI onset/end rounded"))
     );
     assert!(
         report
@@ -489,6 +489,13 @@ fn float_wav(channels: u16, values: &[f32]) -> Result<Vec<u8>, Box<dyn Error>> {
 /// manifest: two overlapping hits on one pad (a third deleted, one nudged) and
 /// three overlapping instrument notes, two with frozen project renders.
 fn writer_bundle(root: &std::path::Path) -> Result<PathBuf, Box<dyn Error>> {
+    writer_bundle_with_master(root, 0.8)
+}
+
+fn writer_bundle_with_master(
+    root: &std::path::Path,
+    master: f32,
+) -> Result<PathBuf, Box<dyn Error>> {
     let decay: Vec<f32> = (0..12_000)
         .map(|i| 0.6 * (1.0 - i as f32 / 12_000.0))
         .collect();
@@ -515,6 +522,7 @@ fn writer_bundle(root: &std::path::Path) -> Result<PathBuf, Box<dyn Error>> {
                 },
             })
             .collect(),
+        master,
         ..Document::default()
     };
     document.pads[3].sample = Some(SampleAssignment {
@@ -624,6 +632,378 @@ fn writer_bundle(root: &std::path::Path) -> Result<PathBuf, Box<dyn Error>> {
     )
     .map_err(debug)?;
     Ok(bundle)
+}
+
+/// A 100 ms mono PCM16 source at any native-supported rate.
+fn pcm16_wav(rate: u32, frames: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut wav = hound::WavWriter::new(
+            &mut cursor,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: rate,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )?;
+        for i in 0..frames {
+            let value = (12_000.0
+                * (i as f32 * 440.0 * 2.0 * std::f32::consts::PI / rate as f32).sin())
+                as i16;
+            wav.write_sample(value)?;
+        }
+        wav.finalize()?;
+    }
+    Ok(cursor.into_inner())
+}
+
+/// A real Store -> Takes -> writer bundle with one pad source at `rate`, two
+/// hits, and the project's static master setting.
+fn writer_pad_bundle(
+    root: &std::path::Path,
+    rate: u32,
+    master: f32,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let source = pcm16_wav(rate, (rate / 10) as usize)?;
+    let id = project::AssetId::of(&source);
+    let mut document = Document {
+        assets: vec![Asset {
+            reference: AssetRef {
+                id,
+                bytes: source.len() as u64,
+            },
+            kind: MediaKind::Source,
+        }],
+        master,
+        ..Document::default()
+    };
+    document.pads[3].sample = Some(SampleAssignment {
+        source: id,
+        retained: None,
+    });
+    document.choke = false;
+    let project_dir = root.join(format!("rate-{rate}-project"));
+    let originals = root.join(format!("rate-{rate}-originals"));
+    fs::create_dir_all(&originals)?;
+    let path = originals.join("source.wav");
+    fs::write(&path, &source)?;
+    Store::new(project_dir.clone())
+        .save(&document, &[MediaSource { id, path }])
+        .map_err(debug)?;
+    fs::remove_dir_all(&originals)?;
+
+    let mut takes = Takes::new(
+        LoopBars::try_from(1).map_err(debug)?,
+        TakeId(u128::from(u64::MAX) + 21),
+    );
+    takes
+        .set_tempo(Tempo::try_from(120_000).map_err(debug)?)
+        .map_err(debug)?;
+    let take = takes.arm(PassOptions::default()).map_err(debug)?;
+    takes.start(take).map_err(debug)?;
+    let key = NoteKey {
+        source: SourceId(5),
+        channel: Channel::try_from(0).map_err(debug)?,
+        pitch: Pitch::try_from(36).map_err(debug)?,
+    };
+    let velocity = Velocity::try_from(127).map_err(debug)?;
+    for start in [0, 62_500_000] {
+        takes
+            .note_on(
+                take,
+                Target::Pad(PadId::try_from(3).map_err(debug)?),
+                key,
+                velocity,
+                OriginalTime::from_nanos(start),
+            )
+            .map_err(debug)?;
+        takes
+            .note_off(take, key, OriginalTime::from_nanos(start + 10_000_000))
+            .map_err(debug)?;
+    }
+    takes.finish(take).map_err(debug)?;
+    let bundle = root.join(format!("rate-{rate}-master-{master}-bundle"));
+    adapter::write_saved_project_bundle(
+        &mut SystemWriter,
+        &BundleRequest {
+            source_root: project_dir,
+            destination: bundle.clone(),
+            origin: TimeOrigin { nanos: 0 },
+            timing: Timing {
+                tempo_milli_bpm: 120_000,
+                sample_rate_hz: 48_000,
+            },
+        },
+        &takes,
+        &EditModel::new(),
+        &BTreeMap::new(),
+    )
+    .map_err(debug)?;
+    Ok(bundle)
+}
+
+/// A real Store -> Takes -> writer bundle with a zero-length one-shot pad hit
+/// and instrument notes whose gates are zero and sub-tick.
+fn writer_gesture_bundle(root: &std::path::Path) -> Result<PathBuf, Box<dyn Error>> {
+    let decay: Vec<f32> = (0..12_000)
+        .map(|i| 0.6 * (1.0 - i as f32 / 12_000.0))
+        .collect();
+    let source = float_wav(1, &decay)?;
+    let id = project::AssetId::of(&source);
+    let mut document = Document {
+        assets: vec![Asset {
+            reference: AssetRef {
+                id,
+                bytes: source.len() as u64,
+            },
+            kind: MediaKind::Source,
+        }],
+        ..Document::default()
+    };
+    document.pads[3].sample = Some(SampleAssignment {
+        source: id,
+        retained: None,
+    });
+    document.choke = false;
+    let project_dir = root.join("gesture project");
+    let originals = root.join("gesture originals");
+    fs::create_dir_all(&originals)?;
+    let path = originals.join("source.wav");
+    fs::write(&path, &source)?;
+    Store::new(project_dir.clone())
+        .save(&document, &[MediaSource { id, path }])
+        .map_err(debug)?;
+    fs::remove_dir_all(&originals)?;
+
+    let mut takes = Takes::new(
+        LoopBars::try_from(1).map_err(debug)?,
+        TakeId(u128::from(u64::MAX) + 22),
+    );
+    takes
+        .set_tempo(Tempo::try_from(120_000).map_err(debug)?)
+        .map_err(debug)?;
+    let take = takes.arm(PassOptions::default()).map_err(debug)?;
+    takes.start(take).map_err(debug)?;
+    let key = |pitch| -> Result<NoteKey, Box<dyn Error>> {
+        Ok(NoteKey {
+            source: SourceId(6),
+            channel: Channel::try_from(0).map_err(debug)?,
+            pitch: Pitch::try_from(pitch).map_err(debug)?,
+        })
+    };
+    let velocity = Velocity::try_from(100).map_err(debug)?;
+    let pad_key = key(36)?;
+    takes
+        .note_on(
+            take,
+            Target::Pad(PadId::try_from(3).map_err(debug)?),
+            pad_key,
+            velocity,
+            OriginalTime::from_nanos(100_000_000),
+        )
+        .map_err(debug)?;
+    takes
+        .note_off(take, pad_key, OriginalTime::from_nanos(100_000_000))
+        .map_err(debug)?;
+    for (pitch, on, off) in [
+        (60, 500_000_000, 500_000_000),
+        (64, 625_000_000, 625_100_000),
+    ] {
+        let key = key(pitch)?;
+        takes
+            .note_on(
+                take,
+                Target::Instrument(InstrumentId(77)),
+                key,
+                velocity,
+                OriginalTime::from_nanos(on),
+            )
+            .map_err(debug)?;
+        takes
+            .note_off(take, key, OriginalTime::from_nanos(off))
+            .map_err(debug)?;
+    }
+    takes.finish(take).map_err(debug)?;
+    let bundle = root.join("gesture bundle");
+    adapter::write_saved_project_bundle(
+        &mut SystemWriter,
+        &BundleRequest {
+            source_root: project_dir,
+            destination: bundle.clone(),
+            origin: TimeOrigin { nanos: 0 },
+            timing: Timing {
+                tempo_milli_bpm: 120_000,
+                sample_rate_hz: 48_000,
+            },
+        },
+        &takes,
+        &EditModel::new(),
+        &BTreeMap::new(),
+    )
+    .map_err(debug)?;
+    Ok(bundle)
+}
+
+fn wav_peak(path: &std::path::Path) -> Result<f32, Box<dyn Error>> {
+    let mut reader = hound::WavReader::open(path)?;
+    let spec = reader.spec();
+    let peak = match (spec.sample_format, spec.bits_per_sample) {
+        (hound::SampleFormat::Float, 32) => reader
+            .samples::<f32>()
+            .map(|s| s.map(f32::abs))
+            .try_fold(0.0_f32, |peak, value| value.map(|v| peak.max(v)))?,
+        (hound::SampleFormat::Int, 16) => reader
+            .samples::<i16>()
+            .map(|s| s.map(|v| (f32::from(v) / 32768.0).abs()))
+            .try_fold(0.0_f32, |peak, value| value.map(|v| peak.max(v)))?,
+        (hound::SampleFormat::Int, 32) => reader
+            .samples::<i32>()
+            .map(|s| s.map(|v| (v as f32 / 2_147_483_648.0).abs()))
+            .try_fold(0.0_f32, |peak, value| value.map(|v| peak.max(v)))?,
+        _ => return Err("unexpected WAV format".into()),
+    };
+    Ok(peak)
+}
+
+/// Peak of the two imported clips summed at their saved frame positions and
+/// scaled by the target's saved track volumes.
+fn imported_peak(output: &std::path::Path, session: &Value) -> Result<f32, Box<dyn Error>> {
+    let mut mix = Vec::<f32>::new();
+    for track in session["tracks"]
+        .as_array()
+        .ok_or("session tracks missing")?
+    {
+        let gain =
+            10_f64.powf(track["volume_db"].as_f64().ok_or("track volume missing")? / 20.0) as f32;
+        for clip in track["clips"].as_array().ok_or("clips missing")? {
+            let start = clip["start"].as_u64().ok_or("clip start")? as usize;
+            let length = clip["length"].as_u64().ok_or("clip length")? as usize;
+            let source = clip["source"].as_u64().ok_or("clip source")?;
+            let file = session["sources"]
+                .as_array()
+                .ok_or("sources missing")?
+                .iter()
+                .find(|entry| entry["id"].as_u64() == Some(source))
+                .and_then(|entry| entry["path"].as_str())
+                .ok_or("clip source missing")?;
+            let mut reader = hound::WavReader::open(output.join(file))?;
+            let channels = reader.spec().channels as usize;
+            let samples: Vec<f32> = reader.samples::<f32>().collect::<Result<_, _>>()?;
+            let frames = samples.len() / channels;
+            let peak_end = (start + length.min(frames)) * 2;
+            if mix.len() < peak_end {
+                mix.resize(peak_end, 0.0);
+            }
+            for (index, sample) in samples.chunks(channels).enumerate() {
+                let frame = start + index;
+                for channel in 0..2 {
+                    let value = if channels == 1 {
+                        sample[0]
+                    } else {
+                        sample[channel]
+                    };
+                    mix[frame * 2 + channel] += value * gain;
+                }
+            }
+        }
+    }
+    Ok(mix
+        .into_iter()
+        .fold(0.0_f32, |peak, value| peak.max(value.abs())))
+}
+
+fn control_call(
+    cli: &Path,
+    port: u16,
+    method: &str,
+    params: Value,
+) -> Result<Value, Box<dyn Error>> {
+    let output = Command::new(cli)
+        .args([
+            "app",
+            "--port",
+            &port.to_string(),
+            method,
+            &params.to_string(),
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "{method} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let value: Value = serde_json::from_slice(&output.stdout)?;
+    if value.get("ok").is_some() {
+        if value["ok"] != true {
+            return Err(format!("{method}: {}", value["error"]).into());
+        }
+        return Ok(value["result"].clone());
+    }
+    Ok(value)
+}
+
+fn start_pinned_app(app: &Path, profile: &Path) -> Result<(Child, u16), Box<dyn Error>> {
+    fs::create_dir_all(profile)?;
+    let mut child = Command::new(app)
+        .args(["--no-audio", "--control", "0"])
+        .env("SOUNDCRAFT_NO_PREFS", "1")
+        .env("SOUNDCRAFT_CONFIG_DIR", profile)
+        .env_remove("SOUNDCRAFT_CONTROL_PORT")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stdout = child.stdout.take().ok_or("missing app stdout")?;
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            return Err("app exited before announcing its control port".into());
+        }
+        if let Some(port) = line.trim().strip_prefix("SOUNDCRAFT_CONTROL_PORT=") {
+            return Ok((child, port.parse()?));
+        }
+    }
+}
+
+/// Offline bounce of the adapter's saved session through the pinned GUI.
+fn bounce_with_pinned_app(
+    app: &Path,
+    cli: &Path,
+    session: &Path,
+    destination: &Path,
+    frames: u64,
+    profile: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let (mut child, port) = start_pinned_app(app, profile)?;
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        control_call(cli, port, "session.open", json!({"path": session}))?;
+        control_call(
+            cli,
+            port,
+            "file.bounce_mix",
+            json!({
+                "path": destination,
+                "start": 0,
+                "end": frames,
+                "bit_depth": 32,
+                "dither": false
+            }),
+        )?;
+        Ok(())
+    })();
+    let quit = control_call(cli, port, "app.quit", json!({}));
+    let status = child.wait()?;
+    result?;
+    quit?;
+    if !status.success() {
+        return Err("pinned app exited unsuccessfully".into());
+    }
+    Ok(())
 }
 
 /// A bundle written by the real export path for a project whose take was
@@ -956,6 +1336,167 @@ fn real_writer_bundle_imports_every_effective_hit_and_note() -> TestResult {
 }
 
 #[test]
+fn writer_zero_length_one_shot_and_sub_tick_notes_convert() -> TestResult {
+    let fixture = Fixture::new()?;
+    let bundle = writer_gesture_bundle(&fixture.root)?;
+    let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
+    let pad = manifest
+        .events
+        .iter()
+        .find(|event| event.pad.is_some())
+        .ok_or("writer bundle without a pad hit")?;
+    assert_eq!(pad.duration_nanos, 0);
+    let mut request = fixture.request.clone();
+    request.bundle = bundle;
+    let report = convert(&request)?;
+    // A zero-length one-shot still imports its full retained asset.
+    assert_eq!(report.audio.len(), 1);
+    assert_eq!(
+        (report.audio[0].start, report.audio[0].length),
+        (4_800, 12_000)
+    );
+    // Zero and positive sub-tick gates both use the writer's one-tick minimum.
+    assert_eq!(report.midi.len(), 1);
+    let notes: Vec<_> = report.midi[0]
+        .notes
+        .iter()
+        .map(|note| (note.start, note.length, note.pitch))
+        .collect();
+    assert_eq!(notes, [(960, 1, 60), (1_200, 1, 64)]);
+    assert!(
+        report
+            .records
+            .iter()
+            .any(|record| { record.detail.contains("one-tick minimum gate") })
+    );
+    assert!(
+        report
+            .records
+            .iter()
+            .any(|record| record.detail.contains("not trimmed"))
+    );
+    Ok(())
+}
+
+#[test]
+fn source_only_media_accepts_every_native_rate_and_keeps_provenance() -> TestResult {
+    for rate in [8_000, 44_100, 48_000, 96_000, 192_000] {
+        let fixture = Fixture::new()?;
+        let bundle = writer_pad_bundle(&fixture.root, rate, 0.8)?;
+        let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
+        let source = manifest
+            .events
+            .iter()
+            .find_map(|event| event.source)
+            .ok_or("writer bundle lost its source provenance")?;
+        let asset = manifest.asset(source).ok_or("missing source asset")?;
+        let reader = hound::WavReader::open(bundle.join(&asset.path))?;
+        assert_eq!(reader.spec().sample_rate, rate);
+        let imported = manifest
+            .events
+            .iter()
+            .find_map(|event| event.asset)
+            .ok_or("writer bundle has no imported asset")?;
+        let reader = hound::WavReader::open(bundle.join(&manifest.asset(imported).unwrap().path))?;
+        assert_eq!(reader.spec().sample_rate, 48_000);
+        let mut request = fixture.request.clone();
+        request.bundle = bundle;
+        let report = convert(&request)?;
+        assert_eq!(report.audio.len(), 2, "source {rate}");
+    }
+    Ok(())
+}
+
+#[test]
+fn unsupported_event_asset_rate_is_rejected_but_source_only_rates_are_not() -> TestResult {
+    let fixture = Fixture::new()?;
+    let bad = pcm16_wav(96_000, 9_600)?;
+    let id = AssetId::of(&bad);
+    fs::write(fixture.request.bundle.join(id.relative_path()), &bad)?;
+    let mut manifest = fixture.manifest.clone();
+    for event in &mut manifest.events {
+        if event.asset.is_some() {
+            event.asset = Some(id);
+            event.source = Some(id);
+        }
+    }
+    manifest.assets.push(AssetEntry {
+        id,
+        kind: AssetKind::RetainedRender,
+        bytes: bad.len() as u64,
+        path: id.relative_path(),
+    });
+    fs::write(
+        fixture.request.bundle.join("manifest.json"),
+        manifest.encode()?,
+    )?;
+    let error = convert(&fixture.request)
+        .err()
+        .ok_or("accepted a target-imported 96 kHz asset")?;
+    assert!(error.to_string().contains("44.1/48k"), "{error}");
+    fixture.no_output();
+    Ok(())
+}
+
+#[test]
+fn writer_master_gain_is_applied_once_and_matches_the_reference() -> TestResult {
+    for master in [0.0_f32, 0.25, 0.8, 1.0] {
+        let fixture = Fixture::new()?;
+        let bundle = writer_pad_bundle(&fixture.root, 48_000, master)?;
+        let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
+        assert_eq!(manifest.master_gain, master);
+        let mut request = fixture.request.clone();
+        request.bundle = bundle.clone();
+        let report = convert(&request)?;
+        assert_eq!(report.audio.len(), 2);
+        let expected_db = if master == 0.0 {
+            -144.0
+        } else {
+            20.0 * f64::from(master).log10()
+        };
+        let calls = fixture.calls()?;
+        let volumes: Vec<_> = calls
+            .iter()
+            .filter(|call| call["method"] == "mix.volume")
+            .collect();
+        if master == 1.0 {
+            assert!(volumes.is_empty());
+        } else {
+            assert_eq!(volumes.len(), 2);
+            for call in volumes {
+                let db = call["params"]["db"].as_f64().ok_or("volume db")?;
+                assert!((db - expected_db).abs() < 1e-6, "{db} vs {expected_db}");
+            }
+            let record = report
+                .records
+                .iter()
+                .find(|record| record.detail.contains("Static master gain"))
+                .ok_or("master gain change was not reported")?;
+            assert!(record.detail.contains(&master.to_string()));
+            if master == 0.0 {
+                assert!(record.detail.contains("-144 dB"));
+            }
+        }
+        // The target's saved per-track gains, applied to the imported clips,
+        // reproduce the writer's reference peak once.
+        let session: Value =
+            serde_json::from_slice(&fs::read(fixture.request.output.join("session.scraft"))?)?;
+        let actual = imported_peak(&fixture.request.output, &session)?;
+        let reference = manifest
+            .audio
+            .iter()
+            .find(|entry| entry.role == AudioRole::Reference)
+            .ok_or("writer bundle without a reference")?;
+        let expected = wav_peak(&bundle.join(&manifest.asset(reference.asset).unwrap().path))?;
+        assert!(
+            (actual - expected).abs() <= 1e-6,
+            "master {master}: target {actual} vs reference {expected}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn unavailable_live_plugin_is_reported_and_the_retained_take_still_converts() -> TestResult {
     let fixture = Fixture::new()?;
     let (bundle, plugin) = live_take_bundle(&fixture.root)?;
@@ -1073,6 +1614,116 @@ fn pinned_app_recipe_and_adapter() -> TestResult {
         status.success(),
         "actual-app edit/save/reopen of adapter output failed"
     );
+    Ok(())
+}
+
+/// The signal gate from #231: after conversion, an offline bounce of the
+/// editable session must match the bundle's reference at every master setting,
+/// including the default 0.8.
+#[test]
+#[ignore = "requires explicit BROWNNOTE_SOUNDCRAFT_APP/CLI; launches the actual pinned GUI"]
+fn pinned_app_master_gain_bounce_matches_the_reference() -> TestResult {
+    if std::env::var_os("BROWNNOTE_SOUNDCRAFT_RUN_PINNED").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return Err("set BROWNNOTE_SOUNDCRAFT_RUN_PINNED=1 explicitly".into());
+    }
+    let app = PathBuf::from(std::env::var_os("BROWNNOTE_SOUNDCRAFT_APP").ok_or("set APP")?);
+    let cli = PathBuf::from(std::env::var_os("BROWNNOTE_SOUNDCRAFT_CLI").ok_or("set CLI")?);
+    let pin: Value = serde_json::from_str(PIN)?;
+    assert_eq!(
+        pin["binary_sha256"]["SoundCraft"],
+        Hash256::of(&fs::read(&app)?).to_string()
+    );
+    assert_eq!(
+        pin["binary_sha256"]["soundcraft-cli"],
+        Hash256::of(&fs::read(&cli)?).to_string()
+    );
+
+    for master in [0.0_f32, 0.25, 0.8, 1.0] {
+        let fixture = Fixture::new()?;
+        let bundle = writer_pad_bundle(&fixture.root, 48_000, master)?;
+        let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
+        let mut request = fixture.request.clone();
+        request.app = app.clone();
+        request.cli = cli.clone();
+        request.timeout = Duration::from_secs(45);
+        request.bundle = bundle.clone();
+        let report = convert(&request)?;
+        assert_eq!(report.audio.len(), 2);
+        let reference = manifest
+            .audio
+            .iter()
+            .find(|entry| entry.role == AudioRole::Reference)
+            .ok_or("writer bundle without a reference")?;
+        let expected = wav_peak(&bundle.join(&manifest.asset(reference.asset).unwrap().path))?;
+        let bounce = fixture.root.join(format!("master-{master}-bounce.wav"));
+        bounce_with_pinned_app(
+            &app,
+            &cli,
+            &request.output.join("session.scraft"),
+            &bounce,
+            reference.frames,
+            &fixture.root.join(format!("master-{master}-profile")),
+        )?;
+        let actual = wav_peak(&bounce)?;
+        assert!(
+            (actual - expected).abs() <= 2e-5,
+            "master {master}: bounced {actual} vs reference {expected}"
+        );
+    }
+    Ok(())
+}
+
+/// The pinned GUI accepts the writer's zero-length one-shot, its one-tick
+/// minimum gates, and source-only provenance outside the target's import slice.
+#[test]
+#[ignore = "requires explicit BROWNNOTE_SOUNDCRAFT_APP/CLI; launches the actual pinned GUI"]
+fn pinned_app_accepts_writer_minimum_gates_and_source_only_rates() -> TestResult {
+    if std::env::var_os("BROWNNOTE_SOUNDCRAFT_RUN_PINNED").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return Err("set BROWNNOTE_SOUNDCRAFT_RUN_PINNED=1 explicitly".into());
+    }
+    let app = PathBuf::from(std::env::var_os("BROWNNOTE_SOUNDCRAFT_APP").ok_or("set APP")?);
+    let cli = PathBuf::from(std::env::var_os("BROWNNOTE_SOUNDCRAFT_CLI").ok_or("set CLI")?);
+    let pin: Value = serde_json::from_str(PIN)?;
+    assert_eq!(
+        pin["binary_sha256"]["SoundCraft"],
+        Hash256::of(&fs::read(&app)?).to_string()
+    );
+    assert_eq!(
+        pin["binary_sha256"]["soundcraft-cli"],
+        Hash256::of(&fs::read(&cli)?).to_string()
+    );
+
+    let fixture = Fixture::new()?;
+    let mut request = fixture.request.clone();
+    request.app = app.clone();
+    request.cli = cli.clone();
+    request.timeout = Duration::from_secs(45);
+    request.bundle = writer_gesture_bundle(&fixture.root)?;
+    let report = convert(&request)?;
+    assert_eq!(report.audio.len(), 1);
+    assert_eq!(
+        report.midi[0]
+            .notes
+            .iter()
+            .map(|note| (note.start, note.length))
+            .collect::<Vec<_>>(),
+        [(960, 1), (1_200, 1)]
+    );
+
+    for rate in [8_000, 96_000, 192_000] {
+        let fixture = Fixture::new()?;
+        let mut request = fixture.request.clone();
+        request.app = app.clone();
+        request.cli = cli.clone();
+        request.timeout = Duration::from_secs(45);
+        request.bundle = writer_pad_bundle(&fixture.root, rate, 0.8)?;
+        let report = convert(&request)?;
+        assert_eq!(report.audio.len(), 2, "source {rate}");
+    }
     Ok(())
 }
 

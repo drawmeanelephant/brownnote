@@ -12,9 +12,9 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, fmt, path::PathBuf, str::FromStr};
 
 /// Current manifest format version.
-pub const MANIFEST_FORMAT_VERSION: u32 = 3;
+pub const MANIFEST_FORMAT_VERSION: u32 = 4;
 /// Every manifest version this build can read.
-pub const KNOWN_VERSIONS: &[u32] = &[1, 2, MANIFEST_FORMAT_VERSION];
+pub const KNOWN_VERSIONS: &[u32] = &[1, 2, 3, MANIFEST_FORMAT_VERSION];
 /// Bundle-relative manifest file name.
 pub const MANIFEST_NAME: &str = "manifest.json";
 /// Bundle-relative directory holding copied media (D3).
@@ -303,6 +303,11 @@ pub struct Manifest {
     pub version: u32,
     pub origin: TimeOrigin,
     pub timing: Timing,
+    /// Static project master gain applied to the reference mix. Hit, dry and
+    /// stem assets are pre-master, so an adapter must apply this once to the
+    /// imported mix rather than baking it into individual clips.
+    #[serde(default = "unity_master_gain")]
+    pub master_gain: f32,
     pub parts: Vec<PartEntry>,
     pub events: Vec<EventEntry>,
     pub assets: Vec<AssetEntry>,
@@ -313,12 +318,17 @@ pub struct Manifest {
     pub midi: Option<MidiEntry>,
 }
 
+fn unity_master_gain() -> f32 {
+    1.0
+}
+
 impl Manifest {
     pub fn new(origin: TimeOrigin, timing: Timing) -> Self {
         Self {
             version: MANIFEST_FORMAT_VERSION,
             origin,
             timing,
+            master_gain: unity_master_gain(),
             parts: Vec::new(),
             events: Vec::new(),
             assets: Vec::new(),
@@ -372,6 +382,9 @@ impl Manifest {
     /// every asset path is its content-hash path.
     pub fn validate(&self) -> Result<(), ManifestError> {
         check_version(self.version)?;
+        if !self.master_gain.is_finite() || !(0.0..=1.0).contains(&self.master_gain) {
+            return Err(ManifestError::InvalidMaster);
+        }
         let mut parts = BTreeSet::new();
         for part in &self.parts {
             if !parts.insert(part.id) {
@@ -532,6 +545,7 @@ pub fn check_version(version: u32) -> Result<(), ManifestError> {
 pub enum ManifestError {
     ReadOnlyVersion(u32),
     InvalidAudio,
+    InvalidMaster,
     InvalidMidi,
     InvalidPluginIdentity(PartId),
     MalformedJson,

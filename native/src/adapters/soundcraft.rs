@@ -6,6 +6,7 @@ mod process;
 use crate::export::manifest::{
     AssetId, AudioRole, EventId, LossRecord, MANIFEST_NAME, Manifest, PartId, PartKind,
 };
+use crate::export::midi;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -20,7 +21,6 @@ pub const VERSION: &str = "0.19.0";
 pub const COMMIT: &str = "04878f8fda885c95f8be5893bbfe4ea4e062a814";
 pub const PIN: &str = include_str!("soundcraft/pin.json");
 const RATE: u64 = 48_000;
-const PPQ: u64 = 960;
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
@@ -181,7 +181,52 @@ fn rounded(nanos: u64, numerator: u64, denominator: u64) -> Result<(i64, bool)> 
     ))
 }
 
-fn load(bundle: &Path) -> Result<Input> {
+/// Reproduce the bundle writer's SMF gate exactly: absolute onset and absolute
+/// end round independently to the nearest encoded tempo tick, ties later, and
+/// every gate gets at least one tick. The returned bool reports any rounding
+/// or minimum-gate change.
+fn midi_gate(
+    start_nanos: u64,
+    duration_nanos: u64,
+    tempo_milli_bpm: u64,
+) -> Result<(i64, i64, bool)> {
+    let micros =
+        midi::tempo_micros(tempo_milli_bpm).map_err(|_| invalid("invalid bundle tempo"))?;
+    let start =
+        midi::tick_at(start_nanos, micros).map_err(|_| invalid("target tick overflows i64"))?;
+    let end_nanos = start_nanos
+        .checked_add(duration_nanos)
+        .ok_or_else(|| invalid("event end overflows"))?;
+    let rounded_end =
+        midi::tick_at(end_nanos, micros).map_err(|_| invalid("target tick overflows i64"))?;
+    let end = rounded_end.max(
+        start
+            .checked_add(1)
+            .ok_or_else(|| invalid("target tick overflows i64"))?,
+    );
+    let loss = u128::from(start_nanos) * u128::from(midi::PPQ)
+        != u128::from(start) * u128::from(micros) * 1_000
+        || u128::from(end_nanos) * u128::from(midi::PPQ)
+            != u128::from(rounded_end) * u128::from(micros) * 1_000
+        || end != rounded_end;
+    let start_value = i64::try_from(start).map_err(|_| invalid("target tick overflows i64"))?;
+    let length = i64::try_from(end - start).map_err(|_| invalid("target tick overflows i64"))?;
+    Ok((start_value, length, loss))
+}
+
+fn note_bounds(event: &crate::export::manifest::EventEntry) -> Result<()> {
+    if !event.pitch.is_some_and(|x| x <= 127)
+        || !event.channel.is_some_and(|x| x <= 15)
+        || !event.velocity.is_some_and(|x| (1..=127).contains(&x))
+    {
+        return Err(invalid(
+            "MIDI note needs pitch 0..127, channel 0..15 and velocity 1..127",
+        ));
+    }
+    Ok(())
+}
+
+fn load(bundle: &Path, mappings: &[SamplerMapping]) -> Result<Input> {
     let root = fs::canonicalize(bundle)?;
     let bytes = read_regular(&root.join(MANIFEST_NAME), 16 * 1024 * 1024)?;
     let manifest = Manifest::decode(&bytes).map_err(|error| invalid(error.to_string()))?;
@@ -190,6 +235,15 @@ fn load(bundle: &Path) -> Result<Input> {
     {
         return Err(invalid("invalid bundle tempo or sample rate"));
     }
+    // Only media the target actually loads must satisfy its proven import
+    // slice. Source-only provenance is retained and verified, but the target
+    // never decodes it.
+    let imported: BTreeSet<AssetId> = manifest
+        .events
+        .iter()
+        .filter_map(|event| event.asset)
+        .chain(mappings.iter().map(|mapping| mapping.asset))
+        .collect();
     let mut media = BTreeMap::new();
     for asset in &manifest.assets {
         let path = root.join(&asset.path);
@@ -205,12 +259,17 @@ fn load(bundle: &Path) -> Result<Input> {
         let spec = reader.spec();
         if reader.duration() == 0
             || !(1..=2).contains(&spec.channels)
-            || ![44_100, 48_000].contains(&spec.sample_rate)
+            || !(8_000..=192_000).contains(&spec.sample_rate)
             || !matches!(
                 (spec.sample_format, spec.bits_per_sample),
                 (hound::SampleFormat::Int, 16) | (hound::SampleFormat::Float, 32)
             )
         {
+            return Err(invalid(
+                "media outside native PCM16/float32 mono/stereo 8-192k WAV slice",
+            ));
+        }
+        if imported.contains(&asset.id) && ![44_100, 48_000].contains(&spec.sample_rate) {
             return Err(invalid(
                 "media outside proven PCM16/float32 mono/stereo 44.1/48k WAV slice",
             ));
@@ -247,9 +306,6 @@ fn load(bundle: &Path) -> Result<Input> {
             .start_nanos
             .checked_add(event.duration_nanos)
             .ok_or_else(|| invalid("event end overflows"))?;
-        if event.duration_nanos == 0 {
-            return Err(invalid("zero event duration"));
-        }
         let part = manifest
             .part(event.part)
             .ok_or_else(|| invalid("missing part"))?;
@@ -259,26 +315,20 @@ fn load(bundle: &Path) -> Result<Input> {
                     "pad hit needs a matching pad and retained/source media",
                 ));
             }
-            // Live-instrument notes obey the same note bounds: they stay notes
-            // even when this target cannot load the plugin that played them.
-            PartKind::InstrumentNotes { .. } | PartKind::LiveInstrumentNotes { .. } => {
-                if !event.pitch.is_some_and(|x| x <= 127)
-                    || !event.channel.is_some_and(|x| x <= 15)
-                    || !event.velocity.is_some_and(|x| (1..=127).contains(&x))
-                {
-                    return Err(invalid(
-                        "MIDI note needs pitch 0..127, channel 0..15 and velocity 1..127",
-                    ));
-                }
-                let (length, _) = rounded(
+            // Instrument notes follow the writer's documented SMF contract:
+            // absolute endpoints round independently and a legal minimum gate
+            // is one tick, including zero-duration notes. Live-instrument notes
+            // are not imported as MIDI, so their gate must never block the
+            // authoritative retained take.
+            PartKind::InstrumentNotes { .. } => {
+                note_bounds(event)?;
+                midi_gate(
+                    event.start_nanos,
                     event.duration_nanos,
-                    u64::from(manifest.timing.tempo_milli_bpm) * PPQ,
-                    60_000_000_000_000,
+                    u64::from(manifest.timing.tempo_milli_bpm),
                 )?;
-                if length == 0 {
-                    return Err(invalid("MIDI note shorter than one target tick"));
-                }
             }
+            PartKind::LiveInstrumentNotes { .. } => note_bounds(event)?,
             _ => {}
         }
     }
@@ -305,7 +355,7 @@ impl Drop for Staging {
 /// Owns a fresh no-audio GUI process and its isolated profile. Never connects to
 /// an existing app. A failure never publishes an output session directory.
 pub fn convert(request: &Request) -> Result<Report> {
-    let input = load(&request.bundle)?;
+    let input = load(&request.bundle, &request.mappings)?;
     if request.timeout.is_zero() {
         return Err(invalid("timeout must be positive"));
     }
@@ -412,6 +462,18 @@ fn number(value: &Value, context: &str) -> Result<u64> {
         .ok_or_else(|| invalid(format!("{context}: missing numeric ID")))
 }
 
+/// Target track gain for the manifest's static master. Hit assets are
+/// pre-master, so this is applied exactly once to each imported clip track.
+fn master_db(gain: f32) -> f64 {
+    if gain <= 0.0 {
+        // The target's documented fader floor; the reference at master 0 is
+        // mathematically silent, which a finite fader cannot be.
+        -144.0
+    } else {
+        (20.0 * f64::from(gain).log10()).clamp(-144.0, 12.0)
+    }
+}
+
 fn build(
     app: &mut process::App,
     stage: &Path,
@@ -428,6 +490,25 @@ fn build(
         "event.tempo",
         json!({"bpm": f64::from(manifest.timing.tempo_milli_bpm) / 1000.0, "at": 0}),
     )?;
+    if manifest.master_gain != 1.0 {
+        let db = master_db(manifest.master_gain);
+        let floor = if manifest.master_gain <= 0.0 {
+            " The reference is mathematically silent; the target's lowest fader setting is -144 dB."
+        } else {
+            ""
+        };
+        report.record(
+            None,
+            None,
+            "conversion",
+            format!(
+                "Static master gain {} ({} dB) applied once to every imported pre-master clip track; \
+                 hit assets and per-hit gain/velocity/pan stay untouched, so master is not applied \
+                 twice.{}",
+                manifest.master_gain, db, floor
+            ),
+        );
+    }
     for event in &manifest.events {
         if let Some(asset) = event.asset {
             let (start, lost) = rounded(event.start_nanos, RATE, 1_000_000_000)?;
@@ -444,6 +525,12 @@ fn build(
             let clip = number(&imported["clip"], "audio import")?;
             if imported["frames"].as_i64() != Some(length) {
                 return Err(invalid("audio import changed expected frame count"));
+            }
+            if manifest.master_gain != 1.0 {
+                app.call(
+                    "mix.volume",
+                    json!({"tracks": [track], "db": master_db(manifest.master_gain)}),
+                )?;
             }
             aligned_with_bundle(manifest, event.id, asset, start)?;
             report.audio.push(AudioClip {
@@ -525,9 +612,11 @@ fn build(
         }
         let mut notes = Vec::new();
         for event in events {
-            let factor = u64::from(manifest.timing.tempo_milli_bpm) * PPQ;
-            let (start, start_loss) = rounded(event.start_nanos, factor, 60_000_000_000_000)?;
-            let (length, length_loss) = rounded(event.duration_nanos, factor, 60_000_000_000_000)?;
+            let (start, length, loss) = midi_gate(
+                event.start_nanos,
+                event.duration_nanos,
+                u64::from(manifest.timing.tempo_milli_bpm),
+            )?;
             notes.push(Note {
                 start,
                 length,
@@ -535,12 +624,12 @@ fn build(
                 channel: event.channel.ok_or_else(|| invalid("missing channel"))?,
                 velocity: event.velocity.ok_or_else(|| invalid("missing velocity"))?,
             });
-            if start_loss || length_loss {
+            if loss {
                 report.record(
                     Some(event.id),
                     Some(part.id),
                     "conversion",
-                    "MIDI onset/duration rounded independently to nearest 960 PPQ tick.",
+                    "MIDI onset/end rounded to nearest 960 PPQ tick with a one-tick minimum gate, matching notes.mid.",
                 );
             }
             if event.asset.is_none() {
@@ -557,7 +646,7 @@ fn build(
         let samples = (u128::try_from(end).map_err(|_| invalid("negative MIDI end"))?
             * 60_000
             * u128::from(RATE))
-        .div_ceil(u128::from(manifest.timing.tempo_milli_bpm) * u128::from(PPQ));
+        .div_ceil(u128::from(manifest.timing.tempo_milli_bpm) * u128::from(midi::PPQ));
         let samples =
             i64::try_from(samples + 1).map_err(|_| invalid("MIDI clip length overflows"))?;
         let reply = app.call(
@@ -665,6 +754,17 @@ fn verify(
             || clips[0]["length"] != audio.length
         {
             return Err(invalid("saved audio clip count/position/length differs"));
+        }
+        let expected_db = if manifest.master_gain == 1.0 {
+            0.0
+        } else {
+            master_db(manifest.master_gain)
+        };
+        let actual_db = track["volume_db"]
+            .as_f64()
+            .ok_or_else(|| invalid("saved audio track has no volume"))?;
+        if (actual_db - expected_db).abs() > 1e-6 {
+            return Err(invalid("saved audio track lost the static master gain"));
         }
     }
     for midi in &report.midi {
