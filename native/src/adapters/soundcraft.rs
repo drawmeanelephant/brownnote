@@ -17,8 +17,8 @@ use std::{
     time::Duration,
 };
 
-pub const VERSION: &str = "0.19.0";
-pub const COMMIT: &str = "04878f8fda885c95f8be5893bbfe4ea4e062a814";
+pub const VERSION: &str = "0.20.1";
+pub const COMMIT: &str = "a52bbdccbe15342f44e0de1906bf71a621e7a68f";
 pub const PIN: &str = include_str!("soundcraft/pin.json");
 const RATE: u64 = 48_000;
 type Result<T> = std::result::Result<T, Error>;
@@ -400,7 +400,7 @@ pub fn convert(request: &Request) -> Result<Report> {
     }
     let mut report = Report {
         soundcraft_version: VERSION.into(), soundcraft_commit: COMMIT.into(),
-        target_validation: "v0.19.0 GUI checked through its control protocol (no audio device) on 2026-11-09: #95 recipe plus adapter edit/save/reopen/relocation. Maintainer listening and hand-driven UI edits are still outstanding.".into(),
+        target_validation: "v0.20.1 GUI checked through its control protocol (no audio device) on 2026-11-14: #95 recipe plus adapter edit/save/reopen/relocation, live take, master-gain bounce, minimum gates and track/clip naming. Maintainer listening and hand-driven UI edits are still outstanding.".into(),
         session: "session.scraft".into(), audio: Vec::new(), midi: Vec::new(),
         bundle_losses: input.manifest.losses.clone(), records: Vec::new(),
     };

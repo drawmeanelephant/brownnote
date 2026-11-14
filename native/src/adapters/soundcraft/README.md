@@ -111,7 +111,40 @@ range is recorded as unsupported and not sent to the target. No multisample,
 plugin-state, gain/velocity/pan-law, envelope, interpolation or gate-retrigger
 equivalence is claimed. A successful approximate map remains muted.
 
-## D19 re-pin, 9 November 2026
+## D19 re-pin, 14 November 2026 (v0.20.1)
+
+Latest release: [v0.20.1](https://github.com/storytold/soundcraft/releases/tag/v0.20.1),
+published `2026-11-12T00:57:13Z`. Its lightweight tag resolves to
+`a52bbdccbe15342f44e0de1906bf71a621e7a68f`. [pin.json](pin.json) records the
+release API digests, the checked downloaded bytes
+(`soundcraft-0.20.1-macos-universal.dmg` `eb1dd392…`,
+`soundcraft-cli-0.20.1-macos-universal.zip` `866fcbfe…`, `SHA256SUMS.txt`
+`a8e85fa2…`) and the extracted macOS universal executable hashes
+(`SoundCraft` `e496b5a6…`, `soundcraft-cli` `ef6f58b9…`). The DMG was mounted
+read-only, then detached. No release executable was run while hashing. The
+detached signing signature was not verified. Runtime version checks are
+compatibility gates, not binary authentication; the opt-in real-app tests
+additionally check both executable hashes.
+
+The 7-day release-age rule in `AGENTS.md` applies: this pin may be merged no
+earlier than **19 November 2026**.
+
+Between v0.19.0 and v0.20.1 upstream reports 43 commits. The release notes call
+v0.20.1 a Flatpak updater patch release; most of the delta is the v0.20.0
+change "take audio file formats from craft-audio; remove crates/audio-io",
+alongside stem-bounce format rejection, locked-clip edits, automation overflow
+fixes, CLAP note-off handling on stop/play/locate, and hosted-instrument
+latency compensation. `docs/control-protocol.md` is byte-identical between the
+two tags, and the command documents this adapter depends on
+(`cmd/{file,track,clip,event,midi,sampler,mix}.rs`, `io/session.rs`, 960 PPQ
+MIDI) still describe the same shapes. Source review is not proof that the new
+binary behaves identically, so the real-app check below was rerun on the
+v0.20.1 binaries.
+
+The v0.19.0 evidence files stay in place and are not relabeled. Their history is
+kept below as the previous pin.
+
+## D19 re-pin, 9 November 2026 (v0.19.0, previous pin)
 
 Latest release: [v0.19.0](https://github.com/storytold/soundcraft/releases/tag/v0.19.0),
 published `2026-11-09T11:54:20Z`. Its lightweight tag resolves to
@@ -142,9 +175,56 @@ Relevant files are `docs/cli.md`, `docs/control-protocol.md`,
 `crates/engine/src/io.rs`, `crates/engine/src/io/midi.rs`, and
 `crates/dsp/src/plugins/sampler.rs`.
 
-## Real-app check, 9 November 2026
+## Real-app check, 14 November 2026 (v0.20.1)
 
-Latest release was still v0.19.0 on 9 November 2026, so the pin above stands.
+The five opt-in tests in `make native-soundcraft-test` passed against the
+actual v0.20.1 GUI, started with `--no-audio --control 0` and an isolated
+profile. Everything below was produced by the released binaries; their hashes
+were checked against [pin.json](pin.json) before each launch.
+
+- #95's unchanged fixture tests and independent fixture checker
+  (`test_fixtures.py`, `check_fixtures.py`, run from a scratch copy of the
+  frozen v0.18.0 spike with no edits to `native/docs/spikes/soundcraft/`), plus
+  the complete probe: same-track overlap loss, same-pitch MIDI import/export,
+  960 PPQ, 44.1 kHz conversion, sampler gate/one-shot/octave/outside-map
+  bounces, choke rejection, move/delete/note edits, quit/reopen, source-free
+  relocation and the missing-media negative control.
+  Evidence: [evidence/recipe-app-0.20.1.json](evidence/recipe-app-0.20.1.json).
+- The adapter on a real #109 writer bundle: two overlapping hits on one pad
+  (one nudged, a third deleted) and three overlapping notes, two with frozen
+  renders. In the GUI, one hit is moved, another deleted and one note edited,
+  then the session is saved, reopened after quitting, the whole output
+  directory is copied and the original output and bundle are removed. The copy
+  reopens with identical tracks, notes, tempo and loaded relative
+  `Audio Files/`; removing the WAV used by the moved clip is reported as
+  missing and unhealthy.
+  Evidence: [evidence/adapter-edit-0.20.1.json](evidence/adapter-edit-0.20.1.json).
+- The manifest v3 live-take bundle: one unsupported mapping naming the plugin
+  and its note count, no MIDI part, and the retained take and pad hit as two
+  separate audio clips on their own tracks, with no machine path in the report.
+  Evidence: [evidence/live-take-0.20.1.json](evidence/live-take-0.20.1.json).
+- Master gain: conversions at master 0, 0.25, 0.8 and 1.0, each followed by an
+  offline bounce through the pinned GUI, match the bundle's reference peak.
+- Writer minimum gates: a zero-length one-shot and zero/sub-tick instrument
+  notes convert, and 8, 96 and 192 kHz source-only bundles import their hits at
+  48 kHz.
+- Track and clip identity: the writer bundle converts with unique
+  `Pad 03 · Take 1 · Hit 1`-style names, a fresh app reopens the saved session,
+  `session.inspect` reports the identical track and clip names, and the same
+  names survive copying the output and deleting the original output and bundle.
+  Evidence: [evidence/track-names-0.20.1.json](evidence/track-names-0.20.1.json).
+
+The master-gain and minimum-gate checks write no evidence file; their
+assertions are the test results themselves. No `SoundCraft` process was left
+behind.
+
+**Not covered:** edits were made through the public control protocol, not the
+mouse or keyboard. No audio device was opened, and nobody has listened to the
+result.
+
+## Real-app check, 9 November 2026 (v0.19.0, previous pin)
+
+The pin in force on 9 November 2026 was v0.19.0.
 The DMG and CLI zip matched `SHA256SUMS.txt`. The DMG was mounted read-only and
 the app was copied into a scratch directory. Both executables matched
 [pin.json](pin.json) before launch. Gatekeeper accepted the app as a notarized
@@ -208,11 +288,12 @@ path. The track/clip naming case is a third opt-in test; set
 
 ## Maintainer real-app gate
 
-Use a desktop session and checksum-verified v0.19.0 app/CLI. Read #95's
+Use a desktop session and checksum-verified v0.20.1 app/CLI. Read #95's
 `REPRODUCE.md`; reuse its scripts **without editing the spike directory**.
 Its `prepare.py` is read-only evidence of the download/verification recipe:
-it intentionally refuses v0.19.0 because its own pin is v0.18.0. Download the
-new artifacts into a separate scratch directory and verify this adapter's pin.
+it intentionally refuses any release other than its own v0.18.0 pin. Download
+the new artifacts into a separate scratch directory and verify this adapter's
+pin.
 Do not bypass quarantine, launch denials or other OS security controls.
 
 Create a separate Python venv with the spike's frozen
