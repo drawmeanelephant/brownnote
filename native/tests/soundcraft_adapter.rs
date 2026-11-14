@@ -2174,7 +2174,7 @@ fn pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio() -> Tes
     let record_kinds: BTreeSet<_> = report.records.iter().map(|r| r.kind.clone()).collect();
     let payload = json!({
         "check": "manifest v3 live-instrument take and pad hit through the pinned app",
-        "date": "2026-11-09",
+        "date": "2026-11-14",
         "pin": {"tag": pin["tag"], "commit": COMMIT, "version": VERSION},
         "binaries": {
             "SoundCraft": {"sha256": app_hash, "matches_pin": true},

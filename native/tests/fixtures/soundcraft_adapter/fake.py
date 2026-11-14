@@ -21,7 +21,7 @@ def log(record):
 
 log({"role": role, "args": args})
 if args == ["--version"]:
-    print(f"{role} {config.get(role + '_version', '0.19.0')} (macos aarch64)")
+    print(f"{role} {config.get(role + '_version', '0.20.1')} (macos aarch64)")
     sys.exit(0)
 
 if role == "soundcraft":

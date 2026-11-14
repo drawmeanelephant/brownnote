@@ -1,0 +1,71 @@
+{
+  "app_exit": 0,
+  "app_exit_source": "process::App::finish requires a successful exit status for both no-audio GUI runs; convert returns only after both quit cleanly",
+  "binaries": {
+    "SoundCraft": {
+      "matches_pin": true,
+      "sha256": "e496b5a6472f9dc210d9cb7c264e6e1b7e044f4cc79b1fef40c96ce3f16f4176"
+    },
+    "soundcraft-cli": {
+      "matches_pin": true,
+      "sha256": "ef6f58b98fe7cd547236d3044e5de02760d91bc96bb524ac3ec7676a5a625e90"
+    }
+  },
+  "bundle": {
+    "assets": 10,
+    "events": 3,
+    "losses": 8,
+    "manifest_version": 4,
+    "parts": 3
+  },
+  "check": "manifest v3 live-instrument take and pad hit through the pinned app",
+  "date": "2026-11-14",
+  "launch": [
+    "SoundCraft",
+    "--no-audio",
+    "--control",
+    "0"
+  ],
+  "listening": "none: no audio device was opened",
+  "live_notes": {
+    "events": 1,
+    "imported_as_midi": false,
+    "plugin": {
+      "abi": "clap-1.2",
+      "artifact": "3cf1e0100b6c20e2e7b8ade93935da59b898b8e06dcdf638a415d1468cf8bc59",
+      "backend": "clap",
+      "id": "org.brownnote.fixture.live",
+      "version": "0.4.0"
+    },
+    "record": "1 live instrument note(s) kept in the manifest for clap plugin \"org.brownnote.fixture.live\" (0.4.0 clap-1.2, artifact 3cf1e0100b6c…); this target cannot load that plugin or carry its identity into a track, so the notes are not imported as MIDI. The take's retained audio is the fallback."
+  },
+  "pad_hit": {
+    "clip": 6,
+    "length": 36000,
+    "start": 21600,
+    "track": 5
+  },
+  "pin": {
+    "commit": "a52bbdccbe15342f44e0de1906bf71a621e7a68f",
+    "tag": "v0.20.1",
+    "version": "0.20.1"
+  },
+  "report": {
+    "audio_clips": 2,
+    "midi_parts": 0,
+    "record_kinds": [
+      "boundary",
+      "conversion",
+      "fallback",
+      "unsupported"
+    ],
+    "soundcraft_commit": "a52bbdccbe15342f44e0de1906bf71a621e7a68f",
+    "soundcraft_version": "0.20.1"
+  },
+  "retained_take": {
+    "clip": 3,
+    "length": 2400,
+    "start": 0,
+    "track": 2
+  }
+}
