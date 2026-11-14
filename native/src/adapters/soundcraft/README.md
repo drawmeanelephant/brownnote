@@ -29,6 +29,36 @@ tempo, and every gate gets at least one tick, so zero-length and sub-tick notes
 stay editable instead of blocking the handoff. The bundle origin is not added
 again to already-relative event positions.
 
+## Track and clip identity
+
+A content hash is not an arrangement. During assembly, beside the static master
+volume, every imported audio track is renamed with the target's public
+`track.rename` and every imported clip with `clip.rename`. The name is
+`<pad or part> · Take <k> · Hit <n>`, for example `Pad 03 · Take 1 · Hit 24`.
+Pad parts use `Pad 01`..`Pad NN`; instrument-render, retained-take and live-note
+parts use `Part <id> note`, `Part <id> take audio` and `Part <id> live note`.
+MIDI instrument tracks are named `Part <id> · MIDI · Editable, muted`.
+
+Names are deterministic for a bundle. Takes are numbered by first appearance in
+the manifest and hits by manifest order, so the suffix stays unique across
+overlapping hits on one pad, separate parts that reuse a pad, and 128-bit take
+IDs. The target trims and truncates names to 64 Unicode scalar values and
+rejects a duplicate track name, so the whole name is bounded before it is sent:
+the variable pad/part prefix is truncated first and the ` · Take <k> · Hit <n>`
+suffix is always kept. `adapter-report.json` records that same join on
+`audio[]` as `event`, `track`, `clip` and `name` (and `midi[]` as `part`,
+`track`, `clip`, `name`), so an editor can map a timeline track back to the
+manifest without guessing from hashes.
+
+The renaming never touches media. `media/<sha256>.wav` in the bundle and
+`Audio Files/<sha256>.wav` in the session stay content-addressed, clips keep
+their full baked length, and overlapping hits stay on separate tracks. On
+reopen, `verify()` fails the conversion if any saved track name or clip name
+differs from the name it sent. The strict fake target in
+`native/tests/fixtures/soundcraft_adapter/fake.py` enforces the same 64-scalar
+truncation, empty-name rejection and duplicate-track-name error as the released
+app, so the default suite proves the naming contract without the GUI.
+
 Only media the target actually imports must be in its proven PCM16/float32
 mono/stereo 44.1/48 kHz slice. Retained source-only provenance may be any
 native-supported 8-192 kHz WAV; its bytes are still hash/size-verified and
@@ -150,6 +180,14 @@ The opt-in test below passed against the actual v0.19.0 GUI, started with
   appears in the report. This is the #171 destination decision, checked against
   the actual app instead of the fake target.
   Evidence: [evidence/live-take.json](evidence/live-take.json).
+- Track and clip names (#233): the real #109 writer bundle converts with
+  readable `Pad 03 · Take 1 · Hit 1`-style names, a fresh app reopens the saved
+  session, and `session.inspect` reports the identical track and clip names.
+  The whole output directory is then copied, the original output and the
+  bundle are removed, and the reopened session still reports the same names
+  with loaded relative `Audio Files/`. Two app launches exit cleanly and no
+  `SoundCraft` process is left behind.
+  Evidence: [evidence/track-names.json](evidence/track-names.json).
 
 Observations: SoundCraft keeps the deleted clip's WAV in `Audio Files/`. When
 that unused file is removed, `session.open` lists it as missing, but
@@ -164,7 +202,9 @@ To repeat the check, prepare the app as described above, then also set
 `BROWNNOTE_SOUNDCRAFT_EDIT_EVIDENCE=/absolute/scratch/adapter-edit.json`.
 The adapter edit check runs from the same opt-in test. The live-take case is a
 second opt-in test; set `BROWNNOTE_SOUNDCRAFT_LIVE_EVIDENCE` to its evidence
-path. `make native-soundcraft-test` runs both.
+path. The track/clip naming case is a third opt-in test; set
+`BROWNNOTE_SOUNDCRAFT_NAMES_EVIDENCE` to its evidence path.
+`make native-soundcraft-test` runs all five.
 
 ## Maintainer real-app gate
 
@@ -186,11 +226,14 @@ export BROWNNOTE_SOUNDCRAFT_CLI=/absolute/soundcraft-cli
 export BROWNNOTE_SOUNDCRAFT_PYTHON=/absolute/venv/bin/python
 export BROWNNOTE_SOUNDCRAFT_EVIDENCE=/absolute/scratch/app.json
 export BROWNNOTE_SOUNDCRAFT_LIVE_EVIDENCE=/absolute/scratch/live-take.json
+export BROWNNOTE_SOUNDCRAFT_NAMES_EVIDENCE=/absolute/scratch/track-names.json
 cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
   pinned_app_recipe_and_adapter -- --ignored --exact
 cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
   pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio \
   -- --ignored --exact
+cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
+  pinned_app_track_and_clip_names_survive_save_quit_reopen -- --ignored --exact
 cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
   pinned_app_master_gain_bounce_matches_the_reference -- --ignored --exact
 cargo test --manifest-path native/Cargo.toml --test soundcraft_adapter \
@@ -215,6 +258,10 @@ bounces each saved session offline through the pinned GUI and compares its peak
 with the bundle's reference. The minimum-gate test converts a writer bundle
 with a zero-length one-shot and zero/sub-tick instrument notes, then converts
 8, 96 and 192 kHz source-only bundles whose imported hits are 48 kHz.
+The track-name test converts the writer bundle, asserts every assigned name is
+bounded and unique, reopens the saved session in a fresh app and compares every
+`session.inspect` track name and clip name with the adapter report, then
+repeats after copying the output and deleting the original output and bundle.
 Neither a skipped test nor fake-process results satisfy this gate.
 
 Finally use a positive synthetic adapter output (the spike's final relocated

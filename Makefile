@@ -115,7 +115,8 @@ CPAL_DEVICE_TEST = cpal_device_callback_timing_with_the_live_instrument
 SOUNDCRAFT_SKIPS = --skip pinned_app_recipe_and_adapter \
 	--skip pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio \
 	--skip pinned_app_master_gain_bounce_matches_the_reference \
-	--skip pinned_app_accepts_writer_minimum_gates_and_source_only_rates
+	--skip pinned_app_accepts_writer_minimum_gates_and_source_only_rates \
+	--skip pinned_app_track_and_clip_names_survive_save_quit_reopen
 
 native-test: native-plugin-host
 	$(CARGO) fmt --manifest-path native/Cargo.toml --check
@@ -182,6 +183,7 @@ native-soundcraft-test:
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio -- --ignored --exact
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_master_gain_bounce_matches_the_reference -- --ignored --exact
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_accepts_writer_minimum_gates_and_source_only_rates -- --ignored --exact
+	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_track_and_clip_names_survive_save_quit_reopen -- --ignored --exact
 
 # ------------------------------------------------------------------
 # Quality gates.  CI runs these through `make hygiene`; the pre-commit
