@@ -88,6 +88,19 @@ says what to build.
   working while a pedal control has focus, and Tab reaches every pedal
   control.
 
+### Window and header layout
+
+The window opens at 1120×800 and cannot shrink below 820×600. The header —
+the voice badge, CHOKE, PANIC, AUDIO OUTPUT, MIDI INPUT (with the connected
+port name), TAKE EDIT, INSTRUMENT, LIVE, and RETRY AUDIO while the output has
+failed — is one row at the default width and wraps onto a second row instead
+of leaving the window at the minimum width, including the macOS traffic-light
+inset from `--chrome`. The second row keeps REC, PLAY, LOOP, mode, count-in,
+DISCARD while a pass is armed, PROJECT and EXPORT inside the window at both
+sizes; the decorative `HIT HIGHER. GO LOUDER.` tagline is dropped when the
+window is narrow. All 16 pads keep at least 140×60 pt at 820×600, even with
+the asset-error banner and RETRY AUDIO mounted together.
+
 Pitch changes playback speed and duration using linear interpolation; this
 is not time stretching or a bandlimited pitch shifter. Pan is constant power.
 The engine hard-clamps output to ±1. It has 32 active voices and 8 fading
@@ -234,8 +247,13 @@ cargo run --release -- --scene missing-samples --snap target/missing.png
 Engine tests cover both 44.1 and 48 kHz. A counting allocator checks the
 callback's command-drain/render path for zero allocations and frees.
 Rune Runtime tests exercise pointer, keys, sliders and missing assets.
-They also check selection, meter decay, muted-hit feedback, and the minimum
-820×600 layout. Waveform tests cover silence, transients and extreme samples.
+They also check selection, meter decay, muted-hit feedback, and one shared
+layout assertion over the mounted view: every header and transport-row
+control, the pad grid, and each header- or strip-opened panel stay inside
+820×600 and 1120×800 with the titlebar inset, a connected MIDI label, a
+failed output, and the asset-error banner, and clicking the right-edge
+toggles dispatches their actions. Waveform tests cover silence, transients
+and extreme samples.
 The headless integration test launches the real binary, checks voice badges
 before and after panic, and checks missing-folder errors. Screenshots alone do
 not prove audio playback.
@@ -243,9 +261,11 @@ not prove audio playback.
 ### What CI runs
 
 `make native-test` runs everything, but a bare `cargo test` skips tests marked
-`#[ignore = "needs a GPU adapter"]`. The three tests in `tests/headless.rs`
-carry that mark because they launch the real binary and draw with Rune's GPU
-renderer. The in-process `Runtime` tests (`ui_tests.rs`, `ui_pedals_tests.rs`,
+`#[ignore = "needs a GPU adapter"]`. The tests in `tests/headless.rs` carry
+that mark because they launch the real binary and draw with Rune's GPU
+renderer; one of them renders every header, transport and panel state at
+820×600 and 1120×800 with `--chrome` and asserts the layout tree fits with no
+layout warnings. The in-process `Runtime` tests (`ui_tests.rs`, `ui_pedals_tests.rs`,
 `showcase/motion_tests.rs`) drive a virtual clock and need no adapter, so they
 run in CI too.
 

@@ -547,3 +547,80 @@ fn the_wordmark_button_closes_every_panel_and_returns_to_pads() {
     assert!(!rt.state.midi_panel, "the MIDI panel stayed open");
     assert!(rt.find("pads").is_some(), "the pad grid did not come back");
 }
+
+#[test]
+fn header_transport_pads_and_every_panel_fit_at_minimum_and_default_sizes() {
+    use crate::ui_test_support::layout;
+    for size in layout::SIZES {
+        let at = format!("{}x{}", size.0, size.1);
+
+        // Pads view with the widest header: a connected MIDI port label and the
+        // failed-output RETRY AUDIO pill, over a full asset-error banner.
+        let mut state = layout::state(true);
+        layout::scene(&mut state, "midi-connected");
+        layout::failed(&mut state);
+        let rt = layout::runtime(state, size);
+        layout::assert_layout(&rt, size, &format!("{at} pads"), None, false);
+
+        // An armed pass mounts DISCARD in the transport strip.
+        let mut state = layout::state(true);
+        layout::scene(&mut state, "transport-armed");
+        layout::failed(&mut state);
+        let rt = layout::runtime(state, size);
+        layout::assert_layout(&rt, size, &format!("{at} armed"), None, true);
+
+        for (panel, scene) in layout::PANELS {
+            let mut state = layout::state(true);
+            layout::scene(&mut state, scene);
+            layout::failed(&mut state);
+            let rt = layout::runtime(state, size);
+            layout::assert_layout(&rt, size, &format!("{at} {panel}"), Some(panel), false);
+        }
+    }
+}
+
+#[test]
+fn right_edge_header_controls_dispatch_clicks_at_minimum_window() {
+    use crate::ui_test_support::layout;
+    let mut state = layout::state(true);
+    layout::scene(&mut state, "midi-connected");
+    layout::failed(&mut state);
+    let mut rt = layout::runtime(state, (820.0, 600.0));
+    // Keep RETRY AUDIO inside the test: never reach a real output device.
+    rt.state.devices.open = std::rc::Rc::new(|_, _, _| Err("disabled in test".into()));
+
+    let click = |rt: &mut Runtime<State>, name: &str| {
+        let (x, y) = rt.find(name).unwrap();
+        rt.pointer_down(x, y);
+        rt.frame(0.0);
+        rt.pointer_up(x, y);
+        flush(rt);
+    };
+
+    click(&mut rt, "edit-toggle");
+    assert!(rt.state.edit_panel, "TAKE EDIT did not open the editor");
+    click(&mut rt, "edit-toggle");
+    assert!(!rt.state.edit_panel, "TAKE EDIT did not close the editor");
+
+    click(&mut rt, "instrument-toggle");
+    assert!(
+        rt.state.instrument.visible,
+        "INSTRUMENT did not open its panel"
+    );
+    click(&mut rt, "instrument-toggle");
+    assert!(!rt.state.instrument.visible);
+
+    click(&mut rt, "live-toggle");
+    assert!(rt.state.live.visible, "LIVE did not open its panel");
+    click(&mut rt, "live-toggle");
+    assert!(!rt.state.live.visible);
+
+    let before = rt.state.output.status.clone();
+    click(&mut rt, "retry-audio");
+    assert_ne!(before, rt.state.output.status, "RETRY AUDIO did nothing");
+    assert!(
+        rt.state.output.status.contains("Playing voices stopped"),
+        "RETRY AUDIO did not stop the failed output for a retry: {}",
+        rt.state.output.status
+    );
+}

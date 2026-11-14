@@ -5,7 +5,7 @@
 //! Reading and parsing the file run on a worker thread; only the finished
 //! [`Font`] reaches the UI. Each output stream gets its own player, built at
 //! that stream's rate, so a device change or project open remounts it.
-use super::{State, button, caption, ink};
+use super::{State, button, caption, header_pill, ink};
 use brownnote_native::{
     engine::Command,
     import::MediaPublisher,
@@ -387,7 +387,7 @@ pub fn status(s: &State) -> String {
 }
 
 pub fn header(s: &State) -> El {
-    button(
+    header_pill(
         "instrument-toggle",
         if s.instrument.visible {
             "BACK TO PADS"
