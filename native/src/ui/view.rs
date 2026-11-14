@@ -1,9 +1,9 @@
 use super::{
-    State, Tab, accent, button, caption,
+    State, Tab, accent, caption,
     control::{Control, slider},
     devices, edit, edit_access, edit_read, export,
     graphics::{led, logo, meter, waveform},
-    ink, instrument, live,
+    header_pill, ink, instrument, live,
     media::controls as import,
     midi, pedals, projects, transport,
 };
@@ -13,20 +13,29 @@ use std::time::Duration;
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     let tall = cx.layout_size("window").is_some_and(|[_, h]| h > 720.0);
+    // The header on one line is wider than the minimum window, so its controls
+    // wrap instead of running off the right edge. A commit that cannot measure
+    // the window yet takes the narrow budget, which is the safe one.
+    let narrow = cx.layout_size("window").is_none_or(|[w, _]| w < 900.0);
     let voices: u32 = s.counts.iter().sum();
     let mut controls = row()
-        .gap(8.0)
-        .center_y()
+        .key("header-controls")
+        .grow(1.0)
+        .min_w(0.0)
+        .flex_wrap()
+        .gaps(4.0, 6.0)
+        .items_center()
+        .justify_end()
         .child(
             row()
                 .gap(6.0)
                 .center_y()
-                .px(8.0)
+                .px(4.0)
                 .child(led(voices > 0, ink("#c8f77b")))
                 .child(caption(format!("{voices:02} / 32 VOICES")).key("voice-count")),
         )
         .child(
-            button("choke", if s.choke { "CHOKE  ON" } else { "CHOKE  OFF" })
+            header_pill("choke", if s.choke { "CHOKE  ON" } else { "CHOKE  OFF" })
                 .role("switch")
                 .checked(s.choke)
                 .on_press(|s: &mut State| {
@@ -35,7 +44,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 }),
         )
         .child(
-            button("panic", "PANIC  /  ESC")
+            header_pill("panic", "PANIC  /  ESC")
                 .gradient(ink("#56382e"), ink("#34251f"))
                 .border_gradient(1.0, ink("#92604d"), ink("#4b342b"))
                 .on_press_tx(|s: &mut State, tx| {
@@ -56,7 +65,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         },
     ));
     controls = controls.child(
-        button(
+        header_pill(
             "edit-toggle",
             if s.edit_panel {
                 "BACK TO PADS"
@@ -73,7 +82,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     controls = controls.child(live::header(s));
     if s.output.failed {
         controls = controls.child(
-            button("retry-audio", "RETRY AUDIO")
+            header_pill("retry-audio", "RETRY AUDIO")
                 .disabled(s.devices.busy())
                 .focusable(!s.devices.busy())
                 .on_press(|s: &mut State| s.retry()),
@@ -99,12 +108,12 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         .pt(20.0)
         .px(20.0)
         .pb(12.0)
-        .gap(10.0)
+        .gap(if narrow { 6.0 } else { 10.0 })
         .child(
             row()
-                .h(42.0)
-                .justify_between()
+                .key("header")
                 .center_y()
+                .gap(10.0)
                 .pl(titlebar)
                 .child(
                     // The wordmark is the way home: it closes every panel at
@@ -150,7 +159,9 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                         .center_y()
                         .child(projects::header(s))
                         .child(export::header(s))
-                        .child(caption("HIT HIGHER. GO LOUDER.")),
+                        // Decorative only: at the minimum window the room it
+                        // takes is what keeps DISCARD and the toggles on screen.
+                        .children((!narrow).then(|| caption("HIT HIGHER. GO LOUDER."))),
                 ),
         )
         .children(if s.projects.visible {
@@ -170,7 +181,12 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         } else if s.edit_panel {
             vec![edit::panel(s, edit_read, edit_access)]
         } else {
-            vec![grid, editor(s)]
+            // The pads grid keeps its own key and gains the panel-slot key the
+            // layout contracts name, without another flex level changing sizes.
+            vec![
+                col().key("grid").grow(1.0).min_h(0.0).child(grid),
+                editor(s),
+            ]
         })
         .child(
             row()

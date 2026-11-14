@@ -92,7 +92,7 @@ mod preferences {
     }
 }
 
-use super::{State, button, caption, ink, instrument, media::pad_id, transport};
+use super::{State, button, caption, header_pill, ink, instrument, media::pad_id, transport};
 use brownnote_native::{
     engine::Command,
     instrument::INSTRUMENT,
@@ -302,7 +302,7 @@ impl Midi {
         self.inner.borrow()
     }
 
-    fn inner_mut(&self) -> std::cell::RefMut<'_, MidiInner> {
+    pub(super) fn inner_mut(&self) -> std::cell::RefMut<'_, MidiInner> {
         self.inner.borrow_mut()
     }
 }
@@ -696,7 +696,7 @@ pub fn header<S: 'static>(_s: &State, midi: &Midi) -> El {
         "MIDI INPUT".to_string()
     };
     let toggle = midi.clone();
-    button(
+    header_pill(
         "midi-toggle",
         if inner.visible {
             "BACK TO PADS"

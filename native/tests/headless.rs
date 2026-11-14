@@ -326,4 +326,116 @@ mod tests {
         }
         assert_eq!(tree["warnings"].as_array().unwrap().len(), 0);
     }
+
+    /// Header controls every state mounts.
+    const HEADER: &[&str] = &[
+        "home",
+        "voice-count",
+        "choke",
+        "panic",
+        "output-toggle",
+        "midi-toggle",
+        "edit-toggle",
+        "instrument-toggle",
+        "live-toggle",
+    ];
+    /// Interactive second-row controls every state mounts.
+    const TRANSPORT: &[&str] = &[
+        "transport-record",
+        "transport-play",
+        "transport-loop",
+        "transport-mode",
+        "transport-count-in",
+        "projects-toggle",
+        "export-toggle",
+    ];
+
+    fn rect_of(tree: &Value, key: &str) -> [f64; 4] {
+        let element = tree["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|element| element["key"] == key)
+            .unwrap_or_else(|| panic!("missing {key}"));
+        std::array::from_fn(|index| element["rect"][index].as_f64().unwrap())
+    }
+
+    fn assert_inside(tree: &Value, keys: &[&str], (width, height): (f64, f64), case: &str) {
+        for key in keys {
+            let [x, y, w, h] = rect_of(tree, key);
+            assert!(
+                x >= 0.0
+                    && y >= 0.0
+                    && w > 0.0
+                    && h > 0.0
+                    && x + w <= width + 0.1
+                    && y + h <= height + 0.1,
+                "{case}: {key} outside {width}x{height}: {x} {y} {w} {h}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_minimum_and_default_window_fit_every_header_transport_and_panel_control() {
+        // Every state the header or the strip can mount, at both window sizes,
+        // with the macOS titlebar inset applied.
+        let cases: &[(&str, &str, Option<&str>)] = &[
+            ("midi-connected", "pads-midi", None),
+            ("output-failed", "pads-failed", None),
+            ("transport-armed", "pads-armed", None),
+            ("output-selection", "output-panel", Some("output-panel")),
+            ("midi", "midi-panel", Some("midi-panel")),
+            ("edit-selected", "edit-panel", Some("edit-panel")),
+            (
+                "instrument-panel",
+                "instrument-panel",
+                Some("instrument-panel"),
+            ),
+            ("live-panel", "live-panel", Some("live-panel")),
+            ("import-path", "import-panel", Some("import-panel")),
+            ("project-path", "projects-panel", Some("projects-panel")),
+            ("export-panel", "export-panel", Some("export-panel")),
+        ];
+        for (size, width, height) in [("820x600", 820.0, 600.0), ("1120x800", 1120.0, 800.0)] {
+            for (scene, label, panel) in cases {
+                let name = format!("fit-{size}-{label}");
+                let mut args = vec!["--size", size, "--scene", scene, "--chrome"];
+                if *scene == "output-failed" {
+                    args.extend(["--samples", "/nonexistent"]);
+                }
+                let tree = run(&name, &args);
+                let case = format!("{size} {label}");
+                assert_inside(&tree, HEADER, (width, height), &case);
+                if *scene == "output-failed" {
+                    assert_inside(&tree, &["retry-audio"], (width, height), &case);
+                }
+                assert_inside(&tree, TRANSPORT, (width, height), &case);
+                if *scene == "transport-armed" {
+                    assert_inside(&tree, &["transport-cancel"], (width, height), &case);
+                }
+                match panel {
+                    Some(panel) => assert_inside(&tree, &[panel], (width, height), &case),
+                    None => {
+                        for index in 0..16 {
+                            let [x, y, w, h] = rect_of(&tree, &format!("pad-{index}"));
+                            assert!(
+                                w >= 140.0 && h >= 60.0,
+                                "{case}: pad-{index} collapsed to {w}x{h}"
+                            );
+                            assert!(
+                                x + w <= width + 0.1 && y + h <= height + 0.1,
+                                "{case}: pad-{index} outside the window"
+                            );
+                        }
+                    }
+                }
+                assert!(
+                    tree["warnings"].as_array().unwrap().is_empty(),
+                    "{case}: {}",
+                    tree["warnings"]
+                );
+            }
+        }
+    }
 }
