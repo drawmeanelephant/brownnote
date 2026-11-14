@@ -166,6 +166,8 @@ fn two_part_fixture() -> TwoPartFixture {
                     None,
                     Some(FixtureEdit {
                         effective_start_nanos: ORIGIN + 3_000_000_000,
+                        original_velocity: None,
+                        recording_tempo_milli_bpm: None,
                         detail: "quantize to sixteenth".into(),
                     }),
                 ),
@@ -2780,6 +2782,216 @@ fn live_take_mute_and_replacement_are_honoured_in_export() {
     assert!(
         frames[2_400..].iter().all(|frame| *frame == [0.0, 0.0]),
         "no muted or replaced take may sound after the audible clips end"
+    );
+    fs::remove_dir_all(base).unwrap();
+}
+
+/// Export the real `live_fixture` pipeline (Store-free, disk-backed media) into
+/// a temporary bundle at `tempo_milli_bpm` and return the manifest plus its
+/// cleanup root. Event IDs stay the fixture's real performance IDs.
+fn export_live_fixture(
+    fixture: &LiveFixture,
+    tempo_milli_bpm: u32,
+    label: &str,
+) -> (PathBuf, Manifest) {
+    let base = temporary(label);
+    let source_root = base.join("source");
+    for asset in &fixture.document.assets {
+        let path = source_root.join(asset.reference.id.relative_path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let bytes = fixture.media.get(&asset.reference.id).unwrap();
+        fs::write(&path, bytes).unwrap();
+    }
+    let destination = base.join("bundle");
+    let mut request = request(&source_root, &destination);
+    request.timing.tempo_milli_bpm = tempo_milli_bpm;
+    let receipt = adapter::write_project_bundle(
+        &mut SystemWriter,
+        &request,
+        &fixture.document,
+        &fixture.takes,
+        &fixture.edits,
+        &fixture.frozen,
+    )
+    .unwrap();
+    (base, receipt.manifest)
+}
+
+fn conversion_details_for(manifest: &Manifest, event: EventId) -> Vec<&str> {
+    manifest
+        .losses
+        .iter()
+        .filter_map(|loss| match loss {
+            LossRecord::ConversionLoss { event: id, detail } if *id == event => {
+                Some(detail.as_str())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// #237: an untouched performance must carry no edit provenance at all. The
+/// legitimate conversion records (baked hit audio, 960-PPQ rounding) stay.
+#[test]
+fn untouched_notes_and_hits_emit_no_edit_velocity_or_tempo_losses() {
+    let mut fixture = live_fixture();
+    // The base fixture quantizes the whole take; turn it off so the second pad
+    // hit is genuinely untouched (only the first stays nudged/velocity-edited).
+    fixture
+        .edits
+        .toggle_quantization(&fixture.takes, fixture.ids[1].take)
+        .unwrap();
+    let (base, manifest) = export_live_fixture(&fixture, 120_000, "untouched-no-edit-losses");
+    // Untouched exported events: the second pad hit and the five instrument
+    // notes. (The first hit is nudged/quantized/velocity-edited, the third is
+    // deleted, the fourth is loop-hidden.)
+    let untouched = [
+        fixture.ids[1],
+        fixture.ids[4],
+        fixture.ids[5],
+        fixture.ids[6],
+        fixture.ids[7],
+        fixture.ids[8],
+    ];
+    for id in untouched {
+        let event = neutral_id(id);
+        let details = conversion_details_for(&manifest, event);
+        for detail in &details {
+            assert!(
+                !detail.contains("edit moved onset"),
+                "untouched {event:?} claimed an onset move: {detail}"
+            );
+            assert!(
+                !detail.contains("edit changed velocity"),
+                "untouched {event:?} claimed a velocity edit: {detail}"
+            );
+            assert!(
+                !detail.contains("tempo scaling"),
+                "untouched {event:?} claimed a tempo edit: {detail}"
+            );
+        }
+    }
+    // Legitimate non-edit conversion records survive: the baked per-hit audio
+    // render record is still attached to untouched pad and instrument events.
+    for id in [fixture.ids[1], fixture.ids[4]] {
+        let event = neutral_id(id);
+        assert!(
+            conversion_details_for(&manifest, event)
+                .iter()
+                .any(|d| d.contains("float32 stereo hit")),
+            "untouched {event:?} lost its baked-audio record"
+        );
+    }
+    fs::remove_dir_all(base).unwrap();
+}
+
+/// #237: a genuine onset move keeps the precise from/to wording, and a direct
+/// synthetic `FixtureEdit` only claims a move when the onsets differ.
+#[test]
+fn onset_edits_emit_precise_edit_moved_onset_losses() {
+    let fixture = live_fixture();
+    let (base, manifest) = export_live_fixture(&fixture, 120_000, "onset-edit-loss");
+    let edited = neutral_id(fixture.ids[0]);
+    let effective_abs = ORIGIN + manifest.event(edited).unwrap().start_nanos;
+    let original_abs = ORIGIN + 11_000_000; // specs[0] captured onset
+    assert_ne!(
+        original_abs, effective_abs,
+        "fixture must really move the onset"
+    );
+    let prefix = format!("edit moved onset from {original_abs} to {effective_abs} ns (");
+    assert!(
+        conversion_details_for(&manifest, edited)
+            .iter()
+            .any(|d| d.starts_with(&prefix)),
+        "expected the precise onset record {prefix:?}, got {:?}",
+        conversion_details_for(&manifest, edited)
+    );
+    fs::remove_dir_all(base).unwrap();
+
+    // Direct build_manifest callers: effective == start means no onset claim.
+    let fixture = two_part_fixture();
+    let mut export = fixture.export.clone();
+    let edited_event = export.takes[0]
+        .events
+        .iter_mut()
+        .find(|event| event.id == fixture.edited)
+        .unwrap();
+    let start = edited_event.start_nanos;
+    edited_event.edit = Some(FixtureEdit {
+        effective_start_nanos: start,
+        original_velocity: None,
+        recording_tempo_milli_bpm: None,
+        detail: "no-op edit".into(),
+    });
+    let req = request(Path::new(SOURCE_ROOT), Path::new("/out/no-op-edit"));
+    let manifest = bundle::build_manifest(&req, &export).unwrap();
+    assert!(
+        !conversion_details_for(&manifest, fixture.edited)
+            .iter()
+            .any(|d| d.contains("edit moved onset")),
+        "an edit that did not move the onset must not claim it did"
+    );
+}
+
+/// #237: a velocity-only edit describes the velocity change and never claims
+/// the onset moved.
+#[test]
+fn velocity_only_edits_report_velocity_change_without_onset_claim() {
+    let mut fixture = live_fixture();
+    fixture
+        .edits
+        .toggle_quantization(&fixture.takes, fixture.ids[1].take)
+        .unwrap();
+    let untouched = fixture.ids[1];
+    fixture
+        .edits
+        .set_velocity(&fixture.takes, untouched, Velocity::try_from(64).unwrap())
+        .unwrap();
+    let (base, manifest) = export_live_fixture(&fixture, 120_000, "velocity-only-loss");
+    let event = neutral_id(untouched);
+    let details = conversion_details_for(&manifest, event);
+    assert!(
+        details
+            .iter()
+            .any(|d| d.starts_with("edit changed velocity from 100 to 64 at ")),
+        "expected a velocity-change record, got {details:?}"
+    );
+    assert!(
+        !details.iter().any(|d| d.contains("edit moved onset")),
+        "a velocity-only edit claimed an onset move: {details:?}"
+    );
+    fs::remove_dir_all(base).unwrap();
+}
+
+/// #237: a tempo-only difference reports the scaling and preserves the
+/// recording-tempo provenance substring without claiming an edit move.
+#[test]
+fn tempo_only_differences_report_scaling_without_onset_claim() {
+    let mut fixture = live_fixture();
+    fixture
+        .edits
+        .toggle_quantization(&fixture.takes, fixture.ids[1].take)
+        .unwrap();
+    fixture
+        .takes
+        .set_tempo(Tempo::try_from(60_000).unwrap())
+        .unwrap();
+    let (base, manifest) = export_live_fixture(&fixture, 60_000, "tempo-only-loss");
+    let event = neutral_id(fixture.ids[1]);
+    let details = conversion_details_for(&manifest, event);
+    assert!(
+        details
+            .iter()
+            .any(|d| d.contains("original 121000000 ns at 120000 milli-BPM")),
+        "the recording-tempo provenance must survive: {details:?}"
+    );
+    assert!(
+        details.iter().any(|d| d.contains("tempo scaling")),
+        "expected a tempo-scaling record, got {details:?}"
+    );
+    assert!(
+        !details.iter().any(|d| d.contains("edit moved onset")),
+        "a tempo-only difference claimed an onset move: {details:?}"
     );
     fs::remove_dir_all(base).unwrap();
 }

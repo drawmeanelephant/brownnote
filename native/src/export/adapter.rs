@@ -264,27 +264,40 @@ pub fn prepare(
                 .ok_or(AdapterError::Overflow)
         };
         let edit = edits.event_edit(note.id);
+        // Only a genuine change gets an edit record. Recording and export tempo
+        // are compared explicitly so a tempo-scaled take is reported as tempo
+        // scaling, never as an edit that moved the onset.
+        let original_velocity = original.on().velocity.value();
+        let effective_velocity = note.velocity.value();
+        let recording_tempo = take.timing().recording_tempo().milli_bpm();
+        let export_tempo = takes.tempo().milli_bpm();
+        let onset_moved = start != original_start;
+        let velocity_changed = effective_velocity != original_velocity;
+        let tempo_changed = recording_tempo != export_tempo;
+        let effective_start_nanos = absolute(start)?;
         let event = FixtureEvent {
             id,
             target,
             start_nanos: absolute(original_start)?,
             duration_nanos: end.checked_sub(start).ok_or(AdapterError::Overflow)?,
-            velocity: Some(note.velocity.value()),
+            velocity: Some(effective_velocity),
             pitch: Some(note.key.pitch.value()),
             channel: Some(note.key.channel.value()),
             asset: None,
             variant_of: None,
-            edit: Some(FixtureEdit {
-                effective_start_nanos: absolute(start)?,
+            edit: (onset_moved || velocity_changed || tempo_changed).then(|| FixtureEdit {
+                effective_start_nanos,
+                original_velocity: velocity_changed.then_some(original_velocity),
+                recording_tempo_milli_bpm: tempo_changed.then_some(recording_tempo),
                 detail: format!(
                     "effective view: original {} ns at {} milli-BPM; quantization {:?}, \
                      nudge {} ns, velocity {} -> {}",
                     original.on().original_time.nanos(),
-                    take.timing().recording_tempo().milli_bpm(),
+                    recording_tempo,
                     edits.quantization(note.id.take),
                     edit.nudge_nanos,
-                    original.on().velocity.value(),
-                    note.velocity.value(),
+                    original_velocity,
+                    effective_velocity,
                 ),
             }),
         };

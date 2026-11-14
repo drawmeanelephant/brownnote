@@ -56,6 +56,34 @@ Real part IDs hash the target's kind and stable identity, not its position
 among audible parts. Muting/deleting another part does not renumber them.
 Any truncated-hash collision fails duplicate-part validation, never merges.
 
+## Edit and tempo provenance
+
+`manifest.json` names only what actually changed. An untouched event (its
+effective onset equals the captured onset, its velocity is unchanged, and the
+take was recorded at the export tempo) carries no edit record at all, so it
+gets no onset, velocity, or tempo `ConversionLoss` entry. Legitimate non-edit
+conversion records still appear: the baked per-hit audio render, non-integral
+960-PPQ tick rounding, and non-FIFO gate isolation.
+
+When something did change, each cause gets its own accurate record:
+
+- A moved onset (`nudge_nanos`/quantization, or a direct caller whose
+  `effective_start_nanos != start_nanos`) writes
+  `edit moved onset from <start_nanos> to <effective_start_nanos> ns (<detail>)`.
+- A velocity-only edit (`effective_start_nanos == start_nanos`,
+  `velocity != original_velocity`) writes
+  `edit changed velocity from <original> to <edited> at <start_nanos> ns (<detail>)`
+  and never claims the onset moved.
+- A take recorded at a different tempo than the export
+  (`recording_tempo != export_tempo`, onset and velocity unchanged) writes
+  `tempo scaling from <recording> milli-BPM recording to <export> milli-BPM export (<detail>)`,
+  whose detail preserves the `original <N> ns at <M> milli-BPM` recording
+  provenance, and never claims an edit moved the onset.
+
+An edit that changed several things reports each of them separately. Downstream
+adapters copy these records verbatim into `adapter-report.json`, so a converted
+bundle inherits the same classification.
+
 ## Live takes
 
 A project with a live CLAP instrument exports each retained take's audio as one
