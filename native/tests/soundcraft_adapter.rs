@@ -286,6 +286,159 @@ fn cli_invocation_keeps_overlaps_notes_tempo_and_relocatable_media() -> TestResu
     Ok(())
 }
 
+/// #233: every imported audio track and its clip carry a deterministic,
+/// readable pad/take/hit identity, and the report joins event, track, clip
+/// and that name without renaming the content-addressed media.
+#[test]
+fn imported_audio_tracks_and_clips_are_named_by_pad_take_and_hit() -> TestResult {
+    let fixture = Fixture::new()?;
+    let report = convert(&fixture.request)?;
+    assert_eq!(report.audio.len(), 2);
+    assert_eq!(
+        report
+            .audio
+            .iter()
+            .map(|clip| clip.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Pad 03 · Take 1 · Hit 1", "Pad 03 · Take 1 · Hit 2"]
+    );
+    assert_eq!(report.midi.len(), 1);
+    assert_eq!(report.midi[0].name, "Part 2 · MIDI · Editable, muted");
+    let calls = fixture.calls()?;
+    for clip in &report.audio {
+        let renames: Vec<_> = calls
+            .iter()
+            .filter(|call| {
+                call["method"] == "track.rename" && call["params"]["track"] == clip.track
+            })
+            .collect();
+        assert_eq!(renames.len(), 1, "one track rename per imported track");
+        assert_eq!(renames[0]["params"]["name"], clip.name);
+        let clip_renames: Vec<_> = calls
+            .iter()
+            .filter(|call| call["method"] == "clip.rename" && call["params"]["clip"] == clip.clip)
+            .collect();
+        assert_eq!(clip_renames.len(), 1, "one clip rename per imported clip");
+        assert_eq!(clip_renames[0]["params"]["name"], clip.name);
+        assert_eq!(clip.length, 48_000);
+    }
+    // The rename lands after its import, so a later import can never inherit
+    // the previous identity.
+    let methods: Vec<_> = calls
+        .iter()
+        .filter_map(|call| call["method"].as_str())
+        .collect();
+    let imports: Vec<_> = methods
+        .iter()
+        .enumerate()
+        .filter(|(_, method)| **method == "file.import_audio")
+        .map(|(index, _)| index)
+        .collect();
+    let renames: Vec<_> = methods
+        .iter()
+        .enumerate()
+        .filter(|(_, method)| **method == "track.rename")
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(imports.len(), 2);
+    assert_eq!(renames.len(), 2);
+    assert!(renames[0] > imports[0] && renames[0] < imports[1]);
+    assert!(renames[1] > imports[1]);
+    // adapter-report.json exposes the same join an editor needs.
+    let disk: Value = serde_json::from_slice(&fs::read(
+        fixture.request.output.join("adapter-report.json"),
+    )?)?;
+    for (index, clip) in report.audio.iter().enumerate() {
+        assert_eq!(
+            disk["audio"][index]["event"],
+            serde_json::to_value(clip.event)?
+        );
+        assert_eq!(disk["audio"][index]["track"], clip.track);
+        assert_eq!(disk["audio"][index]["clip"], clip.clip);
+        assert_eq!(disk["audio"][index]["name"], clip.name);
+    }
+    // Media stays content-addressed in both directories.
+    let asset = fixture.manifest.assets[0].id;
+    assert!(fixture.request.output.join(asset.relative_path()).is_file());
+    assert!(
+        fixture
+            .request
+            .output
+            .join("Audio Files")
+            .join(format!("{asset}.wav"))
+            .is_file()
+    );
+    let audio_files: BTreeSet<_> = fs::read_dir(fixture.request.output.join("Audio Files"))?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<std::io::Result<_>>()?;
+    assert_eq!(
+        audio_files,
+        BTreeSet::from([std::ffi::OsString::from(format!("{asset}.wav"))])
+    );
+    Ok(())
+}
+
+/// Collision-free and bounded across overlapping hits on one pad and across
+/// takes, which is the shape #233 reproduced with 128 hits in the real app.
+#[test]
+fn overlapping_hits_across_pads_and_takes_get_unique_bounded_names() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    let asset = fixture.manifest.assets[0].id;
+    fixture.manifest.parts = vec![
+        PartEntry {
+            id: PartId(1),
+            kind: PartKind::PadClips { pad: 1 },
+        },
+        PartEntry {
+            id: PartId(2),
+            kind: PartKind::PadClips { pad: 2 },
+        },
+    ];
+    fixture.manifest.events.clear();
+    fixture.manifest.losses.clear();
+    for take in [1u128, 99] {
+        for hit in 0..12u64 {
+            let pad = u8::try_from(hit % 2).unwrap() + 1;
+            fixture.manifest.events.push(EventEntry {
+                id: EventId {
+                    take,
+                    sequence: hit,
+                },
+                part: PartId(u64::from(pad)),
+                start_nanos: hit * 20_000_000,
+                duration_nanos: 1_000_000_000,
+                pad: Some(pad),
+                pitch: None,
+                channel: None,
+                velocity: Some(100),
+                asset: Some(asset),
+                source: Some(asset),
+                variant_of: None,
+            });
+        }
+    }
+    fixture.save()?;
+    let report = convert(&fixture.request)?;
+    assert_eq!(report.audio.len(), 24);
+    assert_eq!(report.audio[0].name, "Pad 01 · Take 1 · Hit 1");
+    assert_eq!(report.audio[1].name, "Pad 02 · Take 1 · Hit 2");
+    assert_eq!(report.audio[12].name, "Pad 01 · Take 2 · Hit 1");
+    let names: BTreeSet<_> = report.audio.iter().map(|clip| &clip.name).collect();
+    assert_eq!(names.len(), report.audio.len(), "names must be unique");
+    for clip in &report.audio {
+        assert!(
+            clip.name.chars().count() <= 64,
+            "{} is longer than the target allows",
+            clip.name
+        );
+        assert!(clip.name.contains(" · Take ") && clip.name.contains(" · Hit "));
+        assert_eq!(clip.length, 48_000);
+    }
+    let tracks: BTreeSet<_> = report.audio.iter().map(|clip| clip.track).collect();
+    assert_eq!(tracks.len(), report.audio.len(), "hits stay on own tracks");
+    Ok(())
+}
+
 #[test]
 fn malformed_manifest_notes_and_media_fail_before_executing_anything() -> TestResult {
     for bad in ["json", "version", "pitch", "duration", "media", "missing"] {
@@ -415,6 +568,102 @@ fn reopen_inspection_rejects_changed_clips_notes_media_or_mutes() -> TestResult 
         assert!(convert(&fixture.request).is_err(), "{corrupt}");
         fixture.no_output();
     }
+    Ok(())
+}
+
+#[test]
+fn reopen_inspection_rejects_changed_track_or_clip_names() -> TestResult {
+    for corrupt in ["track_name", "clip_name", "midi_name"] {
+        let fixture = Fixture::new()?;
+        fixture.config(json!({"corrupt": corrupt}))?;
+        assert!(convert(&fixture.request).is_err(), "{corrupt}");
+        fixture.no_output();
+    }
+    Ok(())
+}
+
+/// The fake target enforces the same naming contract as the released app:
+/// 64 Unicode scalar values, trimmed, and duplicate track names rejected.
+#[test]
+fn fake_target_truncates_names_and_rejects_duplicate_track_names() -> TestResult {
+    let fixture = Fixture::new()?;
+    let wav = fixture
+        .request
+        .bundle
+        .join(fixture.manifest.assets[0].path.clone());
+    let (mut child, port) = start_pinned_app(&fixture.request.app, &fixture.root.join("profile"))?;
+    let cli = &fixture.request.cli;
+    let result = (|| -> TestResult {
+        control_call(
+            cli,
+            port,
+            "session.new",
+            json!({"name": "naming", "sample_rate": 48_000}),
+        )?;
+        let mut tracks = Vec::new();
+        for _ in 0..2 {
+            let imported = control_call(
+                cli,
+                port,
+                "file.import_audio",
+                json!({"path": wav, "at": 0, "new_tracks": true}),
+            )?;
+            tracks.push(
+                imported["imported"][0]["track"]
+                    .as_u64()
+                    .ok_or("no track")?,
+            );
+        }
+        control_call(
+            cli,
+            port,
+            "track.rename",
+            json!({"track": tracks[0], "name": "Pad 01 · Take 1 · Hit 1"}),
+        )?;
+        let duplicate = control_call(
+            cli,
+            port,
+            "track.rename",
+            json!({"track": tracks[1], "name": "Pad 01 · Take 1 · Hit 1"}),
+        )
+        .err()
+        .ok_or("fake target accepted a duplicate track name")?;
+        assert!(
+            duplicate.to_string().contains("already exists"),
+            "{duplicate}"
+        );
+        let long = "Pad 01 · a deliberately long part label ".repeat(4);
+        control_call(
+            cli,
+            port,
+            "track.rename",
+            json!({"track": tracks[1], "name": format!("  {long}  ")}),
+        )?;
+        let state = control_call(cli, port, "session.inspect", json!({"detail": "full"}))?;
+        let name = state["tracks"][1]["name"].as_str().ok_or("no track name")?;
+        assert_eq!(name, long.chars().take(64).collect::<String>());
+        let clip = state["tracks"][1]["clips"][0]["id"]
+            .as_u64()
+            .ok_or("no clip")?;
+        control_call(
+            cli,
+            port,
+            "clip.rename",
+            json!({"clip": clip, "name": "Pad 01 · Take 1 · Hit 1 (clip)"}),
+        )?;
+        let state = control_call(cli, port, "session.inspect", json!({"detail": "full"}))?;
+        assert_eq!(
+            state["tracks"][1]["clips"][0]["name"],
+            "Pad 01 · Take 1 · Hit 1 (clip)"
+        );
+        assert_eq!(state["tracks"][0]["name"], "Pad 01 · Take 1 · Hit 1");
+        Ok(())
+    })();
+    let quit = control_call(cli, port, "app.quit", json!({}));
+    let status = child.wait()?;
+    result?;
+    quit?;
+    assert!(status.success());
     Ok(())
 }
 
@@ -1963,5 +2212,150 @@ fn pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio() -> Tes
     });
     fs::write(&evidence, serde_json::to_vec_pretty(&payload)?)?;
     println!("Actual-app live-take evidence: {}", evidence.display());
+    Ok(())
+}
+
+/// #233: assigned track and clip identities survive save, quit, a fresh
+/// process, reopen and a source-free relocation in the actual pinned app.
+#[test]
+#[ignore = "requires explicit BROWNNOTE_SOUNDCRAFT_APP/CLI; launches the actual pinned GUI"]
+fn pinned_app_track_and_clip_names_survive_save_quit_reopen() -> TestResult {
+    if std::env::var_os("BROWNNOTE_SOUNDCRAFT_RUN_PINNED").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return Err("set BROWNNOTE_SOUNDCRAFT_RUN_PINNED=1 explicitly".into());
+    }
+    let app = PathBuf::from(std::env::var_os("BROWNNOTE_SOUNDCRAFT_APP").ok_or("set APP")?);
+    let cli = PathBuf::from(std::env::var_os("BROWNNOTE_SOUNDCRAFT_CLI").ok_or("set CLI")?);
+    let pin: Value = serde_json::from_str(PIN)?;
+    let app_hash = Hash256::of(&fs::read(&app)?).to_string();
+    let cli_hash = Hash256::of(&fs::read(&cli)?).to_string();
+    assert_eq!(pin["binary_sha256"]["SoundCraft"], app_hash);
+    assert_eq!(pin["binary_sha256"]["soundcraft-cli"], cli_hash);
+
+    let fixture = Fixture::new()?;
+    let mut request = fixture.request.clone();
+    request.app = app.clone();
+    request.cli = cli.clone();
+    request.timeout = Duration::from_secs(45);
+    request.bundle = writer_bundle(&fixture.root)?;
+    let report = convert(&request)?;
+    assert_eq!((report.audio.len(), report.midi.len()), (4, 1));
+    let names: BTreeSet<_> = report.audio.iter().map(|clip| clip.name.clone()).collect();
+    assert_eq!(names.len(), report.audio.len());
+    for clip in &report.audio {
+        assert!(
+            clip.name.chars().count() <= 64,
+            "{} exceeds the target limit",
+            clip.name
+        );
+        assert!(clip.name.contains(" · Take ") && clip.name.contains(" · Hit "));
+    }
+    assert!(
+        report
+            .audio
+            .iter()
+            .any(|clip| clip.name.starts_with("Pad 03 · Take 1 · Hit "))
+    );
+    let expected_tracks: BTreeMap<u64, String> = report
+        .audio
+        .iter()
+        .map(|clip| (clip.track, clip.name.clone()))
+        .chain([(report.midi[0].track, report.midi[0].name.clone())])
+        .collect();
+    let expected_clips: BTreeMap<u64, String> = report
+        .audio
+        .iter()
+        .map(|clip| (clip.clip, clip.name.clone()))
+        .collect();
+
+    let reopen_and_inspect = |session: &Path, profile: &Path| -> Result<Value, Box<dyn Error>> {
+        let (mut child, port) = start_pinned_app(&app, profile)?;
+        let result = (|| -> Result<Value, Box<dyn Error>> {
+            let opened = control_call(&cli, port, "session.open", json!({"path": session}))?;
+            assert_eq!(opened["missing"], json!([]));
+            control_call(&cli, port, "session.inspect", json!({"detail": "full"}))
+        })();
+        let quit = control_call(&cli, port, "app.quit", json!({}));
+        let status = child.wait()?;
+        let state = result?;
+        quit?;
+        assert!(status.success(), "pinned app exited unsuccessfully");
+        Ok(state)
+    };
+    let assert_names = |state: &Value| -> TestResult {
+        let tracks = state["tracks"]
+            .as_array()
+            .ok_or("inspection missing tracks")?;
+        assert_eq!(tracks.len(), expected_tracks.len());
+        for (id, name) in &expected_tracks {
+            let track = tracks
+                .iter()
+                .find(|track| track["id"].as_u64() == Some(*id))
+                .ok_or("missing reopened track")?;
+            assert_eq!(track["name"].as_str(), Some(name.as_str()));
+        }
+        for (id, name) in &expected_clips {
+            let clip = tracks
+                .iter()
+                .flat_map(|track| track["clips"].as_array().into_iter().flatten())
+                .find(|clip| clip["id"].as_u64() == Some(*id))
+                .ok_or("missing reopened clip")?;
+            assert_eq!(clip["name"].as_str(), Some(name.as_str()));
+        }
+        Ok(())
+    };
+
+    let state = reopen_and_inspect(
+        &request.output.join("session.scraft"),
+        &fixture.root.join("names profile"),
+    )?;
+    assert_names(&state)?;
+
+    // Move the entire output, remove the original output and the bundle, then
+    // prove the identities are still the saved session's, not import defaults.
+    let relocated = fixture.root.join("relocated names");
+    fs::rename(&request.output, &relocated)?;
+    fs::remove_dir_all(&request.bundle)?;
+    let state = reopen_and_inspect(
+        &relocated.join("session.scraft"),
+        &fixture.root.join("relocated profile"),
+    )?;
+    assert_names(&state)?;
+    assert!(
+        state["sources"]
+            .as_array()
+            .is_some_and(|sources| !sources.is_empty()
+                && sources.iter().all(|source| source["loaded"] == true
+                    && source["path"]
+                        .as_str()
+                        .is_some_and(|path| path.starts_with("Audio Files/"))))
+    );
+
+    let evidence = std::env::var_os("BROWNNOTE_SOUNDCRAFT_NAMES_EVIDENCE")
+        .map_or_else(|| fixture.root.join("track-names.json"), PathBuf::from);
+    let payload = json!({
+        "check": "imported SoundCraft track and clip identities persist across save/quit/reopen/relocation",
+        "date": "2026-11-14",
+        "pin": {"tag": pin["tag"], "commit": COMMIT, "version": VERSION},
+        "binaries": {
+            "SoundCraft": {"sha256": app_hash, "matches_pin": true},
+            "soundcraft-cli": {"sha256": cli_hash, "matches_pin": true},
+        },
+        "launch": ["SoundCraft", "--no-audio", "--control", "0"],
+        "audio": report.audio,
+        "midi": report.midi,
+        "assertions": [
+            "every imported track and clip name was read back from session.inspect after a fresh relaunch",
+            "the same names survived copying the whole output and removing the original output and bundle",
+            "no name exceeds 64 Unicode scalar values and every audio track name is unique",
+        ],
+        "app_exit": 0,
+        "app_exit_source": "each relaunch announced its control port, answered session.open/session.inspect \
+                            and exited successfully after app.quit",
+        "listening": "none: no audio device was opened",
+    });
+    fs::write(&evidence, serde_json::to_vec_pretty(&payload)?)?;
+    println!("Actual-app track-name evidence: {}", evidence.display());
     Ok(())
 }

@@ -4,7 +4,7 @@
 mod process;
 
 use crate::export::manifest::{
-    AssetId, AudioRole, EventId, LossRecord, MANIFEST_NAME, Manifest, PartId, PartKind,
+    AssetId, AudioRole, EventId, LossRecord, MANIFEST_NAME, Manifest, PartEntry, PartId, PartKind,
 };
 use crate::export::midi;
 use serde::{Deserialize, Serialize};
@@ -91,6 +91,9 @@ pub struct AudioClip {
     pub event: EventId,
     pub track: u64,
     pub clip: u64,
+    /// Deterministic pad/part, take and hit identity assigned with the target's
+    /// public `track.rename`/`clip.rename`, at most 64 Unicode scalar values.
+    pub name: String,
     pub start: i64,
     pub length: i64,
 }
@@ -100,6 +103,7 @@ pub struct MidiPart {
     pub part: PartId,
     pub track: u64,
     pub clip: u64,
+    pub name: String,
     pub notes: Vec<Note>,
 }
 
@@ -474,6 +478,63 @@ fn master_db(gain: f32) -> f64 {
     }
 }
 
+/// `track.rename` and `clip.rename` trim and truncate names to 64 Unicode
+/// scalar values, so every identity is bounded here before it is sent.
+const MAX_NAME_CHARS: usize = 64;
+
+/// A readable identity for one imported event. Pad/part text is variable, so
+/// it is truncated before the ` · Take <k> · Hit <n>` suffix that makes the
+/// name unique: the suffix is never cut and long labels cannot collide.
+fn identity_name(prefix: &str, take: u64, hit: u64) -> Result<String> {
+    let suffix = format!(" · Take {take} · Hit {hit}");
+    let room = MAX_NAME_CHARS
+        .checked_sub(suffix.chars().count())
+        .ok_or_else(|| invalid("identity suffix exceeds the target's name limit"))?;
+    Ok(format!(
+        "{}{suffix}",
+        prefix.chars().take(room).collect::<String>()
+    ))
+}
+
+fn bounded_name(text: &str) -> String {
+    text.chars().take(MAX_NAME_CHARS).collect()
+}
+
+fn part_label(part: &PartEntry) -> String {
+    match &part.kind {
+        PartKind::PadClips { pad } => format!("Pad {pad:02}"),
+        PartKind::InstrumentNotes { .. } => format!("Part {} note", part.id.0),
+        PartKind::SampleClips { .. } => format!("Part {} take audio", part.id.0),
+        PartKind::LiveInstrumentNotes { .. } => format!("Part {} live note", part.id.0),
+    }
+}
+
+/// Names for the whole manifest. Takes are numbered by first appearance and
+/// hits by manifest order, so the suffix stays unique even when a bundle
+/// reuses a 128-bit take identity or the same pad appears in separate parts.
+fn identity_names(manifest: &Manifest) -> Result<BTreeMap<EventId, String>> {
+    let mut take_ordinals: BTreeMap<u128, u64> = BTreeMap::new();
+    let mut hit_count: BTreeMap<u128, u64> = BTreeMap::new();
+    let mut names = BTreeMap::new();
+    for event in &manifest.events {
+        let take = match take_ordinals.get(&event.id.take) {
+            Some(ordinal) => *ordinal,
+            None => {
+                let ordinal = take_ordinals.len() as u64 + 1;
+                take_ordinals.insert(event.id.take, ordinal);
+                ordinal
+            }
+        };
+        let hit = hit_count.entry(event.id.take).or_insert(0);
+        *hit += 1;
+        let part = manifest
+            .part(event.part)
+            .ok_or_else(|| invalid("missing part"))?;
+        names.insert(event.id, identity_name(&part_label(part), take, *hit)?);
+    }
+    Ok(names)
+}
+
 fn build(
     app: &mut process::App,
     stage: &Path,
@@ -482,6 +543,7 @@ fn build(
     report: &mut Report,
 ) -> Result<()> {
     let manifest = &input.manifest;
+    let names = identity_names(manifest)?;
     app.call(
         "session.new",
         json!({"name": "Brownnote handoff", "sample_rate": RATE}),
@@ -532,11 +594,18 @@ fn build(
                     json!({"tracks": [track], "db": master_db(manifest.master_gain)}),
                 )?;
             }
+            let name = names
+                .get(&event.id)
+                .ok_or_else(|| invalid("missing imported event identity"))?
+                .clone();
+            app.call("track.rename", json!({"track": track, "name": name}))?;
+            app.call("clip.rename", json!({"clip": clip, "name": name}))?;
             aligned_with_bundle(manifest, event.id, asset, start)?;
             report.audio.push(AudioClip {
                 event: event.id,
                 track,
                 clip,
+                name,
                 start,
                 length,
             });
@@ -649,9 +718,10 @@ fn build(
         .div_ceil(u128::from(manifest.timing.tempo_milli_bpm) * u128::from(midi::PPQ));
         let samples =
             i64::try_from(samples + 1).map_err(|_| invalid("MIDI clip length overflows"))?;
+        let midi_name = bounded_name(&format!("Part {} · MIDI · Editable, muted", part.id.0));
         let reply = app.call(
             "track.new",
-            json!({"kind": "instrument", "name": format!("Part {} (editable, muted)", part.id.0)}),
+            json!({"kind": "instrument", "name": midi_name}),
         )?;
         let track = number(&reply["tracks"][0], "MIDI track")?;
         app.call("mix.mute", json!({"tracks": [track], "value": true}))?;
@@ -685,6 +755,7 @@ fn build(
             part: part.id,
             track,
             clip,
+            name: midi_name,
             notes,
         });
     }
@@ -745,15 +816,21 @@ fn verify(
             .iter()
             .find(|t| t["id"] == audio.track)
             .ok_or_else(|| invalid("missing audio track"))?;
+        if track["name"].as_str() != Some(audio.name.as_str()) {
+            return Err(invalid("saved audio track lost its imported name"));
+        }
         let clips = track["clips"]
             .as_array()
             .ok_or_else(|| invalid("missing audio clips"))?;
         if clips.len() != 1
             || clips[0]["id"] != audio.clip
+            || clips[0]["name"].as_str() != Some(audio.name.as_str())
             || clips[0]["start"] != audio.start
             || clips[0]["length"] != audio.length
         {
-            return Err(invalid("saved audio clip count/position/length differs"));
+            return Err(invalid(
+                "saved audio clip count/identity/position/length differs",
+            ));
         }
         let expected_db = if manifest.master_gain == 1.0 {
             0.0
@@ -776,6 +853,7 @@ fn verify(
             .as_array()
             .ok_or_else(|| invalid("missing MIDI clips"))?;
         if track["mute"] != true
+            || track["name"].as_str() != Some(midi.name.as_str())
             || clips.len() != 1
             || clips[0]["id"] != midi.clip
             || clips[0]["start"] != 0
@@ -817,4 +895,73 @@ fn verify(
         return Err(invalid("saved audio health check failed"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_name_truncates_long_prefixes_before_keeping_the_unique_suffix() {
+        let prefix = "Pad 01 · a deliberately long part label ".repeat(4);
+        let name = identity_name(&prefix, 12, 345).expect("naming");
+        assert_eq!(name.chars().count(), MAX_NAME_CHARS);
+        assert!(name.ends_with(" · Take 12 · Hit 345"), "{name}");
+        let bounded = identity_name("Pad 03", 1, 1).expect("naming");
+        assert_eq!(bounded, "Pad 03 · Take 1 · Hit 1");
+        assert!(
+            identity_name("x", u64::MAX, u64::MAX)
+                .expect("naming")
+                .chars()
+                .count()
+                <= MAX_NAME_CHARS
+        );
+    }
+
+    #[test]
+    fn identity_names_are_unique_across_parts_takes_and_large_take_ids() {
+        let mut manifest = Manifest::new(
+            crate::export::manifest::TimeOrigin::default(),
+            crate::export::manifest::Timing {
+                tempo_milli_bpm: 120_000,
+                sample_rate_hz: 48_000,
+            },
+        );
+        manifest.parts = vec![
+            PartEntry {
+                id: PartId(1),
+                kind: PartKind::PadClips { pad: 1 },
+            },
+            PartEntry {
+                id: PartId(2),
+                kind: PartKind::PadClips { pad: 1 },
+            },
+        ];
+        for (take, sequence) in [(u128::from(u64::MAX) + 1, 0), (7, 0), (7, 1)] {
+            manifest.events.push(crate::export::manifest::EventEntry {
+                id: EventId { take, sequence },
+                part: PartId(sequence + 1),
+                start_nanos: 0,
+                duration_nanos: 1,
+                pad: Some(1),
+                pitch: None,
+                channel: None,
+                velocity: None,
+                asset: None,
+                source: None,
+                variant_of: None,
+            });
+        }
+        let names = identity_names(&manifest).expect("naming");
+        let unique: BTreeSet<_> = names.values().collect();
+        assert_eq!(unique.len(), manifest.events.len());
+        assert!(
+            names
+                .values()
+                .all(|name| name.chars().count() <= MAX_NAME_CHARS)
+        );
+        assert_eq!(names[&manifest.events[0].id], "Pad 01 · Take 1 · Hit 1");
+        assert_eq!(names[&manifest.events[1].id], "Pad 01 · Take 2 · Hit 1");
+        assert_eq!(names[&manifest.events[2].id], "Pad 01 · Take 2 · Hit 2");
+    }
 }

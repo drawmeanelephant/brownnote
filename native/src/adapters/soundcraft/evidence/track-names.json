@@ -1,0 +1,110 @@
+{
+  "app_exit": 0,
+  "app_exit_source": "each relaunch announced its control port, answered session.open/session.inspect and exited successfully after app.quit",
+  "assertions": [
+    "every imported track and clip name was read back from session.inspect after a fresh relaunch",
+    "the same names survived copying the whole output and removing the original output and bundle",
+    "no name exceeds 64 Unicode scalar values and every audio track name is unique"
+  ],
+  "audio": [
+    {
+      "clip": 3,
+      "event": {
+        "sequence": 0,
+        "take": "18446744073709551624"
+      },
+      "length": 12000,
+      "name": "Pad 03 · Take 1 · Hit 1",
+      "start": 4800,
+      "track": 2
+    },
+    {
+      "clip": 6,
+      "event": {
+        "sequence": 1,
+        "take": "18446744073709551624"
+      },
+      "length": 12000,
+      "name": "Pad 03 · Take 1 · Hit 2",
+      "start": 7440,
+      "track": 5
+    },
+    {
+      "clip": 9,
+      "event": {
+        "sequence": 3,
+        "take": "18446744073709551624"
+      },
+      "length": 24000,
+      "name": "Part 17397810722847942691 note · Take 1 · Hit 3",
+      "start": 24000,
+      "track": 8
+    },
+    {
+      "clip": 12,
+      "event": {
+        "sequence": 4,
+        "take": "18446744073709551624"
+      },
+      "length": 24000,
+      "name": "Part 17397810722847942691 note · Take 1 · Hit 4",
+      "start": 30000,
+      "track": 11
+    }
+  ],
+  "binaries": {
+    "SoundCraft": {
+      "matches_pin": true,
+      "sha256": "9f6d84732fc70144fdacb51e65721ce69ee979b4b7e93d3d5d65f68138d6fa3c"
+    },
+    "soundcraft-cli": {
+      "matches_pin": true,
+      "sha256": "c240115d0a2794688939d2f7b20f1530d4f0e523555858a830ca142550394d8f"
+    }
+  },
+  "check": "imported SoundCraft track and clip identities persist across save/quit/reopen/relocation",
+  "date": "2026-11-14",
+  "launch": [
+    "SoundCraft",
+    "--no-audio",
+    "--control",
+    "0"
+  ],
+  "listening": "none: no audio device was opened",
+  "midi": [
+    {
+      "clip": 14,
+      "name": "Part 17397810722847942691 · MIDI · Editable, muted",
+      "notes": [
+        {
+          "channel": 0,
+          "length": 960,
+          "pitch": 60,
+          "start": 960,
+          "velocity": 91
+        },
+        {
+          "channel": 0,
+          "length": 1200,
+          "pitch": 60,
+          "start": 1200,
+          "velocity": 72
+        },
+        {
+          "channel": 0,
+          "length": 360,
+          "pitch": 64,
+          "start": 1440,
+          "velocity": 88
+        }
+      ],
+      "part": 17397810722847942691,
+      "track": 13
+    }
+  ],
+  "pin": {
+    "commit": "04878f8fda885c95f8be5893bbfe4ea4e062a814",
+    "tag": "v0.19.0",
+    "version": "0.19.0"
+  }
+}

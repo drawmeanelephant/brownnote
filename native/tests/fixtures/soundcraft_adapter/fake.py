@@ -56,6 +56,14 @@ if config.get("hang") == method:
 
 state = json.loads((root / "state.json").read_text())
 reply = {}
+error = None
+
+MAX_NAME_CHARS = 64
+
+
+def bounded(name):
+    """The released target trims and truncates to 64 Unicode scalar values."""
+    return name.strip()[:MAX_NAME_CHARS]
 
 
 def wav_info(path):
@@ -107,18 +115,39 @@ elif method == "file.import_audio":
     rate, frames = wav_info(params["path"])
     assert rate == 48000
     tid, cid, sid = ident(), ident(), ident()
-    state["tracks"].append({"id": tid, "kind": "audio", "mute": False,
-                            "volume_db": 0.0,
-                            "clips": [{"id": cid, "start": params["at"],
+    # The released app names an imported track after the source media and
+    # disambiguates repeats with a suffix; only track.rename must be unique.
+    stem = Path(params["path"]).stem
+    state["tracks"].append({"id": tid, "kind": "audio", "name": stem,
+                            "mute": False, "volume_db": 0.0,
+                            "clips": [{"id": cid, "name": stem, "start": params["at"],
                                        "length": frames, "source": sid}]})
     state["sources"].append({"id": sid, "path": params["path"], "loaded": True})
     reply = {"imported": [{"track": tid, "clip": cid, "frames": frames}]}
 elif method == "track.new":
     assert params["kind"] == "instrument"
     tid = ident()
-    state["tracks"].append({"id": tid, "kind": "instrument", "mute": False,
+    state["tracks"].append({"id": tid, "kind": "instrument",
+                            "name": bounded(params["name"]), "mute": False,
                             "volume_db": 0.0, "clips": []})
     reply = {"tracks": [tid]}
+elif method == "track.rename":
+    assert set(params) == {"track", "name"}
+    name = bounded(params["name"])
+    assert name  # The target rejects an empty name before storing it.
+    if any(t.get("name") == name and t["id"] != params["track"]
+           for t in state["tracks"]):
+        error = f"a track named {name!r} already exists"
+    else:
+        track(params["track"])["name"] = name
+elif method == "clip.rename":
+    assert set(params) == {"clip", "name"}
+    name = bounded(params["name"])
+    assert name
+    target = next((c for t in state["tracks"] for c in t["clips"]
+                   if c["id"] == params["clip"]), None)
+    assert target is not None, params
+    target["name"] = name
 elif method == "mix.mute":
     assert set(params) == {"tracks", "value"} and params["value"] is True
     for tid in params["tracks"]:
@@ -169,6 +198,12 @@ elif method == "session.open":
         state["sources"][0]["path"] = "/outside.wav"
     if config.get("corrupt") == "mute":
         state["tracks"][-1]["mute"] = False
+    if config.get("corrupt") == "track_name":
+        state["tracks"][0]["name"] = "tampered track"
+    if config.get("corrupt") == "clip_name":
+        state["tracks"][0]["clips"][0]["name"] = "tampered clip"
+    if config.get("corrupt") == "midi_name":
+        state["tracks"][-1]["name"] = "tampered midi"
 elif method == "session.inspect":
     assert params == {"detail": "full"}
     reply = state
@@ -181,4 +216,7 @@ elif method == "app.quit":
 else:
     raise AssertionError(f"unproven command: {method}")
 (root / "state.json").write_text(json.dumps(state))
+if error is not None:
+    print(json.dumps({"ok": False, "error": error}))
+    sys.exit(0)
 print(json.dumps({"ok": True, "result": reply}))
