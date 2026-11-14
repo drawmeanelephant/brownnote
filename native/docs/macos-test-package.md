@@ -26,12 +26,17 @@ During a resource-constrained swarm, run **each whole command through the
 integrator-provided shared Cargo/lock wrapper**, from this checkout. Do not
 create an independent target or delete another lane's artifacts.
 
-The packager builds the actual `brownnote-native` release executable with
-`--locked`, using Cargo's reported target directory. It preserves that file's
-executable mode and uses the existing executable-relative flat resource
-layout. It refuses to replace an existing artifact. An optional output
-directory argument permits separate runs. There is no installer or launcher
-that injects `--samples`.
+The packager builds the actual `brownnote-native` and `brownnote-soundcraft`
+release executables with `--locked`, using Cargo's reported target directory.
+`brownnote-soundcraft` sits directly beside `brownnote-native` in the flat
+layout (no `tools/` directory) so the app's post-export handoff resolves its
+sibling. Both are checked with `lipo` (arm64 only), `otool -L` (only
+`/System/Library/` and `/usr/lib/` dylibs) and `codesign --verify --strict`
+for the linker's ad-hoc signature, and both SHA-256 digests are recorded in
+`build-record.json`. It preserves those files' executable mode and uses the
+existing executable-relative flat resource layout. It refuses to replace an
+existing artifact. An optional output directory argument permits separate
+runs. There is no installer or launcher that injects `--samples`.
 
 It also refuses a build it cannot identify: a dirty working tree, an expected
 commit (`--expected-commit`) other than `HEAD`, and a release tag (`--tag`)
@@ -69,9 +74,22 @@ commit <full 40-character source commit>
 which packaging refuses. The printed commit is the `source_commit` in the
 archive's `build-record.json`, and smoke requires the two to agree.
 
+The handoff binary reports the pinned adapter release the same way, offline:
+
+```sh
+"/absolute/path/Brownnote Native Test/brownnote-soundcraft" --help
+brownnote-soundcraft --bundle DIR --app PATH --cli PATH --output NEW_DIR [--mappings JSON]
+Pinned SoundCraft <version>; owns an isolated --no-audio GUI. Move the entire output directory.
+```
+
+The version is formatted from `adapters::soundcraft::VERSION`; no literal
+pinned release is compiled into `--help` or the EXPORT panel. `build-record.json`
+records that version as `soundcraft_version` alongside the binary digest.
+
 Outputs:
 
-- `.tar.gz`: executable, generated kit, notices, required source and records.
+- `.tar.gz`: executables (`brownnote-native`, `brownnote-soundcraft`),
+  generated kit, notices, required source and records.
 - `.tar.gz.sha256`: SHA-256 of that exact archive.
 - `.tar.gz.smoke.json`: written by smoke, passed or failed, with the matching
   archive digest, source/binary identity, checked paths and explicit omissions.
@@ -95,6 +113,12 @@ cd /tmp
 
 Move/copy the **whole directory**, including `resources`, not the executable
 alone. Spaces in the install path are supported by the smoke.
+The same flat directory holds `brownnote-soundcraft`, the neutral-bundle to
+SoundCraft handoff. The app's EXPORT panel resolves it as a sibling and prints
+the command with the exported bundle filled in. Running it needs a separately
+installed SoundCraft app and CLI, which this artifact does **not** contain;
+the adapter refuses a missing or mismatched build and an existing `--output`
+without touching the exported bundle.
 The artifact has no Developer ID signature or notarization. Apple silicon
 linkers can add an ad-hoc signature; that is not a trusted distribution
 signature. Download quarantine/Gatekeeper behavior is untested. Do not disable
@@ -159,6 +183,17 @@ shortcut), with project and installation paths that contain spaces:
 These runs use the silent virtual mixer. They prove the packaged project
 workflow, not audible playback, power-loss durability or autosave.
 
+Smoke also runs the relocated `brownnote-soundcraft` from that
+space-containing path. Its `--help` must exit `0` and name the pinned release
+from `build-record.json`. The app then exports a real neutral bundle through
+the packaged EXPORT panel; smoke requires the panel to print the handoff
+command containing that exact bundle path, then invokes the adapter with a
+missing SoundCraft app/CLI and again with an already-existing `--output`.
+Both must exit non-zero, leave no new output directory, and leave the input
+bundle's file tree and SHA-256 digests completely unchanged. This proves the
+refusal and ownership boundary, not a successful SoundCraft conversion; the
+pinned real-app adapter tests are a separate gate.
+
 Three existing deterministic output scenes exercise settings/error UI after
 relocation. They are virtual fixtures, not audio-device selection or recovery
 evidence. The isolated HOME's documented cache/recovery/preference locations
@@ -173,6 +208,7 @@ library `paths` tests exercise production writable-path resolution separately.
 |---|---|
 | macOS arm64, built-in audio only | D1/D2 target scope; no wider hardware support claim |
 | Release compile, dynamic dependencies, checksums | Required by package script; inspect exact build record |
+| Packaged SoundCraft handoff | Required by package script: `brownnote-soundcraft` beside the app, arm64/system dylibs/ad-hoc verified, digest and pinned version in `build-record.json`; relocated smoke runs `--help` and proves refusal leaves the bundle byte-identical. A successful conversion still needs the separately installed pinned SoundCraft app |
 | Tagged build and draft release | `release` workflow on a maintainer `v<version>` tag; archive version, full commit and `--version` agree; four draft assets, nothing published |
 | Real executable relocation, default five-source kit | Required GPU/headless smoke at three locations; silent mixer only |
 | GPU UI scenes | Required by smoke and `make native-test`; not audio evidence |

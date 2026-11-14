@@ -380,6 +380,14 @@ pub const SCENES: &[Scene] = &[
         s.export.visible = true;
         s.export.destination = rune::TextEdit::new("/exports/brownnote bundle");
     }),
+    ("export-handoff", |s| {
+        s.export.visible = true;
+        s.export.destination = rune::TextEdit::new("/exports/brownnote bundle");
+        s.export.last_bundle = Some("/exports/brownnote bundle".into());
+        s.export.notice = "Exported bundle to /exports/brownnote bundle. Manifest 4 with 12 \
+                           event(s) and 5 asset(s). The captured kit was not modified."
+            .into();
+    }),
     ("import-path", |s| {
         media::controls::scene(s, media::controls::SceneKind::Path)
     }),
@@ -405,6 +413,13 @@ pub const SCENES: &[Scene] = &[
         s.midi_panel = true;
         let midi = s.midi.clone();
         midi::scene(s, &midi, midi::SceneKind::Connected);
+    }),
+    // Connected input on the pads view: the longest header label there is.
+    ("midi-connected", |s| {
+        s.midi_panel = false;
+        let midi = s.midi.clone();
+        midi::scene(s, &midi, midi::SceneKind::Connected);
+        s.midi.inner_mut().visible = false;
     }),
     ("edit-empty", |s| {
         s.edit_panel = true;
@@ -453,6 +468,19 @@ pub const SCENES: &[Scene] = &[
             false,
         ));
     }),
+    // Failed output mounts RETRY AUDIO in the header; combine with missing
+    // samples to get the widest header and the tallest error stack at once.
+    ("output-failed", |s| {
+        s.install_output(Output::virtual_driver(
+            s.assets.slots().clone(),
+            "Audio output failed".into(),
+            true,
+        ));
+    }),
+    ("instrument-panel", |s| s.instrument.visible = true),
+    ("live-panel", |s| s.live.visible = true),
+    // Armed pass: the transport strip mounts DISCARD (transport-cancel).
+    ("transport-armed", transport::record),
 ];
 
 fn ink(hex: &str) -> Color {
@@ -485,6 +513,32 @@ fn button(key: &str, title: &str) -> El {
         .child(
             text(title)
                 .font(TextStyle::new(11.0, 650.0))
+                .color(ink("#eeeeed")),
+        )
+}
+
+/// A header-row pill. The header wraps at the minimum window, so its controls
+/// are shorter than panel buttons: two wrapped lines of 24 pt still leave every
+/// pad above its 60 pt floor at 820×600. The width cap keeps a long connected
+/// MIDI port name from pushing the row past the window; its text truncates.
+fn header_pill(key: &str, title: &str) -> El {
+    el().key(key)
+        .role("button")
+        .label(title)
+        .focusable(true)
+        .h(24.0)
+        .px(8.0)
+        .max_w(220.0)
+        .center()
+        .radius(5.0)
+        .gradient(ink("#303b37"), ink("#202a26"))
+        .border_gradient(1.0, ink("#526059"), ink("#2b3631"))
+        .shadow(2.0, 4.0, ink("#080e0b"))
+        .hover(ink("#425249"))
+        .child(
+            text(title)
+                .truncate()
+                .font(TextStyle::new(10.0, 650.0))
                 .color(ink("#eeeeed")),
         )
 }

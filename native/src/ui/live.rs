@@ -13,7 +13,7 @@
 //! media (D4); after a save and reopen that audio plays even when the bundle
 //! is gone. A device or rate change rebuilds the host and its voice at the new
 //! stream's real rate and buffer (D16).
-use super::{State, button, caption, ink};
+use super::{State, button, caption, header_pill, ink};
 use brownnote_native::{
     assets::{AssetRegistry, RegistryError},
     import::MediaPublisher,
@@ -933,7 +933,7 @@ pub fn on_key(s: &mut State, event: &KeyEvent, _tx: &mut Tx) -> bool {
 }
 
 pub fn header(s: &State) -> El {
-    button(
+    header_pill(
         "live-toggle",
         if s.live.visible {
             "BACK TO PADS"

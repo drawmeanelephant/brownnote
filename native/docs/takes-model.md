@@ -110,7 +110,11 @@ Committed takes and the current edit layer are saved in the project document
 (see `project-contract.md`). Armed or recording passes never save:
 `Snapshot::with_takes` returns `Error::PassActive`, and the app refuses save or
 open until the pass stops. Reopen rebuilds every note through `NoteLifecycle`
-and continues take IDs above every saved ID.
+and continues take IDs above every saved ID. A tempo or loop length changed
+while idle before the first take is project state too: a non-default `Tempo`
+or `LoopBars` is written with the takes document (even when it holds no takes),
+so save, reopen and crash recovery restore it instead of resetting to 116 BPM
+and 8 bars.
 ## Verification
 
 Always use the swarm's shared whole-check lock, Cargo target and two jobs.

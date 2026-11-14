@@ -326,4 +326,213 @@ mod tests {
         }
         assert_eq!(tree["warnings"].as_array().unwrap().len(), 0);
     }
+
+    /// Header controls every state mounts.
+    const HEADER: &[&str] = &[
+        "home",
+        "voice-count",
+        "choke",
+        "panic",
+        "output-toggle",
+        "midi-toggle",
+        "edit-toggle",
+        "instrument-toggle",
+        "live-toggle",
+    ];
+    /// Interactive second-row controls every state mounts.
+    const TRANSPORT: &[&str] = &[
+        "transport-record",
+        "transport-play",
+        "transport-loop",
+        "transport-mode",
+        "transport-count-in",
+        "transport-tempo-down",
+        "transport-bpm",
+        "transport-tempo-up",
+        "transport-beat",
+        "projects-toggle",
+        "export-toggle",
+    ];
+
+    fn rect_of(tree: &Value, key: &str) -> [f64; 4] {
+        let element = tree["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|element| element["key"] == key)
+            .unwrap_or_else(|| panic!("missing {key}"));
+        std::array::from_fn(|index| element["rect"][index].as_f64().unwrap())
+    }
+
+    fn assert_inside(tree: &Value, keys: &[&str], (width, height): (f64, f64), case: &str) {
+        for key in keys {
+            let [x, y, w, h] = rect_of(tree, key);
+            assert!(
+                x >= 0.0
+                    && y >= 0.0
+                    && w > 0.0
+                    && h > 0.0
+                    && x + w <= width + 0.1
+                    && y + h <= height + 0.1,
+                "{case}: {key} outside {width}x{height}: {x} {y} {w} {h}"
+            );
+        }
+    }
+
+    fn label_of<'a>(tree: &'a Value, key: &str) -> &'a str {
+        tree["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|element| element["key"] == key)
+            .unwrap_or_else(|| panic!("missing {key}"))["label"]
+            .as_str()
+            .unwrap_or("")
+    }
+
+    fn text_of<'a>(tree: &'a Value, key: &str) -> &'a str {
+        tree["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|element| element["key"] == key)
+            .unwrap_or_else(|| panic!("missing {key}"))["text"]
+            .as_str()
+            .unwrap_or("")
+    }
+
+    /// The real binary at the minimum window shows the default tempo and the
+    /// dedicated beat reference, which tracks the armed pass instead of the
+    /// truncating status caption.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_transport_shows_bpm_and_beat_indicator_at_minimum_size() {
+        let idle = run("transport-bpm", &["--size", "820x600"]);
+        assert_eq!(label_of(&idle, "transport-bpm"), "Tempo 116 BPM");
+        assert_eq!(label_of(&idle, "transport-beat"), "Transport stopped");
+        assert_eq!(idle["warnings"].as_array().unwrap().len(), 0);
+
+        let armed = run(
+            "transport-bpm-armed",
+            &["--size", "820x600", "--scene", "transport-armed"],
+        );
+        assert_eq!(label_of(&armed, "transport-beat"), "Bar 1 beat 1");
+        assert_inside(
+            &armed,
+            &["transport-bpm", "transport-beat", "transport-cancel"],
+            (820.0, 600.0),
+            "820x600 armed",
+        );
+        assert_eq!(armed["warnings"].as_array().unwrap().len(), 0);
+    }
+
+    /// The real binary at the minimum window shows the post-export handoff:
+    /// the exported bundle filled into the CLI command, the pinned SoundCraft
+    /// version read from the adapter, and every next-step gate, with the
+    /// scrollable panel inside the window.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_export_handoff_is_readable_at_minimum_size() {
+        let tree = run(
+            "export-handoff",
+            &["--size", "820x600", "--scene", "export-handoff"],
+        );
+        let version = brownnote_native::adapters::soundcraft::VERSION;
+        let command = text_of(&tree, "export-handoff-command");
+        assert!(
+            command.contains("--bundle '/exports/brownnote bundle'"),
+            "{command}"
+        );
+        assert!(command.contains("brownnote-soundcraft"), "{command}");
+        assert!(
+            text_of(&tree, "export-handoff-title").contains(version),
+            "{}",
+            text_of(&tree, "export-handoff-title")
+        );
+        assert!(
+            text_of(&tree, "export-handoff-version").contains(version),
+            "{}",
+            text_of(&tree, "export-handoff-version")
+        );
+        assert!(text_of(&tree, "export-handoff-output").contains("new, non-existent directory"));
+        assert!(text_of(&tree, "export-handoff-next").contains("not yet a SoundCraft project"));
+        assert_inside(
+            &tree,
+            &[
+                "export-panel",
+                "export-handoff-command",
+                "export-handoff-version",
+                "export-handoff-output",
+                "export-handoff-next",
+            ],
+            (820.0, 600.0),
+            "820x600 export handoff",
+        );
+        assert_eq!(tree["warnings"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_minimum_and_default_window_fit_every_header_transport_and_panel_control() {
+        // Every state the header or the strip can mount, at both window sizes,
+        // with the macOS titlebar inset applied.
+        let cases: &[(&str, &str, Option<&str>)] = &[
+            ("midi-connected", "pads-midi", None),
+            ("output-failed", "pads-failed", None),
+            ("transport-armed", "pads-armed", None),
+            ("output-selection", "output-panel", Some("output-panel")),
+            ("midi", "midi-panel", Some("midi-panel")),
+            ("edit-selected", "edit-panel", Some("edit-panel")),
+            (
+                "instrument-panel",
+                "instrument-panel",
+                Some("instrument-panel"),
+            ),
+            ("live-panel", "live-panel", Some("live-panel")),
+            ("import-path", "import-panel", Some("import-panel")),
+            ("project-path", "projects-panel", Some("projects-panel")),
+            ("export-panel", "export-panel", Some("export-panel")),
+            ("export-handoff", "export-handoff", Some("export-panel")),
+        ];
+        for (size, width, height) in [("820x600", 820.0, 600.0), ("1120x800", 1120.0, 800.0)] {
+            for (scene, label, panel) in cases {
+                let name = format!("fit-{size}-{label}");
+                let mut args = vec!["--size", size, "--scene", scene, "--chrome"];
+                if *scene == "output-failed" {
+                    args.extend(["--samples", "/nonexistent"]);
+                }
+                let tree = run(&name, &args);
+                let case = format!("{size} {label}");
+                assert_inside(&tree, HEADER, (width, height), &case);
+                if *scene == "output-failed" {
+                    assert_inside(&tree, &["retry-audio"], (width, height), &case);
+                }
+                assert_inside(&tree, TRANSPORT, (width, height), &case);
+                if *scene == "transport-armed" {
+                    assert_inside(&tree, &["transport-cancel"], (width, height), &case);
+                }
+                match panel {
+                    Some(panel) => assert_inside(&tree, &[panel], (width, height), &case),
+                    None => {
+                        for index in 0..16 {
+                            let [x, y, w, h] = rect_of(&tree, &format!("pad-{index}"));
+                            assert!(
+                                w >= 140.0 && h >= 60.0,
+                                "{case}: pad-{index} collapsed to {w}x{h}"
+                            );
+                            assert!(
+                                x + w <= width + 0.1 && y + h <= height + 0.1,
+                                "{case}: pad-{index} outside the window"
+                            );
+                        }
+                    }
+                }
+                assert!(
+                    tree["warnings"].as_array().unwrap().is_empty(),
+                    "{case}: {}",
+                    tree["warnings"]
+                );
+            }
+        }
+    }
 }

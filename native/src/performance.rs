@@ -289,6 +289,13 @@ impl LoopBars {
         u128::from(self.0) * 4 * UNITS_PER_QUARTER
     }
 }
+impl Default for LoopBars {
+    /// The take-less project default (`ui::fresh_takes`), the one every new
+    /// session starts on, so a save can tell a deliberate loop change from it.
+    fn default() -> Self {
+        Self(8)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LoopPosition {
     pub iteration: u64,

@@ -1,10 +1,10 @@
 use super::{State, apply, refresh, retry, status, system_default};
-use crate::ui::{button, caption, ink};
+use crate::ui::{button, caption, header_pill, ink};
 use cpal::SupportedBufferSize;
 use rune::{El, TextStyle, col, row, text_input};
 
 pub fn header(s: &State) -> El {
-    button(
+    header_pill(
         "output-toggle",
         if s.devices.visible {
             "BACK TO PADS"

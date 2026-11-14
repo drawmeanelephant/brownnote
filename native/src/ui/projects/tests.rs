@@ -1489,3 +1489,67 @@ fn project_controls_cancel_and_close_drop_the_pending_autosave_without_a_partial
     );
     assert_eq!(s.settings[7].gain, 0.66);
 }
+
+#[test]
+fn project_controls_save_idle_tempo_and_loop_bars_before_any_takes() {
+    let root = Root::new();
+    let project = root.0.join("tempo");
+    let mut s = state();
+    assert!(s.takes.takes().next().is_none(), "no takes yet");
+    transport::tempo_step(&mut s, 4); // 116 → 120 BPM
+    transport::cycle_loop(&mut s); // 8 → 1 bar
+    assert_eq!(s.takes.tempo().milli_bpm(), 120_000);
+    assert_eq!(s.takes.loop_bars().bars(), 1);
+    assert!(s.takes.takes().next().is_none());
+
+    saved(&mut s, &project);
+    let document = snapshot(&s).unwrap().document;
+    assert_eq!(document.takes.as_ref().unwrap().tempo_milli_bpm, 120_000);
+    assert_eq!(document.takes.as_ref().unwrap().loop_bars, 1);
+
+    // Change the live session away, then reopen the project and restore it.
+    transport::tempo_step(&mut s, -4);
+    transport::cycle_loop(&mut s);
+    assert_eq!(s.takes.tempo().milli_bpm(), 116_000);
+    set_path(&mut s, &project);
+    open(&mut s);
+    finish(&mut s);
+    assert!(s.projects.error.is_none(), "{:?}", s.projects.error);
+    assert_eq!(s.takes.tempo().milli_bpm(), 120_000);
+    assert_eq!(s.takes.loop_bars().bars(), 1);
+    assert!(s.takes.takes().next().is_none(), "nothing invented a take");
+    assert_eq!(snapshot(&s).unwrap().document, document);
+}
+
+#[test]
+fn project_controls_recovery_restores_idle_tempo_and_loop_bars_before_any_takes() {
+    let root = Root::new();
+    let project = root.0.join("saved");
+    let mut s = state();
+    saved(&mut s, &project);
+    autosave_enabled(&mut s, &root.0.join("recovery"));
+    transport::tempo_step(&mut s, 6); // 116 → 122 BPM
+    transport::cycle_loop(&mut s); // 8 → 1 bar
+    let copy = copy_played(&mut s, &project).unwrap();
+    assert_eq!(copy.takes.as_ref().unwrap().tempo_milli_bpm, 122_000);
+    assert_eq!(copy.takes.as_ref().unwrap().loop_bars, 1);
+
+    // Reopening the saved project offers the newer copy without applying it.
+    set_path(&mut s, &project);
+    open(&mut s);
+    finish(&mut s);
+    assert!(s.projects.error.is_none(), "{:?}", s.projects.error);
+    assert_eq!(s.takes.tempo().milli_bpm(), 116_000);
+    let recovery = s.projects.recovery_copy.clone().unwrap();
+    let generation = recovery.offered.unwrap();
+    open_choice(
+        &mut s,
+        recovery.root.clone(),
+        OpenChoice::Committed(generation),
+    );
+    finish(&mut s);
+    assert!(s.projects.error.is_none(), "{:?}", s.projects.error);
+    assert_eq!(s.takes.tempo().milli_bpm(), 122_000);
+    assert_eq!(s.takes.loop_bars().bars(), 1);
+    assert!(s.takes.takes().next().is_none());
+}

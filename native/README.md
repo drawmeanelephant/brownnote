@@ -88,6 +88,31 @@ says what to build.
   working while a pedal control has focus, and Tab reaches every pedal
   control.
 
+### Window and header layout
+
+The window opens at 1120×800 and cannot shrink below 820×600. The header —
+the voice badge, CHOKE, PANIC, AUDIO OUTPUT, MIDI INPUT (with the connected
+port name), TAKE EDIT, INSTRUMENT, LIVE, and RETRY AUDIO while the output has
+failed — is one row at the default width and wraps onto a second row instead
+of leaving the window at the minimum width, including the macOS traffic-light
+inset from `--chrome`. The second row keeps REC, PLAY, LOOP, mode, count-in,
+tempo (− / BPM / +), the beat/count-in indicator, DISCARD while a pass is
+armed or recording, PROJECT and EXPORT inside the window at both sizes; the
+decorative `HIT HIGHER. GO LOUDER.` tagline is dropped when the window is
+narrow. All 16 pads keep at least 140×60 pt at 820×600, even with
+the asset-error banner and RETRY AUDIO mounted together.
+
+The tempo readout shows the project tempo (`116 BPM` by default, keeping a
+fractional milli-BPM when a project loads one). The `−` and `+` steppers are
+focusable buttons, not a text field, so the printable pad keys keep playing
+pads; both route through `Takes::set_tempo` and re-anchor running playback.
+An armed or recording pass refuses the change with the registry's
+`TempoLocked` notice and keeps its timing. A dedicated `transport-beat`
+indicator shows the count-in beats (`COUNT-IN 4..1`) or the running
+`bar.beat` (`1.1..N.4`), independent of the truncating status caption. It is
+visual only: the optional audible click was intentionally omitted, so the
+real-time audio callback is unchanged.
+
 Pitch changes playback speed and duration using linear interpolation; this
 is not time stretching or a bandlimited pitch shifter. Pan is constant power.
 The engine hard-clamps output to ±1. It has 32 active voices and 8 fading
@@ -107,6 +132,42 @@ Custom folders must contain `fart_dry.wav`, `fart_fuzz.wav`, `fart_delay.wav`,
 WAVs may be 16-bit PCM or 32-bit float, mono or stereo (averaged to mono),
 8–192 kHz, from one frame through 30 seconds. Invalid or non-finite samples
 produce file-specific errors. All files load before the audio stream starts.
+
+## Export and SoundCraft handoff
+
+**EXPORT** writes one DAW-neutral bundle directory: `manifest.json` (format
+version 4), `notes.mid`, content-addressed `media/`, the pin, and
+`adapter-report.json` only when an adapter runs. It refuses an existing
+destination, a path inside the saved project, a second concurrent export,
+an armed pass, and pending renders; the panel header caption names the
+manifest format the binary writes.
+
+After a successful export the panel prints the exact handoff command with
+that bundle filled in and shell-quoted when the path contains spaces:
+
+```sh
+brownnote-soundcraft --bundle '/exports/brownnote bundle' \
+  --app /path/to/SoundCraft.app/Contents/MacOS/SoundCraft \
+  --cli /path/to/soundcraft-cli --output /path/to/new-session-directory
+```
+
+The program is the sibling `brownnote-soundcraft` when this build ships one
+(the macOS test package and Cargo's `target/{debug,release}` do), otherwise
+the bare name from `PATH`. The guidance names the required SoundCraft
+release from `adapters::soundcraft::VERSION`, states that `--output` must
+name a new non-existent directory, and states that the neutral bundle alone
+is not yet a SoundCraft project: only the adapter turns it into a
+`session.scraft` directory. The panel shows the command and never launches
+SoundCraft itself; the pinned real-app revalidation and maintainer
+listening remain separate gates. `native/src/export/README.md` documents the
+writer and `native/src/adapters/soundcraft/README.md` the adapter.
+
+`native/scripts/package_macos.py` builds `brownnote-soundcraft` beside
+`brownnote-native` in the flat `Brownnote Native Test/` layout, verifies both
+Mach-O files (arm64, system-only dylibs, valid ad-hoc signature), records
+both SHA-256 digests in `build-record.json`, and its smoke runs the
+relocated handoff binary from a path containing spaces (`--help`, then a
+refusal that must leave the bundle byte-identical).
 
 ## Pedals
 
@@ -234,8 +295,13 @@ cargo run --release -- --scene missing-samples --snap target/missing.png
 Engine tests cover both 44.1 and 48 kHz. A counting allocator checks the
 callback's command-drain/render path for zero allocations and frees.
 Rune Runtime tests exercise pointer, keys, sliders and missing assets.
-They also check selection, meter decay, muted-hit feedback, and the minimum
-820×600 layout. Waveform tests cover silence, transients and extreme samples.
+They also check selection, meter decay, muted-hit feedback, and one shared
+layout assertion over the mounted view: every header and transport-row
+control, the pad grid, and each header- or strip-opened panel stay inside
+820×600 and 1120×800 with the titlebar inset, a connected MIDI label, a
+failed output, and the asset-error banner, and clicking the right-edge
+toggles dispatches their actions. Waveform tests cover silence, transients
+and extreme samples.
 The headless integration test launches the real binary, checks voice badges
 before and after panic, and checks missing-folder errors. Screenshots alone do
 not prove audio playback.
@@ -243,9 +309,11 @@ not prove audio playback.
 ### What CI runs
 
 `make native-test` runs everything, but a bare `cargo test` skips tests marked
-`#[ignore = "needs a GPU adapter"]`. The three tests in `tests/headless.rs`
-carry that mark because they launch the real binary and draw with Rune's GPU
-renderer. The in-process `Runtime` tests (`ui_tests.rs`, `ui_pedals_tests.rs`,
+`#[ignore = "needs a GPU adapter"]`. The tests in `tests/headless.rs` carry
+that mark because they launch the real binary and draw with Rune's GPU
+renderer; one of them renders every header, transport and panel state at
+820×600 and 1120×800 with `--chrome` and asserts the layout tree fits with no
+layout warnings. The in-process `Runtime` tests (`ui_tests.rs`, `ui_pedals_tests.rs`,
 `showcase/motion_tests.rs`) drive a virtual clock and need no adapter, so they
 run in CI too.
 

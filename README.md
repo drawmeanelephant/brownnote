@@ -200,6 +200,10 @@ and mix, rendered in the background through `brownnote` and played on the
 pad's next hit. That needs `make` (for `build/brownnote`) and the bench
 (`make -C vendor/GuitarPedal/Validation bench`); without them the pads play as
 before. The web studio remains the full workflow, with no shared state.
+The **EXPORT** panel writes a DAW-neutral bundle (manifest v4, standard MIDI,
+content-hashed WAV media) and then prints the exact `brownnote-soundcraft`
+command that turns it into a pinned SoundCraft session, with the exported
+bundle path already filled in. The panel never launches SoundCraft itself.
 See [native/README.md](native/README.md) for controls, requirements and tests.
 
 ## Testing
