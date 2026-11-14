@@ -740,3 +740,169 @@ fn a_replaced_stream_during_a_recovery_reanchors_instead_of_replaying() {
     }
     assert_eq!(engine(&rt).dispatched, 2, "the rebuilt hit and its release");
 }
+
+fn beat_label(rt: &Runtime<State>) -> String {
+    label(rt, "transport-beat")
+}
+
+#[test]
+fn transport_default_tempo_reads_116_bpm_and_steps_through_takes() {
+    let mut rt = runtime();
+    assert_eq!(rt.state.takes.tempo(), Tempo::default());
+    assert_eq!(label(&rt, "transport-bpm"), "Tempo 116 BPM");
+    assert!(
+        rt.elements()
+            .into_iter()
+            .any(|e| e.text.as_deref() == Some("116 BPM")),
+        "the strip shows 116 BPM"
+    );
+    assert_eq!(beat_label(&rt), "Transport stopped");
+
+    tap(&mut rt, "transport-tempo-up");
+    assert_eq!(rt.state.takes.tempo().milli_bpm(), 117_000);
+    assert_eq!(label(&rt, "transport-bpm"), "Tempo 117 BPM");
+
+    tap(&mut rt, "transport-tempo-down");
+    tap(&mut rt, "transport-tempo-down");
+    assert_eq!(rt.state.takes.tempo().milli_bpm(), 115_000);
+    assert_eq!(label(&rt, "transport-bpm"), "Tempo 115 BPM");
+
+    // The steppers are buttons, never a text field: pad keys still play pads.
+    let element = rt
+        .elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some("transport-tempo-up"))
+        .expect("tempo stepper");
+    assert_eq!(element.role, "button");
+    assert_eq!(element.label.as_deref(), Some("Faster tempo"));
+    hit(&mut rt, 4);
+    rt.frame(0.01);
+    assert!(
+        rt.state.output.meters.counts()[4] > 0,
+        "pad key still triggers"
+    );
+}
+
+#[test]
+fn transport_bpm_formats_integral_and_fractional_milli_bpm() {
+    assert_eq!(format_bpm(Tempo::try_from(116_000).unwrap()), "116 BPM");
+    assert_eq!(format_bpm(Tempo::try_from(116_500).unwrap()), "116.5 BPM");
+    assert_eq!(format_bpm(Tempo::try_from(116_250).unwrap()), "116.25 BPM");
+    assert_eq!(format_bpm(Tempo::try_from(120_001).unwrap()), "120.001 BPM");
+}
+
+#[test]
+fn transport_tempo_change_while_armed_or_recording_surfaces_tempo_locked() {
+    let mut rt = runtime();
+    one_bar(&mut rt);
+    tap(&mut rt, "transport-count-in"); // One bar of count-in keeps it armed.
+    tap(&mut rt, "transport-record");
+    let tempo = rt.state.takes.tempo();
+    let start = rt.state.transport.pass.unwrap().start;
+
+    // Armed: the registry refuses and its timing is untouched.
+    tap(&mut rt, "transport-tempo-up");
+    assert_eq!(rt.state.takes.tempo(), tempo);
+    assert_eq!(rt.state.transport.pass.unwrap().start, start);
+    assert!(!rt.state.transport.pass.unwrap().started);
+    let status = label(&rt, "transport-status");
+    assert!(status.contains("Tempo is locked"), "{status}");
+
+    // Recording: still refused, with the same clear notice.
+    run_until(&mut rt, |s| s.transport.pass.is_some_and(|p| p.started));
+    tap(&mut rt, "transport-tempo-down");
+    assert_eq!(rt.state.takes.tempo(), tempo);
+    assert_eq!(rt.state.transport.pass.unwrap().start, start);
+    let status = label(&rt, "transport-status");
+    assert!(status.contains("Tempo is locked"), "{status}");
+}
+
+#[test]
+fn transport_tempo_change_while_playing_reanchors_replay_without_loss() {
+    let mut rt = runtime();
+    keyboard_take(&mut rt);
+    if !rt.state.transport.playing() {
+        tap(&mut rt, "transport-play");
+    }
+    run(&mut rt, 0.3);
+    let origin = rt.state.transport.playing.unwrap();
+    let dispatched = engine(&rt).dispatched;
+
+    tap(&mut rt, "transport-tempo-up");
+    assert_eq!(rt.state.takes.tempo().milli_bpm(), 117_000);
+    assert!(
+        rt.state.transport.playing.unwrap() > origin,
+        "playback re-anchored at the change"
+    );
+    assert_eq!(rt.state.transport.counters.schedule_lost, 0);
+
+    // The loop keeps replaying from the new origin rather than going silent.
+    run(&mut rt, 2.5);
+    assert!(
+        engine(&rt).dispatched > dispatched,
+        "replay went silent after the tempo change"
+    );
+    assert_eq!(rt.state.transport.counters.schedule_lost, 0);
+}
+
+#[test]
+fn transport_beat_indicator_tracks_count_in_then_bar_beat_and_redraws_on_downbeat() {
+    let mut rt = runtime();
+    one_bar(&mut rt);
+    tap(&mut rt, "transport-count-in");
+    tap(&mut rt, "transport-record");
+
+    // Count-in counts the remaining beats down from 4 to 1.
+    let mut count_in = BTreeSet::new();
+    for _ in 0..400 {
+        if rt.state.transport.pass.is_some_and(|p| p.started) {
+            break;
+        }
+        rt.frame(0.01);
+        count_in.insert(beat_label(&rt));
+    }
+    assert!(
+        count_in.contains("Count-in beat 4 of 4") && count_in.contains("Count-in beat 1 of 4"),
+        "{count_in:?}"
+    );
+
+    // The downbeat reuses bar.beat (1.1), so the stored triple must keep
+    // `is_count_in` for the redraw; the label proves the transition happened.
+    let mut beats = BTreeSet::new();
+    for _ in 0..600 {
+        rt.frame(0.01);
+        beats.insert(beat_label(&rt));
+        if beats.contains("Bar 1 beat 2") {
+            break;
+        }
+    }
+    assert!(beats.contains("Bar 1 beat 1"), "{beats:?}");
+    assert!(beats.contains("Bar 1 beat 2"), "{beats:?}");
+
+    let element = rt
+        .elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some("transport-beat"))
+        .expect("beat indicator");
+    assert_eq!(element.role, "status");
+    assert!(
+        element
+            .label
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("Bar 1 beat"),
+        "{:?}",
+        element.label
+    );
+}
+
+#[test]
+fn transport_stored_position_keeps_count_in_so_the_downbeat_redraws() {
+    let mut t = Transport::default();
+    let mut changed = |beat| std::mem::replace(&mut t.shown, beat) != beat;
+    assert!(changed(Some((1, 1, true))), "first draw");
+    assert!(!changed(Some((1, 1, true))), "same beat does not redraw");
+    // (1, 1) alone would look unchanged; the boolean forces the redraw.
+    assert!(changed(Some((1, 1, false))), "downbeat redraws");
+    assert!(!changed(Some((1, 1, false))), "stable after the downbeat");
+}

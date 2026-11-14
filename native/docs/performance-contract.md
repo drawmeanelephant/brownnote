@@ -30,6 +30,13 @@ recording tempo. `TempoControl` prevents tempo edits while **any** take is
 armed or recording, including overlapping arms. Finishing one take does not
 unlock another. No automation or mid-take tempo change.
 
+The transport strip shows the tempo and offers `−`/`+` steppers that call
+`Takes::set_tempo`. The armed/recording refusal surfaces as the registry's own
+`TempoLocked` and leaves the open pass timing untouched; changing the tempo
+while a loop plays re-anchors it at the change. The strip's beat/count-in
+indicator is visual only (no audible click), driven by the same loop position
+the status caption summarizes.
+
 For original time `n`, recording tempo `r`, and playback tempo `p`, the exact
 derived time is `n * r / p`. Thus post-record tempo edits keep musical
 position (D10). Derived musical units are exact integer `n * r`; there are

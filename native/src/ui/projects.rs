@@ -5,6 +5,7 @@ use brownnote_native::{
     import::ImportService,
     output::Output,
     paths::{Resolver, Resource},
+    performance::{LoopBars, Tempo},
     project::{
         Document,
         recovery::{OpenChoice, RecoveryOptions},
@@ -275,7 +276,13 @@ pub(crate) fn recoverable_documents(s: &State) -> Result<Snapshot, Error> {
     {
         snapshot = snapshot.with_midi_mappings(&mappings);
     }
-    if s.takes.has_pass() || s.takes.takes().next().is_some() {
+    // A non-default tempo or loop length set while idle is project state even
+    // before the first take: save it so reopen/crash recovery restores it.
+    if s.takes.has_pass()
+        || s.takes.takes().next().is_some()
+        || s.takes.tempo() != Tempo::default()
+        || s.takes.loop_bars() != LoopBars::default()
+    {
         snapshot = snapshot.with_takes(&s.takes, &s.edit.model)?;
     }
     if let Some((instrument, font, renders)) = s.instrument.snapshot() {
