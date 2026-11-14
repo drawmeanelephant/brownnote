@@ -193,3 +193,14 @@ build, and supply per-event frozen variants from a pad/plugin owner when one
 grows one (the sampled instrument already joins through
 `InstrumentDocument::frozen_hits`). Listening checks and the pinned SoundCraft
 adapter remain separate gates.
+
+The panel's header caption formats `MANIFEST_FORMAT_VERSION` instead of naming
+a release in prose. After a successful export the panel also prints the
+`brownnote-soundcraft` handoff: the sibling executable when this build ships
+one (macOS test package, Cargo `target/{debug,release}`), otherwise the bare
+name, plus the exported bundle shell-quoted when it contains spaces. The
+required SoundCraft release comes from `adapters::soundcraft::VERSION`, so a
+re-pin needs no UI edit. The guidance also states that `--output` must name a
+new, non-existent directory and that the neutral bundle alone is not yet a
+SoundCraft project. There is no in-app launch button (D19): the adapter owns
+an isolated GUI process and stays an explicit terminal step.

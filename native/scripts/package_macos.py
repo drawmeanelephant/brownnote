@@ -94,6 +94,33 @@ class UndeclaredRecording(RuntimeError):
     """A repository recording would enter the artifact without a decision."""
 
 
+EXECUTABLES = ["brownnote-native", "brownnote-soundcraft"]
+
+
+def soundcraft_version(manifest=ROOT / "native/src/adapters/soundcraft.rs"):
+    """The pinned release the packaged handoff binary reports, from its one source."""
+    source = Path(manifest).read_text()
+    found = re.search(r'pub const VERSION: &str = "([^"]+)"', source)
+    require(found is not None, f"No pinned SoundCraft VERSION in {manifest}")
+    return found.group(1)
+
+
+def verify_executable(binary, name):
+    """The shipped Mach-O: arm64 only, system dylibs only, ad-hoc signed."""
+    binary = Path(binary)
+    require(binary.is_file(), f"Missing built executable: {binary}")
+    require(output(["lipo", "-archs", binary]) == "arm64",
+            f"{name} is not an arm64-only executable; do not distribute.")
+    dependencies = output(["otool", "-L", binary]).splitlines()[1:]
+    require(all(line.strip().startswith(("/System/Library/", "/usr/lib/"))
+                for line in dependencies),
+            f"{name} links a non-system dylib; do not distribute.")
+    # Apple silicon toolchains emit an ad-hoc signature. Verify the one that
+    # ships rather than claiming a Developer ID signature that does not exist.
+    run(["codesign", "--verify", "--strict", binary])
+    return [line.strip() for line in dependencies]
+
+
 RECORDINGS = ROOT / "recordings"
 AUDIO_SUFFIXES = {".wav", ".m4a", ".mp3", ".aif", ".aiff", ".flac", ".ogg", ".opus"}
 
@@ -260,16 +287,19 @@ def package(destination, expected_commit=None, tag=None):
         # Inventory and notices are generated before any executable or audio is bundled.
         inventory(metadata, layout)
         # Bake the identity this record prints, so the executable cannot disagree with it.
-        run(["cargo", "build", "--locked", "--release", "--manifest-path", manifest,
-             "--bin", "brownnote-native"], cwd=ROOT,
-            env={**os.environ, "BROWNNOTE_SOURCE_COMMIT": head,
-                 "BROWNNOTE_SOURCE_DIRTY": "1" if dirty else "0"})
-        binary = Path(metadata["target_directory"]) / "release/brownnote-native"
-        require(output(["lipo", "-archs", binary]) == "arm64", "Expected arm64-only executable")
-        dependencies = output(["otool", "-L", binary]).splitlines()[1:]
-        require(all(line.strip().startswith(("/System/Library/", "/usr/lib/"))
-                    for line in dependencies), "Non-system dylib dependency; do not distribute.")
-        shutil.copy2(binary, layout / "brownnote-native")
+        for executable in EXECUTABLES:
+            run(["cargo", "build", "--locked", "--release", "--manifest-path", manifest,
+                 "--bin", executable], cwd=ROOT,
+                env={**os.environ, "BROWNNOTE_SOURCE_COMMIT": head,
+                     "BROWNNOTE_SOURCE_DIRTY": "1" if dirty else "0"})
+        target = Path(metadata["target_directory"]) / "release"
+        dependencies = verify_executable(target / "brownnote-native", "brownnote-native")
+        soundcraft_dependencies = verify_executable(
+            target / "brownnote-soundcraft", "brownnote-soundcraft")
+        shutil.copy2(target / "brownnote-native", layout / "brownnote-native")
+        # SoundCraft handoff ships beside the app, in the same flat layout: the
+        # `tools/` directory stays absent so the missing-pedal exit 3 is honest.
+        shutil.copy2(target / "brownnote-soundcraft", layout / "brownnote-soundcraft")
         # Apple silicon toolchains may emit an ad-hoc signature. There is no
         # Developer ID signature, notarization, installer, or Gatekeeper claim.
         tone_kit(layout / "resources/recordings")
@@ -281,8 +311,11 @@ def package(destination, expected_commit=None, tag=None):
             "target": "aarch64-apple-darwin", "profile": "release",
             "rustc": output(["rustc", "--version"]), "build_os": platform.mac_ver()[0],
             "binary_sha256": digest(layout / "brownnote-native"),
+            "soundcraft_binary_sha256": digest(layout / "brownnote-soundcraft"),
+            "soundcraft_version": soundcraft_version(),
+            "soundcraft_dylibs": soundcraft_dependencies,
             "cargo_lock_sha256": digest(manifest.with_name("Cargo.lock")),
-            "dylibs": [line.strip() for line in dependencies],
+            "dylibs": dependencies,
             "kit": "Generated one-second test tones, NOT the Brownnote recordings",
             "kit_sha256": {name: digest(layout / "resources/recordings" / name) for name in FILES},
             "pedals": "Unavailable: base-pad-only artifact; no C CLI or GuitarPedal bench",
@@ -457,6 +490,10 @@ def smoke(artifact):
             build = json.loads((original / "build-record.json").read_text())
             require(digest(original / "brownnote-native") == build["binary_sha256"],
                     "Packaged executable does not match build record")
+            require((original / "brownnote-soundcraft").is_file()
+                    and digest(original / "brownnote-soundcraft")
+                    == build["soundcraft_binary_sha256"],
+                    "Packaged SoundCraft handoff executable does not match build record")
             require(not (original / "tools").exists(), "Base-pad artifact unexpectedly includes tools")
             for name, expected_hash in build["kit_sha256"].items():
                 require(name in FILES and digest(original / "resources/recordings" / name) == expected_hash,
@@ -528,6 +565,64 @@ def smoke(artifact):
                 record["checks"].append(f"Location {index + 1}: five sources, virtual signal, no overrides, missing-pedal exit 3")
                 previous = layout
             previous = project_workflow(tree, previous, temp, record)
+
+            # The relocated handoff binary runs from a path with spaces and
+            # reports the pinned release without a hardcoded version literal.
+            def handoff(*args):
+                return subprocess.run([str(previous / "brownnote-soundcraft"), *map(str, args)],
+                                      cwd=cwd, env=env, capture_output=True, text=True,
+                                      timeout=180)
+
+            result = handoff("--help")
+            require(result.returncode == 0,
+                    f"Relocated brownnote-soundcraft --help exit {result.returncode}:\n"
+                    f"{result.stderr}")
+            require(f"Pinned SoundCraft {build['soundcraft_version']}" in result.stdout,
+                    f"--help does not name the pinned release: {result.stdout!r}")
+            require("--bundle DIR --app PATH --cli PATH --output NEW_DIR" in result.stdout,
+                    f"--help misses the flag contract: {result.stdout!r}")
+            record["checks"].append("Relocated brownnote-soundcraft --help from a path with spaces: "
+                                    f"exit 0 naming pinned SoundCraft {build['soundcraft_version']}")
+
+            # Export through the packaged UI, then prove the relocated adapter
+            # refuses a missing SoundCraft build without touching the bundle.
+            bundle = temp / "neutral bundle" / "kit one"
+            bundle.parent.mkdir()
+            export_script = temp / "export script.json"
+            export_script.write_text(json.dumps([
+                {"t": 0.1, "type": "click", "key": "export-toggle"},
+                {"t": 0.4, "type": "click", "key": "export-destination"},
+                {"t": 0.5, "type": "type", "text": str(bundle)},
+                {"t": 6.0, "type": "click", "key": "export-start"}]))
+            view = tree(previous, "export-handoff", "--script", export_script,
+                        "--at", "60", "--size", "820x600")
+            require(view.get("export-status", "").startswith("Exported bundle"),
+                    "Packaged export failed: "
+                    f"{view.get('export-status') or view.get('export-error')}")
+            command = view.get("export-handoff-command", "")
+            require(str(bundle) in command and "brownnote-soundcraft" in command,
+                    f"Handoff command does not carry the exported bundle: {command!r}")
+            require((bundle / "manifest.json").is_file(), "Exported bundle has no manifest")
+            before = snapshot(bundle)
+            require(before, "Exported bundle is empty")
+            output_dir = temp / "new session directory"
+            for existing in (False, True):
+                if existing:
+                    output_dir.mkdir()
+                result = handoff("--bundle", bundle,
+                                 "--app", temp / "missing SoundCraft.app/Contents/MacOS/SoundCraft",
+                                 "--cli", temp / "missing soundcraft-cli",
+                                 "--output", output_dir)
+                require(result.returncode != 0,
+                        "Relocated brownnote-soundcraft accepted a missing SoundCraft build")
+                require(snapshot(bundle) == before,
+                        "Refused conversion changed the neutral bundle")
+                if not existing:
+                    require(not output_dir.exists(),
+                            "Refused conversion left an output directory behind")
+            record["checks"].append("Relocated brownnote-soundcraft refuses a missing SoundCraft "
+                                    "app/CLI and an existing --output with a non-zero exit; the "
+                                    "exported bundle tree and SHA-256 digests stay identical")
             # Prove no hidden checkout/cwd fallback, not just success with some kit.
             shutil.rmtree(previous / "resources/recordings")
             missing = tree(previous, "missing", "--scene", "playing", "--at", "0.08")

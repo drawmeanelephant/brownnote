@@ -390,6 +390,17 @@ mod tests {
             .unwrap_or("")
     }
 
+    fn text_of<'a>(tree: &'a Value, key: &str) -> &'a str {
+        tree["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|element| element["key"] == key)
+            .unwrap_or_else(|| panic!("missing {key}"))["text"]
+            .as_str()
+            .unwrap_or("")
+    }
+
     /// The real binary at the minimum window shows the default tempo and the
     /// dedicated beat reference, which tracks the armed pass instead of the
     /// truncating status caption.
@@ -415,6 +426,51 @@ mod tests {
         assert_eq!(armed["warnings"].as_array().unwrap().len(), 0);
     }
 
+    /// The real binary at the minimum window shows the post-export handoff:
+    /// the exported bundle filled into the CLI command, the pinned SoundCraft
+    /// version read from the adapter, and every next-step gate, with the
+    /// scrollable panel inside the window.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_export_handoff_is_readable_at_minimum_size() {
+        let tree = run(
+            "export-handoff",
+            &["--size", "820x600", "--scene", "export-handoff"],
+        );
+        let version = brownnote_native::adapters::soundcraft::VERSION;
+        let command = text_of(&tree, "export-handoff-command");
+        assert!(
+            command.contains("--bundle '/exports/brownnote bundle'"),
+            "{command}"
+        );
+        assert!(command.contains("brownnote-soundcraft"), "{command}");
+        assert!(
+            text_of(&tree, "export-handoff-title").contains(version),
+            "{}",
+            text_of(&tree, "export-handoff-title")
+        );
+        assert!(
+            text_of(&tree, "export-handoff-version").contains(version),
+            "{}",
+            text_of(&tree, "export-handoff-version")
+        );
+        assert!(text_of(&tree, "export-handoff-output").contains("new, non-existent directory"));
+        assert!(text_of(&tree, "export-handoff-next").contains("not yet a SoundCraft project"));
+        assert_inside(
+            &tree,
+            &[
+                "export-panel",
+                "export-handoff-command",
+                "export-handoff-version",
+                "export-handoff-output",
+                "export-handoff-next",
+            ],
+            (820.0, 600.0),
+            "820x600 export handoff",
+        );
+        assert_eq!(tree["warnings"].as_array().unwrap().len(), 0);
+    }
+
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_minimum_and_default_window_fit_every_header_transport_and_panel_control() {
@@ -436,6 +492,7 @@ mod tests {
             ("import-path", "import-panel", Some("import-panel")),
             ("project-path", "projects-panel", Some("projects-panel")),
             ("export-panel", "export-panel", Some("export-panel")),
+            ("export-handoff", "export-handoff", Some("export-panel")),
         ];
         for (size, width, height) in [("820x600", 820.0, 600.0), ("1120x800", 1120.0, 800.0)] {
             for (scene, label, panel) in cases {

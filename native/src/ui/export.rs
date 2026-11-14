@@ -18,15 +18,18 @@
 //! second media writer and nothing is regenerated from source audio, a render
 //! cache or a plugin (D4).
 //!
-//! D19: SoundCraft consumes this bundle as a pinned external destination. This
-//! panel never launches it, and no plugin state is claimed portable (D21).
+//! D19: SoundCraft consumes this bundle as a pinned external destination. After
+//! a successful export the panel prints the exact `brownnote-soundcraft`
+//! command with the exported bundle filled in; this panel never launches it,
+//! and no plugin state is claimed portable (D21).
 use super::{State, button, caption, ink, projects};
 use brownnote_native::{
+    adapters::soundcraft,
     edit::EditModel,
     export::{
         adapter::{self, AdapterError},
         bundle::{BundleError, BundleReceipt, BundleRequest, SystemWriter},
-        manifest::{TimeOrigin, Timing},
+        manifest::{MANIFEST_FORMAT_VERSION, TimeOrigin, Timing},
     },
     import::ProjectMedia,
     performance::{LoopBars, TakeId, Tempo},
@@ -208,6 +211,9 @@ pub struct Export {
     pub destination: TextEdit,
     /// The receipt, the refusal, or what the panel is doing right now.
     pub notice: String,
+    /// The last bundle this panel published, if any. The post-export handoff
+    /// prints its path so the SoundCraft command is copy-ready.
+    pub last_bundle: Option<PathBuf>,
     pub error: Option<String>,
     pending: Option<Job>,
     generation: u64,
@@ -228,6 +234,7 @@ impl Default for Export {
             destination: TextEdit::default(),
             notice: "Choose a new absolute directory. Export never overwrites an existing bundle."
                 .into(),
+            last_bundle: None,
             error: None,
             pending: None,
             generation: 0,
@@ -470,6 +477,7 @@ pub fn poll(s: &mut State) -> bool {
     }
     match outcome {
         Outcome::Exported(receipt) => {
+            s.export.last_bundle = Some(receipt.destination.clone());
             s.export.notice = receipt_text(&receipt);
             s.export.error = None;
         }
@@ -650,6 +658,48 @@ pub fn on_key(s: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         && !event.mods.logo
 }
 
+/// The `brownnote-soundcraft` this build can run: the sibling the macOS test
+/// package and Cargo's target directory ship, else the bare name a PATH
+/// installation provides. The panel shows the command; it never launches it.
+fn soundcraft_program() -> String {
+    let sibling = std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.parent()
+                .map(|directory| directory.join("brownnote-soundcraft"))
+        })
+        .filter(|path| path.is_file());
+    match sibling {
+        Some(path) => shell_quote(&path.to_string_lossy()),
+        None => "brownnote-soundcraft".into(),
+    }
+}
+
+/// One shell word, quoted only when it needs it. A single quote inside the
+/// word becomes `'\''`, which every POSIX shell reads back exactly.
+pub fn shell_quote(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_./:=+,@%".contains(character));
+    if plain {
+        return word.to_owned();
+    }
+    format!("'{}'", word.replace('\'', r"'\''"))
+}
+
+/// The copy-ready handoff for one exported bundle. The bundle path is the only
+/// value this panel knows, so the app, CLI and a new output directory stay
+/// explicit arguments the person supplies.
+pub fn handoff_command(bundle: &Path) -> String {
+    format!(
+        "{} --bundle {} --app /path/to/SoundCraft.app/Contents/MacOS/SoundCraft --cli \
+         /path/to/soundcraft-cli --output /path/to/new-session-directory",
+        soundcraft_program(),
+        shell_quote(&bundle.to_string_lossy())
+    )
+}
+
 pub fn header(s: &State) -> El {
     button(
         "export-toggle",
@@ -687,7 +737,12 @@ pub fn panel(s: &State) -> El {
         .scroll(rune::ScrollSpec {
             stick_bottom: false,
         })
-        .child(caption("NEUTRAL BUNDLE · MANIFEST v3, notes.mid, media/ · OFF-THREAD"))
+        .child(
+            caption(format!(
+                "NEUTRAL BUNDLE · MANIFEST v{MANIFEST_FORMAT_VERSION}, notes.mid, media/ · OFF-THREAD"
+            ))
+            .key("export-manifest-caption"),
+        )
         .child(
             text_input(&s.export.destination, TextStyle::new(12.0, 500.0))
                 .key("export-destination")
@@ -729,9 +784,54 @@ pub fn panel(s: &State) -> El {
             "One export at a time; a second request is refused, not queued. The export uses one \
              captured snapshot of the kit, takes, edits and retained audio: work done while it \
              runs is not half-included, and nothing is regenerated. The project, registry, takes \
-             and output stay unchanged. SoundCraft consumes the bundle as a pinned external \
-             destination; this panel never launches it (D19).",
+             and output stay unchanged.",
         ).wrap());
+    if let Some(bundle) = &s.export.last_bundle {
+        let command = handoff_command(bundle);
+        body = body
+            .child(
+                caption(format!(
+                    "SOUNDCRAFT HANDOFF · SOUNDCRAFT {}",
+                    soundcraft::VERSION
+                ))
+                .key("export-handoff-title")
+                .wrap(),
+            )
+            .child(
+                caption(command.clone())
+                    .key("export-handoff-command")
+                    .role("note")
+                    .label(&command)
+                    .wrap(),
+            )
+            .child(
+                caption(format!(
+                    "Replace the /path/to --app and --cli placeholders with the SoundCraft {} app \
+                     binary and its matching soundcraft-cli. The adapter refuses a missing or \
+                     mismatched build and never touches the neutral bundle.",
+                    soundcraft::VERSION
+                ))
+                .key("export-handoff-version")
+                .wrap(),
+            )
+            .child(
+                caption(
+                    "--output must name a new, non-existent directory; an existing directory is \
+                     refused. Move the entire output directory: it holds session.scraft, the \
+                     imported audio, the source manifest and adapter-report.json.",
+                )
+                .key("export-handoff-output")
+                .wrap(),
+            )
+            .child(
+                caption(
+                    "The neutral bundle alone is not yet a SoundCraft project: only this adapter \
+                     turns the manifest, notes.mid and media/ into a session.scraft directory.",
+                )
+                .key("export-handoff-next")
+                .wrap(),
+            );
+    }
     if let Some(error) = &s.export.error {
         body = body.child(
             caption(error)
