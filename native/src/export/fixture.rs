@@ -57,9 +57,20 @@ pub struct FixturePluginIdentity {
 
 /// Mirror of the #107 effective edit view: the exported onset may differ from
 /// the captured original; the difference is recorded as a conversion loss.
+///
+/// The optional provenance separates the three independent causes so the
+/// manifest can name exactly what changed: a moved onset (`effective` differs
+/// from the event's `start_nanos`), an edited velocity, and a take recorded at
+/// a different tempo than the export. `None` means that cause did not occur, so
+/// an untouched event can carry `edit: None` and no loss at all.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FixtureEdit {
     pub effective_start_nanos: u64,
+    /// Captured velocity, present only when the export changed it.
+    pub original_velocity: Option<u8>,
+    /// Take recording tempo in milli-BPM, present only when it differs from
+    /// the export tempo.
+    pub recording_tempo_milli_bpm: Option<u32>,
     pub detail: String,
 }
 

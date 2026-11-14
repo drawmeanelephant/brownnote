@@ -1335,6 +1335,56 @@ fn real_writer_bundle_imports_every_effective_hit_and_note() -> TestResult {
     Ok(())
 }
 
+/// #237: converting a real exported bundle must not inherit false onset-move
+/// records for untouched events, while a genuinely nudged hit keeps its own.
+#[test]
+fn converted_report_omits_false_onset_losses_for_untouched_events() -> TestResult {
+    let fixture = Fixture::new()?;
+    let bundle = writer_bundle(&fixture.root)?;
+    let manifest = Manifest::decode(&fs::read(bundle.join("manifest.json"))?)?;
+    let mut request = fixture.request.clone();
+    request.bundle = bundle;
+    let report = convert(&request)?;
+    // The adapter copies the writer's losses verbatim; assert it here so the
+    // downstream adapter-report.json reflects the fixed classification.
+    assert_eq!(report.bundle_losses, manifest.losses);
+    let nudged = manifest
+        .events
+        .iter()
+        .find(|event| event.pad.is_some() && event.start_nanos == 155_000_000)
+        .ok_or("writer bundle without the 155 ms nudged hit")?;
+    let onset_events: Vec<_> = report
+        .bundle_losses
+        .iter()
+        .filter_map(|loss| match loss {
+            LossRecord::ConversionLoss { event, detail } if detail.contains("edit moved onset") => {
+                Some(*event)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        onset_events,
+        [nudged.id],
+        "only the genuinely nudged hit should report a moved onset"
+    );
+    for event in &manifest.events {
+        if event.id == nudged.id {
+            continue;
+        }
+        for loss in &report.bundle_losses {
+            if let LossRecord::ConversionLoss { event: id, detail } = loss {
+                assert!(
+                    !(*id == event.id && detail.contains("edit moved onset")),
+                    "untouched {:?} reported a false onset move: {detail}",
+                    event.id
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn writer_zero_length_one_shot_and_sub_tick_notes_convert() -> TestResult {
     let fixture = Fixture::new()?;

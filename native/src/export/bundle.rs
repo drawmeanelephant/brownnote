@@ -310,14 +310,41 @@ pub fn build_manifest(
             }
             let (pad, asset) = event_target(event, &pads)?;
             let effective = effective_start_nanos(event);
+            // Name exactly what an edit changed. An untouched event carries no
+            // edit at all; an edit with only some causes set reports only those,
+            // so a velocity edit or a take's recording-tempo scaling never
+            // masquerades as a moved onset.
             if let Some(edit) = &event.edit {
-                losses.push(LossRecord::ConversionLoss {
-                    event: event.id,
-                    detail: format!(
-                        "edit moved onset from {} to {} ns ({})",
-                        event.start_nanos, edit.effective_start_nanos, edit.detail
-                    ),
-                });
+                if edit.effective_start_nanos != event.start_nanos {
+                    losses.push(LossRecord::ConversionLoss {
+                        event: event.id,
+                        detail: format!(
+                            "edit moved onset from {} to {} ns ({})",
+                            event.start_nanos, edit.effective_start_nanos, edit.detail
+                        ),
+                    });
+                }
+                if let Some(original) = edit.original_velocity {
+                    losses.push(LossRecord::ConversionLoss {
+                        event: event.id,
+                        detail: format!(
+                            "edit changed velocity from {original} to {} at {} ns ({})",
+                            event.velocity.unwrap_or(original),
+                            event.start_nanos,
+                            edit.detail
+                        ),
+                    });
+                }
+                if let Some(recording_tempo) = edit.recording_tempo_milli_bpm {
+                    losses.push(LossRecord::ConversionLoss {
+                        event: event.id,
+                        detail: format!(
+                            "tempo scaling from {recording_tempo} milli-BPM recording to {} \
+                             milli-BPM export ({})",
+                            request.timing.tempo_milli_bpm, edit.detail
+                        ),
+                    });
+                }
             }
             if let (Some(pad), Some(asset)) = (pad, asset)
                 && let Some(definition) = pads.get(&pad)
