@@ -151,6 +151,10 @@ pub mod layout {
         "transport-loop",
         "transport-mode",
         "transport-count-in",
+        "transport-tempo-down",
+        "transport-bpm",
+        "transport-tempo-up",
+        "transport-beat",
         "projects-toggle",
         "export-toggle",
     ];

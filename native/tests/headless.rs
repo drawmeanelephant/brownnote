@@ -346,6 +346,10 @@ mod tests {
         "transport-loop",
         "transport-mode",
         "transport-count-in",
+        "transport-tempo-down",
+        "transport-bpm",
+        "transport-tempo-up",
+        "transport-beat",
         "projects-toggle",
         "export-toggle",
     ];
@@ -373,6 +377,42 @@ mod tests {
                 "{case}: {key} outside {width}x{height}: {x} {y} {w} {h}"
             );
         }
+    }
+
+    fn label_of<'a>(tree: &'a Value, key: &str) -> &'a str {
+        tree["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|element| element["key"] == key)
+            .unwrap_or_else(|| panic!("missing {key}"))["label"]
+            .as_str()
+            .unwrap_or("")
+    }
+
+    /// The real binary at the minimum window shows the default tempo and the
+    /// dedicated beat reference, which tracks the armed pass instead of the
+    /// truncating status caption.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_transport_shows_bpm_and_beat_indicator_at_minimum_size() {
+        let idle = run("transport-bpm", &["--size", "820x600"]);
+        assert_eq!(label_of(&idle, "transport-bpm"), "Tempo 116 BPM");
+        assert_eq!(label_of(&idle, "transport-beat"), "Transport stopped");
+        assert_eq!(idle["warnings"].as_array().unwrap().len(), 0);
+
+        let armed = run(
+            "transport-bpm-armed",
+            &["--size", "820x600", "--scene", "transport-armed"],
+        );
+        assert_eq!(label_of(&armed, "transport-beat"), "Bar 1 beat 1");
+        assert_inside(
+            &armed,
+            &["transport-bpm", "transport-beat", "transport-cancel"],
+            (820.0, 600.0),
+            "820x600 armed",
+        );
+        assert_eq!(armed["warnings"].as_array().unwrap().len(), 0);
     }
 
     #[test]

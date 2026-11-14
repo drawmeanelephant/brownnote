@@ -96,10 +96,22 @@ port name), TAKE EDIT, INSTRUMENT, LIVE, and RETRY AUDIO while the output has
 failed — is one row at the default width and wraps onto a second row instead
 of leaving the window at the minimum width, including the macOS traffic-light
 inset from `--chrome`. The second row keeps REC, PLAY, LOOP, mode, count-in,
-DISCARD while a pass is armed, PROJECT and EXPORT inside the window at both
-sizes; the decorative `HIT HIGHER. GO LOUDER.` tagline is dropped when the
-window is narrow. All 16 pads keep at least 140×60 pt at 820×600, even with
+tempo (− / BPM / +), the beat/count-in indicator, DISCARD while a pass is
+armed or recording, PROJECT and EXPORT inside the window at both sizes; the
+decorative `HIT HIGHER. GO LOUDER.` tagline is dropped when the window is
+narrow. All 16 pads keep at least 140×60 pt at 820×600, even with
 the asset-error banner and RETRY AUDIO mounted together.
+
+The tempo readout shows the project tempo (`116 BPM` by default, keeping a
+fractional milli-BPM when a project loads one). The `−` and `+` steppers are
+focusable buttons, not a text field, so the printable pad keys keep playing
+pads; both route through `Takes::set_tempo` and re-anchor running playback.
+An armed or recording pass refuses the change with the registry's
+`TempoLocked` notice and keeps its timing. A dedicated `transport-beat`
+indicator shows the count-in beats (`COUNT-IN 4..1`) or the running
+`bar.beat` (`1.1..N.4`), independent of the truncating status caption. It is
+visual only: the optional audible click was intentionally omitted, so the
+real-time audio callback is unchanged.
 
 Pitch changes playback speed and duration using linear interpolation; this
 is not time stretching or a bandlimited pitch shifter. Pan is constant power.

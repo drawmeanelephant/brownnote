@@ -22,12 +22,12 @@ use brownnote_native::{
     engine::Command,
     output::Output,
     performance::{
-        Channel, EventId, Note, NoteKey, NoteOn, OriginalTime, Pitch, SourceId, StreamEpoch,
-        TakeId, Target, Velocity,
+        Channel, EventId, Note, NoteKey, NoteOn, OriginalTime, PerformanceError, Pitch, SourceId,
+        StreamEpoch, TakeId, Target, Tempo, Velocity,
         scheduler::{ScheduleOutcome, ScheduledAction, ScheduledEvent, Trigger},
     },
     project::PadId,
-    takes::{CountIn, PassMode, PassOptions, Takes},
+    takes::{CountIn, PassMode, PassOptions, Takes, TakesError},
 };
 use rune::{El, TextStyle, el, row, text};
 use std::collections::{BTreeMap, BTreeSet};
@@ -108,7 +108,10 @@ pub struct Transport {
     reason: Option<String>,
     /// Committed held notes without a sounding backend (gauge, per poll).
     unsounded: usize,
-    shown: Option<(u64, u64)>,
+    /// Last drawn (bar, beat, count-in): keeps `is_count_in`, so the final
+    /// count-in beat `(1, 1, true)` and the downbeat `(1, 1, false)` differ and
+    /// the indicator redraws deterministically.
+    shown: Option<(u64, u64, bool)>,
 }
 
 impl Transport {
@@ -462,6 +465,60 @@ pub fn toggle_count_in(s: &mut State) {
     };
 }
 
+/// One BPM step for the tempo controls, inside a playable range so a press can
+/// never zero the tempo or race off the top.
+const TEMPO_STEP_MILLI_BPM: i64 = 1_000;
+const TEMPO_MIN_MILLI_BPM: i64 = 20_000;
+const TEMPO_MAX_MILLI_BPM: i64 = 300_000;
+
+/// `116 BPM` for an integral tempo, `116.5 BPM` while the milli-BPM stays
+/// fractional, so a loaded project never loses precision in the display.
+pub fn format_bpm(tempo: Tempo) -> String {
+    let milli = tempo.milli_bpm();
+    let whole = milli / 1_000;
+    let fraction = milli % 1_000;
+    if fraction == 0 {
+        format!("{whole} BPM")
+    } else {
+        let mut digits = format!("{fraction:03}");
+        while digits.ends_with('0') {
+            digits.pop();
+        }
+        format!("{whole}.{digits} BPM")
+    }
+}
+
+fn tempo_target(current: Tempo, steps: i64) -> Option<Tempo> {
+    let milli = (i64::from(current.milli_bpm()) + steps * TEMPO_STEP_MILLI_BPM)
+        .clamp(TEMPO_MIN_MILLI_BPM, TEMPO_MAX_MILLI_BPM);
+    Tempo::try_from(u32::try_from(milli).ok()?).ok()
+}
+
+/// Move the project tempo by whole BPM steps. Every mutation goes through
+/// `Takes::set_tempo`, so an armed or recording pass refuses with the
+/// registry's own `TempoLocked` (leaving its timing untouched) and active
+/// playback re-anchors at this instant: the changed loop keeps replaying from
+/// the new origin instead of going silent or double-triggering.
+pub fn tempo_step(s: &mut State, steps: i64) {
+    let Some(tempo) = tempo_target(s.takes.tempo(), steps) else {
+        return;
+    };
+    match s.takes.set_tempo(tempo) {
+        Ok(()) => {
+            if s.transport.playing.is_some() {
+                let now = app_nanos(s);
+                start_playing(&mut s.transport, now);
+            }
+            s.transport.error = None;
+            s.transport.notice = None;
+        }
+        Err(TakesError::Performance(PerformanceError::TempoLocked)) => {
+            s.transport.error = Some("Tempo is locked while a pass is armed or recording".into());
+        }
+        Err(error) => s.transport.error = Some(format!("Tempo not changed: {error}")),
+    }
+}
+
 /// Reset after a project replaces the registry. Replay stops; nothing records.
 pub fn reset(s: &mut State) {
     let options = s.transport.options;
@@ -501,7 +558,7 @@ pub fn poll(s: &mut State) -> bool {
     finish(s);
     let recovered = recoveries(s);
     schedule(s, now, recovered);
-    let beat = position(s, now).map(|(bar, beat, _)| (bar, beat));
+    let beat = position(s, now);
     let shown = std::mem::replace(&mut s.transport.shown, beat) != beat;
     shown
         || recovered
@@ -876,6 +933,86 @@ fn pill(key: &str, label: &str, on: bool) -> El {
         }))
 }
 
+/// A compact, focusable tempo stepper. It is a button, not a text field, so
+/// the printable pad trigger keys (`1234QWERASDFZXCV`) keep playing pads.
+fn tempo_stepper(key: &str, glyph: &str, label: &str, a11y: String, steps: i64) -> El {
+    el().key(key)
+        .role("button")
+        .label(label)
+        .a11y_value(a11y)
+        .focusable(true)
+        .h(16.0)
+        .px(5.0)
+        .center()
+        .radius(3.0)
+        .fill(ink("#1b251f"))
+        .border(1.0, ink("#3b4c42"))
+        .child(
+            text(glyph)
+                .font(TextStyle::new(10.0, 700.0))
+                .color(ink("#c0cbbf")),
+        )
+        .on_press(move |s: &mut State| tempo_step(s, steps))
+}
+
+/// The project tempo readout: `116 BPM`, or `116.5 BPM` when fractional.
+fn bpm_display(s: &State) -> El {
+    let value = format_bpm(s.takes.tempo());
+    el().key("transport-bpm")
+        .role("status")
+        .label(format!("Tempo {value}"))
+        .a11y_value(value.clone())
+        .h(16.0)
+        .px(6.0)
+        .center()
+        .radius(3.0)
+        .fill(ink("#1b251f"))
+        .border(1.0, ink("#3b4c42"))
+        .child(
+            text(value)
+                .font(TextStyle::new(9.5, 700.0))
+                .color(ink("#ffe1d8")),
+        )
+}
+
+/// A dedicated visual beat/count-in reference driven by `position`, kept out
+/// of the truncating `transport-status` caption. It shows the remaining
+/// count-in (`COUNT-IN 4..1`) or the running `bar.beat` (`1.1..N.4`) next to
+/// four step pips, and exposes the same reading to assistive technology.
+fn beat_indicator(s: &State) -> El {
+    let position = position(s, app_nanos(s));
+    let (badge, label) = match position {
+        Some((_, beat, true)) => (
+            format!("COUNT-IN {beat}"),
+            format!("Count-in beat {beat} of 4"),
+        ),
+        Some((bar, beat, false)) => (format!("{bar}.{beat}"), format!("Bar {bar} beat {beat}")),
+        None => ("–".into(), "Transport stopped".into()),
+    };
+    let mut pips = row().gap(2.0).center_y();
+    for step in 1..=4 {
+        let lit = position.is_some_and(|(_, beat, _)| beat == step);
+        pips = pips.child(el().w(5.0).h(5.0).radius(2.5).fill(if lit {
+            ink("#ff8e7a")
+        } else {
+            ink("#3b4c42")
+        }));
+    }
+    row()
+        .key("transport-beat")
+        .role("status")
+        .label(&label)
+        .a11y_value(badge.clone())
+        .gap(4.0)
+        .center_y()
+        .child(pips)
+        .child(
+            text(badge)
+                .font(TextStyle::new(9.5, 700.0))
+                .color(ink("#c0cbbf")),
+        )
+}
+
 /// The compact transport strip mounted above the pads.
 pub fn strip(s: &State) -> El {
     let t = &s.transport;
@@ -940,7 +1077,23 @@ pub fn strip(s: &State) -> El {
             )
             .role("switch")
             .on_press(toggle_count_in),
-        );
+        )
+        .child(tempo_stepper(
+            "transport-tempo-down",
+            "−",
+            "Slower tempo",
+            format!("Decrease tempo from {}", format_bpm(s.takes.tempo())),
+            -1,
+        ))
+        .child(bpm_display(s))
+        .child(tempo_stepper(
+            "transport-tempo-up",
+            "+",
+            "Faster tempo",
+            format!("Increase tempo from {}", format_bpm(s.takes.tempo())),
+            1,
+        ))
+        .child(beat_indicator(s));
     if recording {
         strip = strip.child(pill("transport-cancel", "DISCARD", false).on_press(cancel));
     }
