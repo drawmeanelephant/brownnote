@@ -1,4 +1,4 @@
-use brownnote_native::adapters::soundcraft::{Request, convert};
+use brownnote_native::adapters::soundcraft::{Request, VERSION, convert};
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -7,7 +7,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(flag) = args.next() {
         if flag == "--help" {
             println!(
-                "brownnote-soundcraft --bundle DIR --app PATH --cli PATH --output NEW_DIR [--mappings JSON]\nPinned SoundCraft 0.19.0; owns an isolated --no-audio GUI. Move the entire output directory.\nOptional mappings: JSON array of part, asset, root_note, key_low, key_high, key_track, one_shot, choke_group.\nReal-app v0.19.0 revalidation and maintainer listening remain required (D19)."
+                "brownnote-soundcraft --bundle DIR --app PATH --cli PATH --output NEW_DIR [--mappings JSON]\nPinned SoundCraft {VERSION}; owns an isolated --no-audio GUI. Move the entire output directory.\nOptional mappings: JSON array of part, asset, root_note, key_low, key_high, key_track, one_shot, choke_group.\nReal-app v{VERSION} revalidation and maintainer listening remain required (D19)."
             );
             return Ok(());
         }
