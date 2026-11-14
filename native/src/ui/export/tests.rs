@@ -8,7 +8,8 @@ use crate::ui::{media::Media, projects, transport};
 use brownnote_native::{
     engine::Sample,
     export::manifest::{
-        AssetId, AudioRole, LossRecord, MANIFEST_NAME, MEDIA_DIR, Manifest, PartKind,
+        AssetId, AudioRole, LossRecord, MANIFEST_FORMAT_VERSION, MANIFEST_NAME, MEDIA_DIR,
+        Manifest, PartKind,
     },
     export::midi::MIDI_PATH,
     import::{ImportService, MediaPublisher},
@@ -313,9 +314,9 @@ fn export_controls_export_a_complete_bundle_and_report_its_receipt() {
         rt.state.export.error
     );
 
-    // The bundle is complete: manifest v3, notes.mid, media/.
+    // The bundle is complete: current manifest, notes.mid, media/.
     let manifest = read_manifest(&destination);
-    assert_eq!(manifest.version, 3);
+    assert_eq!(manifest.version, MANIFEST_FORMAT_VERSION);
     assert_eq!(manifest.timing.tempo_milli_bpm, before.2);
     assert!(destination.join(MIDI_PATH).is_file());
     assert!(destination.join(MEDIA_DIR).is_dir());
@@ -332,7 +333,10 @@ fn export_controls_export_a_complete_bundle_and_report_its_receipt() {
 
     // The receipt names the manifest id and the counts.
     let status = label(&rt, "export-status");
-    assert!(status.contains("Manifest 3"), "{status}");
+    assert!(
+        status.contains(&format!("Manifest {MANIFEST_FORMAT_VERSION}")),
+        "{status}"
+    );
     assert!(
         status.contains(&manifest.events.len().to_string()),
         "{status}"
@@ -682,7 +686,7 @@ fn assert_export_succeeds(rt: &mut Runtime<State>, destination: &Path) {
         "{:?}",
         rt.state.export.error
     );
-    assert_eq!(read_manifest(destination).version, 3);
+    assert_eq!(read_manifest(destination).version, MANIFEST_FORMAT_VERSION);
     assert!(destination.join(MIDI_PATH).exists(), "notes.mid is missing");
 }
 
@@ -823,7 +827,7 @@ fn export_controls_use_one_captured_snapshot_and_honour_captured_edits() {
         "a muted take contributed audio: {:?}",
         manifest.audio
     );
-    assert_eq!(manifest.version, 3);
+    assert_eq!(manifest.version, MANIFEST_FORMAT_VERSION);
 }
 
 #[test]
@@ -1007,7 +1011,10 @@ fn export_controls_write_a_retained_live_take_as_its_sample_clips_part() {
         rt.state.export.error
     );
     let manifest = read_manifest(&destination);
-    assert_eq!(manifest.version, 3, "a live take note part requires v3");
+    assert_eq!(
+        manifest.version, MANIFEST_FORMAT_VERSION,
+        "a live take note part requires v3"
+    );
     assert!(
         manifest.parts.iter().any(|part| matches!(
             &part.kind,

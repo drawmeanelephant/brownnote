@@ -420,6 +420,7 @@ pub fn write_bundle_with_settings<W: BundleWriter + ?Sized>(
     settings: &AudioSettings,
 ) -> Result<BundleReceipt, BundleError> {
     let mut manifest = build_manifest(request, export)?;
+    manifest.master_gain = settings.master_gain;
     manifest.validate()?;
     if writer
         .exists(&request.destination)

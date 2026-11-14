@@ -108,12 +108,14 @@ native-plugin-host:
 # it opens the default output device and fails under BROWNNOTE_REQUIRE_CLAP=1
 # unless BROWNNOTE_LIVE_CPAL=1, so it runs only through
 # `make native-clap-live-cpal-test` on a machine with audio hardware.
-# The two pinned SoundCraft GUI tests are skipped by name too: they need the
-# pinned app, CLI and Python and run only through `make native-soundcraft-test`,
+# The pinned SoundCraft GUI tests are skipped by name too: they need the
+# pinned app and CLI and run only through `make native-soundcraft-test`,
 # so `--include-ignored` still passes without BROWNNOTE_SOUNDCRAFT_RUN_PINNED=1.
 CPAL_DEVICE_TEST = cpal_device_callback_timing_with_the_live_instrument
 SOUNDCRAFT_SKIPS = --skip pinned_app_recipe_and_adapter \
-	--skip pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio
+	--skip pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio \
+	--skip pinned_app_master_gain_bounce_matches_the_reference \
+	--skip pinned_app_accepts_writer_minimum_gates_and_source_only_rates
 
 native-test: native-plugin-host
 	$(CARGO) fmt --manifest-path native/Cargo.toml --check
@@ -178,6 +180,8 @@ native-ladspa-workflow-test: native-plugin-host
 native-soundcraft-test:
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_recipe_and_adapter -- --ignored --exact
 	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_reports_v3_live_take_notes_and_imports_the_retained_audio -- --ignored --exact
+	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_master_gain_bounce_matches_the_reference -- --ignored --exact
+	$(CARGO) test --manifest-path native/Cargo.toml --test soundcraft_adapter pinned_app_accepts_writer_minimum_gates_and_source_only_rates -- --ignored --exact
 
 # ------------------------------------------------------------------
 # Quality gates.  CI runs these through `make hygiene`; the pre-commit

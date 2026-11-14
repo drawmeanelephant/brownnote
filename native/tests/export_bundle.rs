@@ -669,6 +669,34 @@ fn manifest_version_round_trip_rejects_unknown_and_newer_versions() {
 }
 
 #[test]
+fn pre_v4_manifests_without_master_gain_read_as_unity_and_bad_master_is_rejected() {
+    let fixture = two_part_fixture();
+    let manifest = bundle::build_manifest(
+        &request(Path::new(SOURCE_ROOT), Path::new("/out/master")),
+        &fixture.export,
+    )
+    .unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&manifest.encode().unwrap()).unwrap();
+    assert_eq!(value["master_gain"], serde_json::json!(1.0));
+    value.as_object_mut().unwrap().remove("master_gain");
+    for version in [1, 2, 3] {
+        value["version"] = serde_json::json!(version);
+        let decoded = Manifest::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(decoded.version, version);
+        assert_eq!(
+            decoded.master_gain, 1.0,
+            "v{version} without master_gain must read as unity"
+        );
+    }
+
+    let mut bad = manifest.clone();
+    bad.master_gain = 2.0;
+    assert_eq!(bad.validate(), Err(ManifestError::InvalidMaster));
+    bad.master_gain = f32::NAN;
+    assert_eq!(bad.validate(), Err(ManifestError::InvalidMaster));
+}
+
+#[test]
 fn live_part_identity_is_a_versioned_checked_record() {
     let fixture = two_part_fixture();
     let manifest = bundle::build_manifest(

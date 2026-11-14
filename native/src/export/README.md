@@ -14,10 +14,14 @@ quantization, nudge, velocity, deletion, mute, removal, and loop visibility.
 
 ## Files and joins
 
-- `manifest.json`: version 3, with read-only v1/v2 support. Real 128-bit take
-  and instrument IDs use decimal strings; v1's numeric IDs remain readable.
-  The added audio/MIDI joins and original source references require v2. A
-  live-take notes part names the external plugin identity and requires v3.
+- `manifest.json`: version 4, with read-only v1/v2/v3 support. Real 128-bit
+  take and instrument IDs use decimal strings; v1's numeric IDs remain
+  readable. The added audio/MIDI joins and original source references require
+  v2. A live-take notes part names the external plugin identity and requires
+  v3. v4 adds the static `master_gain`; older manifests read as unity.
+  `master_gain` applies once to the reference mix, never to hit, dry or stem
+  assets, so adapters must restore it on the imported mix rather than baking
+  it into per-hit clips.
 - `notes.mid`: format 1, 960 PPQ, 4/4, one constant-tempo conductor.
   Only instrument parts produce MIDI. Live-instrument note parts stay out on
   purpose: an SMF track cannot carry the plugin identity, so writing one would
@@ -26,7 +30,8 @@ quantization, nudge, velocity, deletion, mute, removal, and loop visibility.
   channel 9 without automatic drum remapping. Notes retain exact velocities.
   Nanosecond onsets and absolute ends round independently to nearest ticks,
   ties later. Onset/end error is at most half a tick, duration error at most
-  one tick. A gate rounding to zero gets one tick. Tempo rounds to integer
+  one tick. A gate rounding to zero gets one tick, including a zero-duration
+  event. Tempo rounds to integer
   microseconds per quarter; tick conversion uses that encoded tempo so drift
   does not accumulate against audio. Unrepresentable tempos, track counts,
   or SMF delta times fail rather than wrap.
