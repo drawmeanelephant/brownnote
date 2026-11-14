@@ -380,6 +380,14 @@ pub const SCENES: &[Scene] = &[
         s.export.visible = true;
         s.export.destination = rune::TextEdit::new("/exports/brownnote bundle");
     }),
+    ("export-handoff", |s| {
+        s.export.visible = true;
+        s.export.destination = rune::TextEdit::new("/exports/brownnote bundle");
+        s.export.last_bundle = Some("/exports/brownnote bundle".into());
+        s.export.notice = "Exported bundle to /exports/brownnote bundle. Manifest 4 with 12 \
+                           event(s) and 5 asset(s). The captured kit was not modified."
+            .into();
+    }),
     ("import-path", |s| {
         media::controls::scene(s, media::controls::SceneKind::Path)
     }),

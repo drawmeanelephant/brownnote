@@ -71,6 +71,48 @@ class PackageTests(TestCase):
             with self.assertRaisesRegex(RuntimeError, "Refusing tag"):
                 package.require_tag(tag, "0.1.0")
 
+    def test_pinned_soundcraft_version_comes_from_the_adapter_source(self):
+        version = package.soundcraft_version()
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+        source = (package.ROOT / "native/src/adapters/soundcraft.rs").read_text()
+        self.assertIn(f'pub const VERSION: &str = "{version}"', source)
+        with tempfile.TemporaryDirectory() as temp:
+            missing = Path(temp) / "adapter.rs"
+            missing.write_text("// no pin here\n")
+            with self.assertRaisesRegex(RuntimeError, "No pinned SoundCraft VERSION"):
+                package.soundcraft_version(missing)
+
+    def test_package_ships_the_native_app_and_the_soundcraft_handoff(self):
+        self.assertEqual(package.EXECUTABLES, ["brownnote-native", "brownnote-soundcraft"])
+
+    def test_executable_verification_refuses_non_arm64_and_non_system_dylibs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            binary = Path(temp) / "brownnote-soundcraft"
+            binary.write_bytes(b"mach-o stand-in")
+            with mock.patch.object(package, "output", return_value="x86_64"), \
+                    mock.patch.object(package, "run"):
+                with self.assertRaisesRegex(RuntimeError, "arm64-only"):
+                    package.verify_executable(binary, "brownnote-soundcraft")
+            reports = iter(["arm64",
+                            "binary:\n\t/System/Library/Frameworks/Foundation.framework/Foundation "
+                            "(compatibility version 300.0.0)\n"
+                            "\t/usr/local/lib/libvorbis.0.dylib (compatibility version 0.0.0)"])
+            with mock.patch.object(package, "output", side_effect=lambda args: next(reports)), \
+                    mock.patch.object(package, "run"):
+                with self.assertRaisesRegex(RuntimeError, "non-system dylib"):
+                    package.verify_executable(binary, "brownnote-soundcraft")
+            reports = iter(["arm64",
+                            "binary:\n\t/System/Library/Frameworks/Foundation.framework/Foundation "
+                            "(compatibility version 300.0.0)\n"
+                            "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)"])
+            with mock.patch.object(package, "output", side_effect=lambda args: next(reports)), \
+                    mock.patch.object(package, "run") as verified:
+                dependencies = package.verify_executable(binary, "brownnote-soundcraft")
+            self.assertEqual(len(dependencies), 2)
+            self.assertIn("/usr/lib/libSystem.B.dylib", dependencies[1])
+            verified.assert_called_once()
+            self.assertEqual(verified.call_args.args[0][:3], ["codesign", "--verify", "--strict"])
+
     def test_generated_kit_contains_five_decodable_non_silent_tones(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "tones"

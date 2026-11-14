@@ -29,6 +29,27 @@ tempo, and every gate gets at least one tick, so zero-length and sub-tick notes
 stay editable instead of blocking the handoff. The bundle origin is not added
 again to already-relative event positions.
 
+## Packaged handoff and the dynamic pin
+
+`adapters::soundcraft::VERSION` is the one place the required SoundCraft
+release is written. `brownnote-soundcraft --help` and the app's post-export
+EXPORT panel format that constant instead of repeating a version literal, so
+a re-pin changes one source line and no UI copy. The EXPORT panel shows the
+exact command with the exported `--bundle` path filled in and shell-quoted
+for spaces; it never launches SoundCraft itself.
+
+`native/scripts/package_macos.py` builds `brownnote-soundcraft` with
+`--locked --release` and ships it directly beside `brownnote-native` in the
+flat `Brownnote Native Test/` layout, keeping `tools/` absent. It verifies the
+Mach-O (arm64, only `/System/Library/` and `/usr/lib/` dylibs, valid ad-hoc
+signature) and records `soundcraft_binary_sha256`, `soundcraft_version` and
+`soundcraft_dylibs` in `build-record.json`. The smoke suite runs the relocated
+binary from a path containing spaces: `--help` must exit `0` naming the pinned
+release, and a conversion with a missing SoundCraft app/CLI or an existing
+`--output` must exit non-zero while the input bundle's tree and SHA-256
+digests stay identical. The SoundCraft app and CLI themselves are never
+redistributed.
+
 ## Track and clip identity
 
 A content hash is not an arrangement. During assembly, beside the static master

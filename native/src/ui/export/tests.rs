@@ -1037,3 +1037,125 @@ fn export_controls_write_a_retained_live_take_as_its_sample_clips_part() {
         manifest.audio
     );
 }
+
+/// Every element text the panel drew, joined for "must never appear" checks.
+fn texts(rt: &Runtime<State>) -> String {
+    rt.elements()
+        .into_iter()
+        .filter_map(|element| element.text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn export_panel_shows_a_copy_ready_soundcraft_handoff_after_a_successful_export() {
+    let root = Root::new();
+    let mut rt = runtime();
+    record_take(&mut rt, 2);
+    let destination = root.0.join("bundle with spaces");
+    // Nothing to hand off before the export publishes a bundle.
+    show(&mut rt);
+    assert!(rt.find("export-handoff-command").is_none());
+    export_to(&mut rt, &destination);
+    finish(&mut rt);
+    assert!(
+        rt.state.export.error.is_none(),
+        "{:?}",
+        rt.state.export.error
+    );
+    run(&mut rt, 0.5);
+
+    // The caption names the manifest version the writer just produced.
+    assert_eq!(
+        label(&rt, "export-manifest-caption"),
+        format!(
+            "NEUTRAL BUNDLE · MANIFEST v{MANIFEST_FORMAT_VERSION}, notes.mid, media/ · OFF-THREAD"
+        )
+    );
+
+    // The command is the shipped CLI plus the exported bundle, quoted for a
+    // shell because this bundle's directory contains spaces.
+    let command = label(&rt, "export-handoff-command");
+    assert!(command.contains(" --bundle "), "{command}");
+    assert!(
+        command.contains(&format!("--bundle '{}'", destination.display())),
+        "{command}"
+    );
+    assert!(command.contains("brownnote-soundcraft"), "{command}");
+    assert!(command.contains("--app "), "{command}");
+    assert!(command.contains("--cli "), "{command}");
+    assert!(command.contains("--output "), "{command}");
+
+    // The required version and both remaining gates are dynamic and explicit.
+    let version = brownnote_native::adapters::soundcraft::VERSION;
+    assert!(label(&rt, "export-handoff-title").contains(version));
+    assert!(label(&rt, "export-handoff-version").contains(version));
+    assert!(label(&rt, "export-handoff-output").contains("new, non-existent directory"));
+    assert!(label(&rt, "export-handoff-next").contains("not yet a SoundCraft project"));
+
+    // The old dead-end copy is gone and no in-app launch control exists.
+    let drawn = texts(&rt);
+    assert!(!drawn.contains("this panel never launches it"), "{drawn}");
+    assert!(rt.find("export-launch").is_none());
+    assert!(!drawn.contains("LAUNCH SOUNDCRAFT"), "{drawn}");
+}
+
+#[test]
+fn export_handoff_quotes_shell_words_only_when_needed() {
+    assert_eq!(shell_quote("/exports/bundle"), "/exports/bundle");
+    assert_eq!(shell_quote("/exports/my bundle"), "'/exports/my bundle'");
+    assert_eq!(
+        shell_quote("/exports/it's here"),
+        "'/exports/it'\\''s here'"
+    );
+    assert_eq!(shell_quote(""), "''");
+    let command = handoff_command(Path::new("/exports/my bundle"));
+    assert!(
+        command.contains("--bundle '/exports/my bundle' --app "),
+        "{command}"
+    );
+}
+
+#[test]
+fn export_sources_never_hardcode_the_pinned_version_or_manifest_format() {
+    for source in [
+        include_str!("../export.rs"),
+        include_str!("../../bin/brownnote-soundcraft.rs"),
+    ] {
+        assert!(
+            !source.contains("0.19.0"),
+            "hardcoded pinned SoundCraft version"
+        );
+        assert!(
+            !source.contains("MANIFEST v3"),
+            "hardcoded manifest caption"
+        );
+    }
+}
+
+#[test]
+fn export_handoff_panel_fits_and_scrolls_at_minimum_and_default_sizes() {
+    use crate::ui_test_support::layout;
+    for size in layout::SIZES {
+        let mut state = layout::state(true);
+        layout::scene(&mut state, "export-handoff");
+        layout::failed(&mut state);
+        let rt = layout::runtime(state, size);
+        let case = format!("{size:?} export handoff");
+        layout::assert_layout(&rt, size, &case, Some("export-panel"), false);
+        let panel = layout::rect(&rt, "export-panel", &case);
+        for key in [
+            "export-handoff-title",
+            "export-handoff-command",
+            "export-handoff-version",
+            "export-handoff-output",
+            "export-handoff-next",
+        ] {
+            let rect = layout::rect(&rt, key, &case);
+            assert!(
+                rect[0] >= panel[0] - 0.1 && rect[0] + rect[2] <= panel[0] + panel[2] + 0.1,
+                "{case}: {key} outside the panel horizontally: {rect:?} {panel:?}"
+            );
+        }
+    }
+}

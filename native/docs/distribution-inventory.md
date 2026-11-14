@@ -11,7 +11,7 @@ and missing notices. This is an engineering inventory, not legal advice.
 
 | Component | Evidence and distribution choice |
 |---|---|
-| Brownnote native binary | Repository MIT `LICENSE`; copy it with the artifact. Build only `brownnote-native`, not the showcase or C CLI. |
+| Brownnote native binaries | Repository MIT `LICENSE`; copy it with the artifact. Build exactly two binaries: `brownnote-native` and its neutral-bundle handoff `brownnote-soundcraft`, both from this repository's MIT-licensed source. Both must pass `lipo` (arm64), `otool -L` (system dylibs only) and `codesign --verify` (ad-hoc). Do not build or bundle the showcase or C CLI. |
 | Rust dependencies | `Cargo.lock` and target-filtered `cargo metadata --locked` identify the conservative macOS graph, including build/dev crates. Preserve actual source notices recursively, including Apache NOTICE and Unicode/BSD/Zlib notices. `dependency-inventory.json` records every version, declared license, origin, and included notice. It is not an exact binary link map. |
 | Rune | Git revision `cbaf637dfe5fcf3ec8b3f1c3ad27246b69742fbf`, MIT, copyright 2026 Anomaly. Its workspace crates inherit the upstream root notice, which is included. |
 | Inter fonts embedded by Rune | Native `text/default_fonts.rs` embeds unmodified Inter Regular, Medium and SemiBold. Font name tables say copyright 2016 The Inter Project Authors, SIL OFL 1.1. Include that attribution and full OFL; preserve the font license rather than relabeling fonts MIT. IBM Plex Mono is also conservatively credited, although the pinned default native font list does not embed it. No system fonts are copied. |
@@ -22,16 +22,17 @@ and missing notices. This is an engineering inventory, not legal advice.
 | Sample recordings | **Excluded** from this artifact. [`recordings/PROVENANCE.md`](../../recordings/PROVENANCE.md) names all seven files, `fart_dry.wav`, `fart_fuzz.wav`, `fart_delay.wav`, `fart_chorus.wav`, `fart_chain.wav`, `demo_brownnote.wav` and `demo_brownnote.m4a`, with the generator, command, inputs, effects, verification and SHA-256 for each. It records maintainer `drawmeanelephant`'s rights grant over all seven files under the root MIT `LICENSE` (Copyright (c) 2026 drawmeanelephant), including the notice obligation, and explicitly states that no legal opinion is claimed on whether the GPL v2 GuitarPedal bench imposes any obligation on the six bench-processed files. The finalized maintainer decision keeps `recordings/` out of packaged `brownnote-native` artifacts: only the five generated arithmetic test tones ship. The packager refuses a bundled audio file whose SHA-256 matches a recording, and refuses to copy a `recordings/` file unless the declaration names it. |
 | Test tones | The packaging script generates five one-second PCM16 mono tones using arithmetic only. They carry no recording/generator/plugin input. Filenames follow the existing kit contract; the FUZZ/DELAY/CHORUS/CHAIN labels do **not** mean those tones are processed effects or the original kit. The generator is covered by Brownnote's MIT license. The packager refuses the build if any bundled audio file is byte-identical to a file under `recordings/`. |
 | GuitarPedal | **Excluded.** The inspected upstream `LICENSE` is GPL v2. Bundling its bench would require a pinned source/build inventory and complete corresponding-source distribution review. No inference is made that subprocess use changes either project's license. |
-| Plugins, SoundCraft, instruments, fart-app, kujamba/zcn | **Excluded**, both binaries and media. No plugin, instrument bank, backend runtime or SoundCraft redistribution permission is assumed. |
+| Plugins, SoundCraft, instruments, fart-app, kujamba/zcn | **Excluded**, both binaries and media. No plugin, instrument bank, backend runtime or SoundCraft redistribution permission is assumed. `brownnote-soundcraft` is Brownnote's own MIT adapter for a user-supplied SoundCraft installation; the SoundCraft app and CLI are never bundled, and the adapter's distribution adds no upstream SoundCraft bytes. |
 
 ## Audit the generated artifact
 
 The archive includes `Cargo.lock`, `dependency-inventory.json`, `licenses/`,
 `corresponding-source.tar.gz`, `DISTRIBUTION.md`, and `build-record.json`.
 The build record identifies the crate version, full source SHA, dirty state,
-binary and lockfile SHA-256, Rust version, build OS, dylibs, signing
-limitation and kit limitation. Do not describe a dirty build as validated at
-its recorded commit.
+`binary_sha256` for `brownnote-native`, `soundcraft_binary_sha256`,
+`soundcraft_version` and `soundcraft_dylibs` for `brownnote-soundcraft`, the
+lockfile SHA-256, Rust version, build OS, dylibs, signing limitation and kit
+limitation. Do not describe a dirty build as validated at its recorded commit.
 
 Supplemental notices are checked in so a package build does not need GitHub
 credentials or make network license guesses. Dependency updates that add a
