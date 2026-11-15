@@ -383,9 +383,13 @@ The virtual driver runs the same mixer, with at most 0.25 seconds rendered
 per poll; it is a silent fallback, not a wall-clock playback guarantee.
 Recovering or retrying a failed device starts a fresh voice pool.
 
-Pedal chains and renders do not survive a quit, and there is no patch
-persistence. Effects never run inside the audio callback: a render completes
-off the UI thread, and swapping it in is a `Load` on the command queue. The
+A saved project carries the pad settings, the pedal chains, takes and edits,
+and its owned media. While the session is dirty, a separate recovery copy is
+written every 60 seconds and offered, never applied, on the next open. The
+pedal render cache stays a separate evictable, content-addressed cache, so a
+render may be recomputed after a quit. Effects never run inside the audio
+callback: a render completes off the UI thread, and swapping it in is a
+`Load` on the command queue. The
 mixer holds 64 slots. One asset registry allocates sources and retained renders
 together; shared encoded assets reuse a slot. Replacements wait rather than
 overwrite occupied slots, and retired slots become reusable only after the
@@ -395,8 +399,14 @@ The import service is mounted through `State::import_sample`, without an
 import control yet. Decoding, hashing, copying and retained-media preparation
 run off the audio callback and ongoing UI interaction. The current session
 owns encoded source/render bytes in memory. They are not durable until adopted
-and saved through the real project store; no application save UI is claimed.
+and saved through the project store. The **PROJECT** panel provides explicit
+SAVE / SAVE AS, OPEN (REPLACE KIT) and LIST RECOVERY; the D6 recovery copy and
+the bounded retention/collection policy run on the same worker. See
+[project sessions](docs/project-session.md),
+[open and recovery](docs/project-open-recovery.md) and
+[retention](docs/project-retention.md).
 
-Also deferred: sequencer, desk/mixer, library, loop station, recording,
-NINJAM, MIDI, sample browsing, hot reload, web/WASM, mobile,
+Also deferred: sequencer, desk/mixer, library, loop station, NINJAM, external
+MIDI clock output (#115), recording an external instrument's returned audio
+(#116), sample browsing, hot reload, web/WASM, mobile,
 and Linux/Windows pedal verification.
