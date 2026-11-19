@@ -112,11 +112,11 @@ impl FileSystem for SystemFs {
     }
     fn sync_existing(&mut self, path: &Path) -> io::Result<()> {
         regular(path)?;
-        File::open(path)?.sync_all()
+        crate::fsync::sync_file(path)
     }
     fn sync_dir(&mut self, path: &Path) -> io::Result<()> {
         self.check_dir(path)?;
-        File::open(path)?.sync_all()
+        crate::fsync::sync_dir(path)
     }
     fn rename(&mut self, from: &Path, to: &Path) -> io::Result<()> {
         fs::rename(from, to)

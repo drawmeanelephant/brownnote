@@ -11,7 +11,8 @@ import time
 root = Path(__file__).resolve().parent
 config = json.loads((root / "config.json").read_text())
 args = sys.argv[1:]
-role = Path(sys.argv[0]).name
+# .stem so a Windows `name.bat` -> `python name.py` shim reports as `name`.
+role = Path(sys.argv[0]).stem
 
 
 def log(record):

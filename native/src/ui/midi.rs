@@ -86,7 +86,7 @@ mod preferences {
             file.write_all(&bytes)?;
             file.sync_all()?;
             fs::rename(temporary, root.join(FILE))?;
-            File::open(root)?.sync_all()
+            brownnote_native::fsync::sync_dir(root)
         };
         write().map_err(|_| "MIDI input choice is active in memory but could not be saved".into())
     }

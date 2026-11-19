@@ -80,7 +80,7 @@ pub fn save(root: &Path, program: Option<&Path>) -> Result<(), String> {
         file.write_all(&bytes)?;
         file.sync_all()?;
         fs::rename(temporary, root.join(FILE))?;
-        File::open(root)?.sync_all()
+        crate::fsync::sync_dir(root)
     };
     write().map_err(|_| "Live-instrument helper is active in memory but could not be saved".into())
 }
@@ -101,7 +101,8 @@ pub fn resolve(paths: &Resolver, root: Option<&Path>) -> Result<HelperCommand, S
     })
 }
 
-#[cfg(test)]
+// Executable fakes are shell scripts with POSIX mode bits (issue #257).
+#[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{load, resolve, save};

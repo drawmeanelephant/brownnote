@@ -1,4 +1,6 @@
 #![allow(clippy::unwrap_used)]
+#![cfg(unix)]
+// Resolver fakes are executable shell scripts and tests set POSIX mode bits.
 
 use brownnote_native::{
     engine::{Command as AudioCommand, Meters, Mixer, SLOTS, Slots},

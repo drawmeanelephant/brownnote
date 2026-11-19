@@ -5,6 +5,20 @@
 use serde_json::{Value, json};
 use std::{collections::HashSet, fs, path::PathBuf, process::Command};
 
+/// First runnable Python 3 interpreter; plain `python` on Windows.
+fn python() -> std::ffi::OsString {
+    for candidate in ["python3", "python", "py"] {
+        if Command::new(candidate)
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success())
+        {
+            return candidate.into();
+        }
+    }
+    "python3".into()
+}
+
 fn fixture() -> Value {
     serde_json::from_str(include_str!("fixtures/workflow/score-v1.json")).unwrap()
 }
@@ -256,7 +270,7 @@ fn fixture_integrity_synthetic_wav_is_exact_repeatable_and_never_overwrites() {
     let generator =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workflow/generate_audio.py");
     let generate = |name: &str| {
-        Command::new("python3")
+        Command::new(python())
             .arg(&generator)
             .arg(scratch.0.join(name))
             .output()

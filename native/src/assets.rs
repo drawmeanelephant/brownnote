@@ -330,9 +330,9 @@ impl AssetRegistry {
 
     /// Retry only unadmitted Unloads. An accepted one is sent exactly once.
     pub fn flush_unloads(&mut self, mut send: impl FnMut(Command) -> bool) {
-        for slot in 0..SLOTS {
-            if self.states[slot] == SlotState::PendingUnload && send(Command::Unload { slot }) {
-                self.states[slot] = SlotState::Retiring;
+        for (slot, state) in self.states.iter_mut().enumerate() {
+            if *state == SlotState::PendingUnload && send(Command::Unload { slot }) {
+                *state = SlotState::Retiring;
             }
         }
     }
