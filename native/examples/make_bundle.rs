@@ -1,6 +1,5 @@
 //! Emit a small but real v4 export bundle for adapter testing.
 //! Usage: cargo run --release --example make_bundle -- <source_root> <destination>
-#![allow(clippy::unwrap_used, clippy::expect_used)]
 use brownnote_native::export::{
     bundle::{BundleRequest, SystemWriter, write_bundle},
     fixture::{
@@ -11,7 +10,7 @@ use brownnote_native::export::{
 };
 use std::{env, fs, io, path::PathBuf};
 
-fn wav(rate: u32, frames: usize, amplitude: f32) -> Vec<u8> {
+fn wav(rate: u32, frames: usize, amplitude: f32) -> Result<Vec<u8>, hound::Error> {
     let mut cursor = io::Cursor::new(Vec::new());
     {
         let mut writer = hound::WavWriter::new(
@@ -22,34 +21,41 @@ fn wav(rate: u32, frames: usize, amplitude: f32) -> Vec<u8> {
                 bits_per_sample: 32,
                 sample_format: hound::SampleFormat::Float,
             },
-        )
-        .unwrap();
+        )?;
         for i in 0..frames {
             // Decaying sine so clips have real audio, not DC.
             let t = i as f32 / rate as f32;
             let env = (-t * 6.0).exp();
             writer
-                .write_sample(amplitude * env * (t * 440.0 * 2.0 * std::f32::consts::PI).sin())
-                .unwrap();
+                .write_sample(amplitude * env * (t * 440.0 * 2.0 * std::f32::consts::PI).sin())?;
         }
-        writer.finalize().unwrap();
+        writer.finalize()?;
     }
-    cursor.into_inner()
+    Ok(cursor.into_inner())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
-    let source_root = PathBuf::from(args.next().expect("usage: make_bundle <source_root> <dest>"));
-    let destination = PathBuf::from(args.next().expect("usage: make_bundle <source_root> <dest>"));
+    let usage = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "usage: make_bundle <source_root> <dest>",
+        )
+    };
+    let source_root = PathBuf::from(args.next().ok_or_else(usage)?);
+    let destination = PathBuf::from(args.next().ok_or_else(usage)?);
 
     const ORIGIN: u64 = 1_000_000_000;
-    let source = wav(48_000, 24_000, 0.5);
-    let retained = wav(48_000, 36_000, 0.7);
+    let source = wav(48_000, 24_000, 0.5)?;
+    let retained = wav(48_000, 36_000, 0.7)?;
     let source_id = AssetId::of(&source);
     let retained_id = AssetId::of(&retained);
     for (id, bytes) in [(source_id, &source), (retained_id, &retained)] {
         let path = source_root.join(id.relative_path());
-        fs::create_dir_all(path.parent().unwrap())?;
+        let parent = path.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "asset path has no parent")
+        })?;
+        fs::create_dir_all(parent)?;
         fs::write(&path, bytes)?;
     }
 

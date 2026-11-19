@@ -36,7 +36,10 @@ pub fn sync_dir(_path: &Path) -> io::Result<()> {
 /// needs a handle opened with write access.
 #[cfg(windows)]
 pub fn sync_file(path: &Path) -> io::Result<()> {
-    std::fs::OpenOptions::new().write(true).open(path)?.sync_all()
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .sync_all()
 }
 
 /// Unix/other variant of [`sync_file`].
