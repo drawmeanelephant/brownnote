@@ -154,9 +154,9 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX)
         os.environ.update(CARGO_TARGET_DIR=str(args.target_dir), CARGO_BUILD_JOBS="2")
         print("Whole-check lock acquired", flush=True)
-        prep = command([sys.executable, ROOT / "prepare.py"], capture_output=True, text=True)
+        prep = command([sys.executable, ROOT / "prepare.py"], stdout=subprocess.PIPE, text=True)
+        hashes = json.loads(prep.stdout)
         print(prep.stdout, end="")
-        hashes = json.loads(prep.stdout.strip().splitlines()[-1])
         manifest = ROOT / "Cargo.toml"
         # cargo fmt cannot find targets of a virtual manifest from outside it.
         command(["cargo", "fmt", "--all", "--check"], cwd=ROOT)
