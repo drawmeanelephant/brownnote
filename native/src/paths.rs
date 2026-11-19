@@ -188,14 +188,19 @@ impl Resolver {
             .ok_or_else(|| Self::error(resource, &self.executable, PathErrorKind::NotDirectory))
     }
 
-    /// Only Cargo's exact native/target/{debug,release}[/deps] layout is
-    /// recognized. There is no ancestor search or build-time source fallback.
+    /// Cargo's `native/target/{debug,release}` layouts are recognized: the
+    /// older `deps/` location and the `build/<pkg>/<hash>/out/` location
+    /// current toolchains use. There is no general ancestor search or
+    /// build-time source fallback.
     fn checkout(&self, root: &Path) -> Option<PathBuf> {
-        let profile = if root.file_name()? == "deps" {
-            root.parent()?
-        } else {
-            root
-        };
+        // Walk up past `deps`, or `out/<hash>/<pkg>/build`, to the profile dir.
+        let mut profile = root;
+        for _ in 0..6 {
+            if matches!(profile.file_name()?.to_str()?, "debug" | "release") {
+                break;
+            }
+            profile = profile.parent()?;
+        }
         if !matches!(profile.file_name()?.to_str()?, "debug" | "release") {
             return None;
         }
