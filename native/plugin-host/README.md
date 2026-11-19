@@ -154,8 +154,8 @@ bundled:
 BROWNNOTE_CLAP_EFFECT="/path/to/Airwindows Consolidated.clap" make native-clap-effect-test
 ```
 
-The bundle is Airwindows Consolidated 1.2026.313, executable SHA-256
-`92152f95a7053ecd65c4e5f356e719c6b82a7dfe4083bc12848f5c755077ad4d`. #96's
+The bundle is Airwindows Consolidated. The current version and executable hash
+are in [`pin.json`](../docs/spikes/clap/pin.json).
 `native/docs/spikes/clap/prepare.py` fetches and verifies it into an ignored
 `.work/plugins/` directory. It is not redistributed. The test checks:
 

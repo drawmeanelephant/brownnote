@@ -678,10 +678,7 @@ fn saved_plugin_sound_survives_cache_plugin_removal_relocation_and_exports_hones
     }
 }
 
-// Airwindows Consolidated 1.2026.313, pinned by #96.
 const EFFECT_ID: &str = "com.airwindows.consolidated";
-const EFFECT_EXECUTABLE_SHA256: &str =
-    "92152f95a7053ecd65c4e5f356e719c6b82a7dfe4083bc12848f5c755077ad4d";
 
 #[test]
 fn pinned_airwindows_effect_renders_edits_and_reopens_through_the_app() {
@@ -700,9 +697,11 @@ fn pinned_airwindows_effect_renders_edits_and_reopens_through_the_app() {
     let text = status(&rt);
     assert!(text.starts_with("READY"), "{text}");
     let stage = rt.state.pedals.plugins.pads[PAD].stages[0].clone();
+    let pin: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/spikes/clap/pin.json")).unwrap();
     assert_eq!(
         stage.record.plugin.artifact.to_string(),
-        EFFECT_EXECUTABLE_SHA256
+        pin["effect"]["executable_sha256"].as_str().unwrap()
     );
     let Status::Ready(report) = rt.state.pedals.plugins.pads[PAD].status.clone() else {
         unreachable!()
