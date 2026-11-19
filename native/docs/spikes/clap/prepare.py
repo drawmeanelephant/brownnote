@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.request
 
@@ -38,7 +39,8 @@ def sha256(path):
 
 
 def run(args, **kw):
-    print("+ " + " ".join(str(a) for a in args), flush=True)
+    print("+ " + " ".join(str(a) for a in args), file=sys.stderr, flush=True)
+    kw.setdefault("stdout", sys.stderr)
     return subprocess.run(args, check=True, **kw)
 
 
@@ -50,7 +52,7 @@ def prepare_effect():
     WORK.mkdir(exist_ok=True)
     dmg = WORK / "airwindows.dmg"
     if not dmg.exists() or sha256(dmg) != pin["dmg_sha256"]:
-        print(f"Downloading {pin['dmg_url']}", flush=True)
+        print(f"Downloading {pin['dmg_url']}", file=sys.stderr, flush=True)
         with urllib.request.urlopen(pin["dmg_url"]) as r:
             dmg.write_bytes(r.read())
     if sha256(dmg) != pin["dmg_sha256"]:
