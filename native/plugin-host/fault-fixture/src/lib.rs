@@ -51,12 +51,42 @@ const FAULT_BLOCK: u32 = 8;
 const VOICES: usize = 64;
 const GAIN_PARAM: u32 = 0;
 
+#[cfg(unix)]
 unsafe extern "C" {
     fn signal(
         signal: std::ffi::c_int,
         handler: Option<unsafe extern "C" fn(std::ffi::c_int)>,
     ) -> Option<unsafe extern "C" fn(std::ffi::c_int)>;
     fn raise(signal: std::ffi::c_int) -> std::ffi::c_int;
+}
+
+#[cfg(windows)]
+unsafe extern "system" {
+    fn GetCurrentProcess() -> *mut std::ffi::c_void;
+    fn TerminateProcess(process: *mut std::ffi::c_void, code: u32) -> i32;
+}
+
+/// Ends the process the way a segfaulting plugin would, without undefined
+/// behaviour: SIGSEGV with the default disposition on Unix (Rust's own
+/// handler is replaced first, because it ignores a signal that was raised
+/// rather than caused by a fault), STATUS_ACCESS_VIOLATION on Windows.
+#[cfg(unix)]
+fn crash() {
+    // SAFETY: resetting a signal disposition and raising a signal are
+    // defined operations.
+    unsafe {
+        signal(11, None);
+        raise(11);
+    };
+}
+
+#[cfg(windows)]
+fn crash() {
+    // SAFETY: terminating our own process is a defined call; the code is
+    // the exit status a real access violation leaves.
+    unsafe {
+        TerminateProcess(GetCurrentProcess(), 0xC000_0005);
+    };
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -315,13 +345,7 @@ unsafe extern "C" fn process(
     if fire {
         match me.fault {
             Fault::Crash => {
-                // SAFETY: SIGSEGV is 11 on the tested macOS/Unix platform.
-                // Restore its default disposition so Rust's stack-overflow
-                // handler cannot return from this explicitly raised signal.
-                unsafe {
-                    signal(11, None);
-                    raise(11);
-                };
+                crash();
                 return CLAP_PROCESS_ERROR;
             }
             Fault::Hang => loop {

@@ -4,10 +4,13 @@
 //!
 //! Usage: `brownnote-plugin-host clap` or
 //! `brownnote-plugin-host ladspa [--allow UniqueID:Label]...`
+#[cfg(unix)]
+use std::os::fd::AsFd;
+#[cfg(windows)]
+use std::os::windows::io::{AsHandle, AsRawHandle};
 use std::{
     fs::File,
     io::{self, Write},
-    os::fd::AsFd,
     process::ExitCode,
 };
 
@@ -19,18 +22,42 @@ mod protocol;
 
 const USAGE: &str = "usage: brownnote-plugin-host clap\n       brownnote-plugin-host ladspa [--allow UniqueID:Label]...";
 
+#[cfg(unix)]
 unsafe extern "C" {
     fn dup2(old: i32, new: i32) -> i32;
+}
+
+#[cfg(windows)]
+unsafe extern "system" {
+    fn SetStdHandle(which: u32, handle: *mut std::ffi::c_void) -> i32;
 }
 
 /// Plugins may print to stdout. Keep a private copy of stdout for the
 /// protocol and point file descriptor 1 at stderr, so stray output cannot
 /// corrupt a frame.
+#[cfg(unix)]
 fn protocol_output() -> io::Result<File> {
     let protocol = io::stdout().as_fd().try_clone_to_owned()?;
     io::stdout().flush()?;
     // SAFETY: dup2 on the process's own standard descriptors.
     if unsafe { dup2(2, 1) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(File::from(protocol))
+}
+
+/// Plugins may print to stdout. Keep a private copy of stdout for the
+/// protocol and point the process's standard output handle at stderr, so
+/// stray output cannot corrupt a frame. Rust resolves the handle per call,
+/// so `SetStdHandle` redirects later writes, including `println!`.
+#[cfg(windows)]
+fn protocol_output() -> io::Result<File> {
+    const STD_OUTPUT_HANDLE: u32 = -11_i32 as u32;
+    let protocol = io::stdout().as_handle().try_clone_to_owned()?;
+    io::stdout().flush()?;
+    // SAFETY: SetStdHandle on the process's own standard handles; the
+    // stderr handle is valid for the process's lifetime.
+    if unsafe { SetStdHandle(STD_OUTPUT_HANDLE, io::stderr().as_handle().as_raw_handle()) } == 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(File::from(protocol))
