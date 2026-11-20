@@ -6,6 +6,7 @@ whole-check lock and set CARGO_TARGET_DIR / CARGO_BUILD_JOBS; check.py does.
 """
 
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent
@@ -46,14 +46,18 @@ def run(args, **kw):
     return subprocess.run(args, check=True, **kw)
 
 
-def fetch(url, dest, attempts=4, delay=5):
+def fetch(url, dest, attempts=4, delay=5, timeout=60):
     """Write `url` to `dest`, retrying transient errors before failing."""
     for attempt in range(attempts):
         try:
-            with urllib.request.urlopen(url) as r:
+            # OSError covers connect and mid-read drops (URLError,
+            # ConnectionResetError, timeouts); HTTPException covers a
+            # response cut short, e.g. IncompleteRead. A truncated body that
+            # somehow gets through is still caught by the sha256 pin check.
+            with urllib.request.urlopen(url, timeout=timeout) as r:
                 dest.write_bytes(r.read())
             return
-        except urllib.error.URLError as error:
+        except (OSError, http.client.HTTPException) as error:
             if attempt + 1 == attempts:
                 raise
             print(f"download failed ({error}); retrying", file=sys.stderr, flush=True)
