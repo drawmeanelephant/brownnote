@@ -33,6 +33,15 @@
  * Build: see Makefile.  C11 + POSIX, no dependencies beyond libc.
  */
 
+/*
+ * The pump needs poll() on pipes and fork(); native Windows has neither
+ * for pipe handles.  Fail here with the supported alternative instead of
+ * at a missing <poll.h>.  Cygwin does not define _WIN32 and still builds.
+ */
+#ifdef _WIN32
+#error "brownnote: the C CLI is POSIX-only (macOS, Linux); on Windows run brownnote-native, see README 'Platforms'"
+#endif
+
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>

@@ -19,7 +19,8 @@ git clone https://github.com/torvalds/GuitarPedal.git vendor/GuitarPedal
 ```
 
 You need a C compiler, GNU make, and Git on macOS or Linux. No other
-dependencies, no package manager.
+dependencies, no package manager. The CLI does not build on native Windows;
+the native pad app is the Windows path.
 
 ## 2. Build the bench, then brownnote
 

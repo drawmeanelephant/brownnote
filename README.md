@@ -37,6 +37,20 @@ make                                           # builds build/brownnote
 `make -C vendor/GuitarPedal/Validation check-effects` proves the bench
 itself (and takes a few minutes).
 
+### Platforms
+
+The `brownnote` CLI is POSIX-only by design and is tested on macOS and Linux.
+Its pump is a `poll()` loop over pipes to a `fork()`ed bench, and native
+Windows has no `poll()` for pipe handles. A Windows compiler stops at a
+`#error` that says so. Cygwin is POSIX and is not blocked, but it is untested.
+
+On Windows, the path forward is the native pad app (`make native`, see
+[native/README.md](native/README.md)). It builds and passes its test suite
+there, but audio on Windows stays unverified (decision D1 in
+[native/docs/decisions.md](native/docs/decisions.md)). Pedal chains render
+through this CLI, so on Windows they need `BROWNNOTE_BIN` set to a CLI build
+you supply. Without it the pads play dry and the app says why.
+
 ## Usage
 
 ```
