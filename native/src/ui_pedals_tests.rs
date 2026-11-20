@@ -149,7 +149,13 @@ fn pedals_tab(rt: &mut Runtime<State>, pad: usize) {
 
 fn add(rt: &mut Runtime<State>, name: &str) {
     tap(rt, "pedal-add");
-    rt.resolve_popup(Some(name)).unwrap();
+    if rune::popup_menu_supported() {
+        rt.resolve_popup(Some(name)).unwrap();
+    } else {
+        // No native menu on this platform: the strip falls back to its inline
+        // list; picking an entry closes it.
+        tap(rt, &format!("pedal-add-{name}"));
+    }
     flush(rt);
 }
 
@@ -167,14 +173,29 @@ fn the_pedal_tab_offers_only_routable_pedals() {
     pedals_tab(&mut rt, 0);
     assert_eq!(rt.state.pedals.tab, Tab::Pedals);
     tap(&mut rt, "pedal-add");
-    let menu = rt.popup_menu().expect("the add menu");
-    assert!(menu.find("Rat Sketch").is_some());
-    assert!(menu.find("Analog Out Tone").is_some());
-    assert!(
-        menu.find("Signal Chain").is_none(),
-        "a system block is offered"
-    );
-    rt.resolve_popup(None).unwrap();
+    if rune::popup_menu_supported() {
+        let menu = rt.popup_menu().expect("the add menu");
+        assert!(menu.find("Rat Sketch").is_some());
+        assert!(menu.find("Analog Out Tone").is_some());
+        assert!(
+            menu.find("Signal Chain").is_none(),
+            "a system block is offered"
+        );
+        rt.resolve_popup(None).unwrap();
+    } else {
+        let has = |rt: &Runtime<State>, key: &str| {
+            rt.elements()
+                .into_iter()
+                .any(|e| e.key.as_deref() == Some(key))
+        };
+        assert!(has(&rt, "pedal-add-Rat Sketch"));
+        assert!(has(&rt, "pedal-add-Analog Out Tone"));
+        assert!(
+            !has(&rt, "pedal-add-Signal Chain"),
+            "a system block is offered"
+        );
+        tap(&mut rt, "pedal-add");
+    }
     flush(&mut rt);
     assert_eq!(
         rt.state.pedals.tab,
@@ -288,11 +309,21 @@ fn duplicates_are_disabled_and_a_fifth_stage_cannot_be_added() {
     }
     assert_eq!(rt.state.pedals.pads[0].chain.stages.len(), 4);
     tap(&mut rt, "pedal-add");
-    assert!(
-        rt.resolve_popup(Some("Reverb")).is_err(),
-        "a duplicate is disabled in the menu"
-    );
-    rt.resolve_popup(None).unwrap();
+    if rune::popup_menu_supported() {
+        assert!(
+            rt.resolve_popup(Some("Reverb")).is_err(),
+            "a duplicate is disabled in the menu"
+        );
+        rt.resolve_popup(None).unwrap();
+    } else {
+        let reverb = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("pedal-add-Reverb"))
+            .expect("the Reverb entry in the inline menu");
+        assert!(!reverb.focusable, "a duplicate is disabled in the menu");
+        tap(&mut rt, "pedal-add");
+    }
     flush(&mut rt);
     assert_eq!(rt.state.pedals.pads[0].chain.stages.len(), 4);
     let add = rt

@@ -470,10 +470,12 @@ fn machine_preference_directory_resolves_without_creating_or_probing_it() {
         ..Environment::default()
     });
     let path = resolver.resolve(Resource::Preferences, None).unwrap();
-    assert_eq!(
-        path,
+    let expected = if cfg!(target_os = "macos") {
         home.join("Library/Application Support/Brownnote/preferences")
-    );
+    } else {
+        home.join(".config/Brownnote/preferences")
+    };
+    assert_eq!(path, expected);
     assert!(!path.exists());
 
     let environment = fixture.0.join("environment-preferences");
