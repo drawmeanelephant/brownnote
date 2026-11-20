@@ -1002,6 +1002,22 @@ else
 fi
 
 # ------------------------------------------------------------------
+# (af) platform guard: a Windows compiler (which defines _WIN32) stops
+#      at the POSIX-only #error naming the native app, not at a missing
+#      POSIX header deep in the build.
+# ------------------------------------------------------------------
+if "${CC:-cc}" -D_WIN32 -fsyntax-only -Isrc src/brownnote.c \
+	> /dev/null 2> "$TMP/af.err"; then
+	bad "(af) platform guard: src/brownnote.c compiled with _WIN32 defined"
+elif grep -q 'POSIX-only' "$TMP/af.err" &&
+	grep -q 'brownnote-native' "$TMP/af.err" &&
+	! grep -q 'poll.h' "$TMP/af.err"; then
+	ok "(af) platform guard: _WIN32 stops at the POSIX-only #error"
+else
+	bad "(af) platform guard: unexpected diagnostic: $(head -3 "$TMP/af.err")"
+fi
+
+# ------------------------------------------------------------------
 echo
 total=$((PASS + FAIL))
 if [ $FAIL -eq 0 ]; then
