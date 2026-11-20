@@ -91,7 +91,7 @@ impl fmt::Display for PathError {
             PathErrorKind::NotExecutable => f.write_str(": not executable")?,
             PathErrorKind::NoHome => f.write_str(": HOME is unavailable")?,
             PathErrorKind::UnsupportedPlatform => {
-                f.write_str(": default user locations are only defined for macOS")?
+                f.write_str(": default user locations are only defined for macOS and Linux")?
             }
             PathErrorKind::Io { operation, kind } => write!(f, ": {operation}: {kind}")?,
         }
@@ -245,19 +245,31 @@ impl Resolver {
             if home.as_os_str().is_empty() || !home.is_absolute() {
                 return Err(Self::error(resource, home, PathErrorKind::NotAbsolute));
             }
-            if !cfg!(target_os = "macos") {
+            if cfg!(target_os = "macos") {
+                return Ok(home.join(match resource {
+                    Resource::Cache => "Library/Caches/Brownnote/pedals",
+                    Resource::Recovery => "Library/Application Support/Brownnote/recovery",
+                    Resource::Preferences => "Library/Application Support/Brownnote/preferences",
+                    _ => unreachable!(),
+                }));
+            }
+            #[cfg(target_os = "linux")]
+            {
+                return Ok(home.join(match resource {
+                    Resource::Cache => ".cache/Brownnote/pedals",
+                    Resource::Recovery => ".local/share/Brownnote/recovery",
+                    Resource::Preferences => ".config/Brownnote/preferences",
+                    _ => unreachable!(),
+                }));
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            {
                 return Err(Self::error(
                     resource,
                     home,
                     PathErrorKind::UnsupportedPlatform,
                 ));
             }
-            return Ok(home.join(match resource {
-                Resource::Cache => "Library/Caches/Brownnote/pedals",
-                Resource::Recovery => "Library/Application Support/Brownnote/recovery",
-                Resource::Preferences => "Library/Application Support/Brownnote/preferences",
-                _ => unreachable!(),
-            }));
         }
         let root = self.root(resource)?;
         // A resource tree beside a Cargo executable wins, even if incomplete.
