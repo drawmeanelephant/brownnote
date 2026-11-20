@@ -15,7 +15,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent
