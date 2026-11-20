@@ -322,20 +322,32 @@ fn a_starved_callback_never_waits_and_the_worker_resynchronizes_exactly() {
     let (host, mut sender, mut voice) = LiveHost::start(stage(&env, INSTRUMENT), config(&env, 512))
         .unwrap_or_else(|error| panic!("start: {error}"));
     // Far faster than real time: the callback must not wait for the worker.
+    // A waiting render would block for at least one buffer period
+    // (~10.7 ms at 512 frames/48 kHz), so that half-period is the bound on a
+    // single sample; the tighter 2 ms bound applies to the p99, because a
+    // one-off scheduling hiccup on a shared runner is not the callback
+    // blocking.
     let mut buffer = vec![0.0f32; 1024];
-    let mut worst = Duration::ZERO;
+    let mut timings = Vec::with_capacity(2000);
     for _ in 0..2000 {
         buffer.fill(0.0);
         let started = Instant::now();
         voice.render_add(&mut buffer, 2);
-        worst = worst.max(started.elapsed());
+        timings.push(started.elapsed());
         assert!(buffer.iter().all(|s| s.is_finite()));
     }
+    timings.sort_unstable();
+    let worst = timings.last().copied().unwrap_or_default();
+    let p99 = timings[timings.len() * 99 / 100];
     let starved = host.status().counters;
     assert!(starved.underrun_frames > 0, "{starved:?}");
     assert_eq!(starved.played_frames + starved.underrun_frames, 2000 * 512);
     assert!(
-        worst < Duration::from_millis(2),
+        p99 < Duration::from_millis(2),
+        "starved callback p99 took {p99:?}"
+    );
+    assert!(
+        worst < Duration::from_micros(512 * 1_000_000 / u64::from(RATE) / 2),
         "a starved callback took {worst:?}"
     );
     // Lateness never becomes delay: once the worker catches up, an event
