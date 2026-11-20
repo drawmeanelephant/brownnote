@@ -117,6 +117,8 @@ pub struct Resolver {
     executable: PathBuf,
     cwd: PathBuf,
     environment: Environment,
+    /// Appended to every default tool name: `.exe` on Windows, empty elsewhere.
+    exe_suffix: &'static str,
 }
 
 impl Resolver {
@@ -125,6 +127,7 @@ impl Resolver {
             executable,
             cwd,
             environment,
+            exe_suffix: env::consts::EXE_SUFFIX,
         }
     }
 
@@ -291,17 +294,20 @@ impl Resolver {
             }
         }
         let checkout = if bundled { None } else { self.checkout(root) };
+        let tool = |path: &str| format!("{path}{}", self.exe_suffix);
         Ok(match (resource, checkout) {
             (Resource::Samples, Some(repo)) => repo.join("recordings"),
-            (Resource::Brownnote, Some(repo)) => repo.join("build/brownnote"),
-            (Resource::Bench, Some(repo)) => repo.join("vendor/GuitarPedal/Validation/bench/bench"),
+            (Resource::Brownnote, Some(repo)) => repo.join(tool("build/brownnote")),
+            (Resource::Bench, Some(repo)) => {
+                repo.join(tool("vendor/GuitarPedal/Validation/bench/bench"))
+            }
             (Resource::ClapLive, Some(repo)) => {
-                repo.join("native/plugin-host/target/debug/brownnote-clap-live")
+                repo.join(tool("native/plugin-host/target/debug/brownnote-clap-live"))
             }
             (Resource::Samples, None) => root.join("resources/recordings"),
-            (Resource::Brownnote, None) => root.join("tools/brownnote"),
-            (Resource::Bench, None) => root.join("tools/bench"),
-            (Resource::ClapLive, None) => root.join("tools/brownnote-clap-live"),
+            (Resource::Brownnote, None) => root.join(tool("tools/brownnote")),
+            (Resource::Bench, None) => root.join(tool("tools/bench")),
+            (Resource::ClapLive, None) => root.join(tool("tools/brownnote-clap-live")),
             _ => unreachable!(),
         })
     }
@@ -474,6 +480,81 @@ mod tests {
             resolver().checkout(&out).as_deref(),
             Some(fixture.0.as_path())
         );
+    }
+
+    fn windows_resolver(executable: PathBuf) -> Resolver {
+        Resolver {
+            exe_suffix: ".exe",
+            ..Resolver::new(executable, PathBuf::from("probe"), Environment::default())
+        }
+    }
+
+    #[test]
+    fn default_tools_carry_the_platform_executable_suffix_in_both_layouts() {
+        let fixture = Fixture::new();
+        let release = fixture.0.join("native/target/release");
+        fs::create_dir_all(&release).unwrap();
+        fs::write(fixture.0.join("native/Cargo.toml"), "[package]").unwrap();
+        let checkout = windows_resolver(release.join("brownnote-native.exe"));
+        for (resource, expected) in [
+            (Resource::Brownnote, "build/brownnote.exe"),
+            (
+                Resource::Bench,
+                "vendor/GuitarPedal/Validation/bench/bench.exe",
+            ),
+            (
+                Resource::ClapLive,
+                "native/plugin-host/target/debug/brownnote-clap-live.exe",
+            ),
+            (Resource::Samples, "recordings"),
+        ] {
+            assert_eq!(
+                checkout.selected(resource, None).unwrap(),
+                fixture.0.join(expected)
+            );
+        }
+
+        let flat = fixture.0.join("flat");
+        fs::create_dir_all(flat.join("tools")).unwrap();
+        let bundled = windows_resolver(flat.join("brownnote-native.exe"));
+        for (resource, expected) in [
+            (Resource::Brownnote, "tools/brownnote.exe"),
+            (Resource::Bench, "tools/bench.exe"),
+            (Resource::ClapLive, "tools/brownnote-clap-live.exe"),
+            (Resource::Samples, "resources/recordings"),
+        ] {
+            assert_eq!(
+                bundled.selected(resource, None).unwrap(),
+                flat.join(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn a_suffixed_cli_resolves_and_a_missing_one_names_the_suffixed_path() {
+        let fixture = Fixture::new();
+        let release = fixture.0.join("native/target/release");
+        fs::create_dir_all(&release).unwrap();
+        fs::create_dir_all(fixture.0.join("build")).unwrap();
+        fs::write(fixture.0.join("native/Cargo.toml"), "[package]").unwrap();
+        let resolver = windows_resolver(release.join("brownnote-native.exe"));
+
+        let error = resolver.resolve(Resource::Brownnote, None).unwrap_err();
+        assert_eq!(error.kind, PathErrorKind::Missing);
+        assert_eq!(error.path, Some(fixture.0.join("build/brownnote.exe")));
+
+        // An unsuffixed POSIX build beside it is not a Windows executable.
+        fs::write(fixture.0.join("build/brownnote"), b"").unwrap();
+        assert!(resolver.resolve(Resource::Brownnote, None).is_err());
+
+        let cli = fixture.0.join("build/brownnote.exe");
+        fs::write(&cli, b"").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(resolver.resolve(Resource::Brownnote, None).unwrap(), cli);
     }
 
     #[test]

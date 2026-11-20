@@ -157,6 +157,8 @@ def main():
         prep = command([sys.executable, ROOT / "prepare.py"], stdout=subprocess.PIPE, text=True)
         hashes = json.loads(prep.stdout)
         print(prep.stdout, end="")
+        # Cheap regression lane for the fetch retry used just above.
+        command([sys.executable, ROOT / "test_prepare.py"])
         manifest = ROOT / "Cargo.toml"
         # cargo fmt cannot find targets of a virtual manifest from outside it.
         command(["cargo", "fmt", "--all", "--check"], cwd=ROOT)

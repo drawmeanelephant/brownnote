@@ -40,6 +40,11 @@ checkout path or searches arbitrary ancestors. A `resources` or `tools`
 entry beside the executable selects the flat layout instead, even if that
 entry is incomplete or a dangling symlink.
 
+Every default tool path (C CLI, bench, live CLAP helper) carries the
+platform's executable suffix, so a Windows build looks for
+`build/brownnote.exe` and `tools/bench.exe`. The sibling
+`brownnote-plugin-host` and `brownnote-soundcraft` lookups do the same.
+
 An arbitrary `CARGO_TARGET_DIR` is not a supported resource-search layout.
 Use `--samples`, `--brownnote` and `BROWNNOTE_BENCH` for such builds.
 Writable defaults never use any Cargo target directory.
