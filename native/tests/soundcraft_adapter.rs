@@ -36,6 +36,15 @@ use std::{
 type TestResult = Result<(), Box<dyn Error>>;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+/// Fake executable path: bare file on unix, `name.bat` shim on Windows.
+fn executable(root: &Path, name: &str) -> PathBuf {
+    if cfg!(windows) {
+        root.join(format!("{name}.bat"))
+    } else {
+        root.join(name)
+    }
+}
+
 struct Fixture {
     root: PathBuf,
     request: Request,
@@ -139,20 +148,33 @@ impl Fixture {
         });
         fs::write(bundle.join("manifest.json"), manifest.encode()?)?;
         for name in ["soundcraft", "soundcraft-cli"] {
-            let path = root.join(name);
-            fs::write(&path, include_str!("fixtures/soundcraft_adapter/fake.py"))?;
             #[cfg(unix)]
             {
+                let path = root.join(name);
+                fs::write(&path, include_str!("fixtures/soundcraft_adapter/fake.py"))?;
                 use std::os::unix::fs::PermissionsExt;
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+            }
+            #[cfg(windows)]
+            {
+                // CreateProcess cannot exec a shebang script; a .bat shim is
+                // routed through cmd.exe and forwards args verbatim.
+                fs::write(
+                    root.join(format!("{name}.py")),
+                    include_str!("fixtures/soundcraft_adapter/fake.py"),
+                )?;
+                fs::write(
+                    root.join(format!("{name}.bat")),
+                    format!("@python \"%~dp0{name}.py\" %*\r\n"),
+                )?;
             }
         }
         fs::write(root.join("config.json"), b"{}")?;
         Ok(Self {
             request: Request {
                 bundle,
-                app: root.join("soundcraft"),
-                cli: root.join("soundcraft-cli"),
+                app: executable(&root, "soundcraft"),
+                cli: executable(&root, "soundcraft-cli"),
                 output: root.join("output session"),
                 mappings: Vec::new(),
                 timeout: Duration::from_secs(5),

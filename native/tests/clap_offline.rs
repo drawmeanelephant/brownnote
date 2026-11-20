@@ -126,6 +126,20 @@ fn render(helpers: &Helpers, request: &Request) -> Result<Rendered, offline::Ren
     offline::render(request, helpers, &limits(), &Cancel::new())
 }
 
+/// Whether a rendered `ExitStatus` reports the child death a plugin crash
+/// produces on this platform: SIGSEGV on Unix, the access-violation code
+/// (in whatever spelling the platform uses) on Windows.
+fn crashed(status: &str) -> bool {
+    if cfg!(unix) {
+        status.contains("signal: 11")
+    } else {
+        status.contains("0xc0000005")
+            || status.contains("0xC0000005")
+            || status.contains("-1073741819")
+            || status.contains("3221226501")
+    }
+}
+
 fn sha256_file(path: &Path) -> Hash256 {
     Hash256::of(&fs::read(path).unwrap())
 }
@@ -262,7 +276,7 @@ fn fixture_faults_fail_without_taking_the_app_down() {
     let error = render(&helpers, &fault("org.brownnote.fault.crash")).unwrap_err();
     assert_eq!(error.stage, Some(0));
     match error.kind {
-        ErrorKind::Exited { status, .. } => assert!(status.contains("signal: 11"), "{status}"),
+        ErrorKind::Exited { status, .. } => assert!(crashed(&status), "{status}"),
         other => panic!("{other:?}"),
     }
 

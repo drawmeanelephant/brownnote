@@ -7,20 +7,24 @@
   "published_at": "2026-11-12T00:57:13Z",
   "binary_sha256": {
     "SoundCraft": "e496b5a6472f9dc210d9cb7c264e6e1b7e044f4cc79b1fef40c96ce3f16f4176",
-    "soundcraft-cli": "ef6f58b98fe7cd547236d3044e5de02760d91bc96bb524ac3ec7676a5a625e90"
+    "soundcraft-cli": "ef6f58b98fe7cd547236d3044e5de02760d91bc96bb524ac3ec7676a5a625e90",
+    "soundcraft.exe": "f1a9ac2bebf8572c9c41e5666f379ba775ec33aefca09b4dfd863dad4602ad02",
+    "soundcraft-cli.exe": "c6fc97e5c33b5e4005b9b0e006f3804211692a63964f0eb8f6227de32ac0de93"
   },
   "artifacts": {
     "soundcraft-0.20.1-macos-universal.dmg": "eb1dd392d7c3867b569aa9e08c016427096800016ff33f8f4e0192e43d9e6c0b",
     "soundcraft-cli-0.20.1-macos-universal.zip": "866fcbfe32179e6652159385b4f676ba756e1cadb88fac3e9173e9643f763b51",
+    "soundcraft-0.20.1-windows-x64-portable.zip": "9769223e26f727866b249fc5176caa8b3791a98c7d89e901b78f5f48aff03b82",
     "SHA256SUMS.txt": "a8e85fa2275e71afc730bd3b5db63839b768b7eaa129015093987e728e245256"
   },
   "verification": "Lightweight tag resolved to full commit; downloaded artifacts match the release API digests and SHA256SUMS.txt; DMG mounted read-only and executable bytes hashed. No release executable was run during pin hashing. Detached signature not verified.",
-  "status": "real GUI checked through the public control protocol on 2026-11-14 (macOS 27.3 arm64, --no-audio): #95 recipe, adapter edit/save/reopen/relocation, v3 live-take bundle, master-gain bounce, writer minimum gates and track/clip naming pass. NOT listened to; no hand-driven UI edits.",
+  "status": "real GUI checked through the public control protocol on 2026-11-14 (macOS 27.3 arm64, --no-audio): #95 recipe, adapter edit/save/reopen/relocation, v3 live-take bundle, master-gain bounce, writer minimum gates and track/clip naming pass. On 2026-11-19 (Windows Server 2022 x64) the portable zip's soundcraft.exe + soundcraft-cli.exe ran the same handoff end-to-end: real v4 bundle in, session.scraft with 2 audio clips and 1 editable MIDI note out, exit 0. NOT listened to; no hand-driven UI edits.",
   "app_evidence": [
     "evidence/recipe-app-0.20.1.json",
     "evidence/adapter-edit-0.20.1.json",
     "evidence/live-take-0.20.1.json",
-    "evidence/track-names-0.20.1.json"
+    "evidence/track-names-0.20.1.json",
+    "evidence/windows-handoff-0.20.1.json"
   ],
   "previous_pin": {
     "tag": "v0.19.0",

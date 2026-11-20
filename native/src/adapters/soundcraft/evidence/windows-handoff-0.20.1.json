@@ -1,0 +1,50 @@
+{
+  "platform": "windows-x64 (Windows Server 2022, x86_64-pc-windows-msvc)",
+  "date": "2026-11-19",
+  "app": "soundcraft-0.20.1-windows-x64-portable.zip / soundcraft.exe",
+  "cli": "soundcraft-cli.exe from the same portable zip",
+  "method": "brownnote-soundcraft --app soundcraft.exe --cli soundcraft-cli.exe on a real v4 bundle produced by export::bundle::write_bundle (examples/make_bundle.rs); real GUI driven via --no-audio --control 0 and the public control protocol; exit 0",
+  "audio_clips": [
+    {
+      "event": {
+        "take": "1",
+        "sequence": 0
+      },
+      "track": 2,
+      "clip": 3,
+      "name": "Pad 03 \u00c2\u00b7 Take 1 \u00c2\u00b7 Hit 1",
+      "start": 0,
+      "length": 29040
+    },
+    {
+      "event": {
+        "take": "1",
+        "sequence": 1
+      },
+      "track": 5,
+      "clip": 6,
+      "name": "Pad 03 \u00c2\u00b7 Take 1 \u00c2\u00b7 Hit 2",
+      "start": 28800,
+      "length": 36000
+    }
+  ],
+  "midi": [
+    {
+      "part": 1,
+      "track": 7,
+      "clip": 8,
+      "name": "Part 1 \u00c2\u00b7 MIDI \u00c2\u00b7 Editable, muted",
+      "notes": [
+        {
+          "start": 1856,
+          "pitch": 60,
+          "channel": 0,
+          "length": 464,
+          "velocity": 90
+        }
+      ]
+    }
+  ],
+  "report_path": "adapter-report.json produced in output dir alongside session.scraft, Audio Files/, retained media/, manifest.json, notes.mid, soundcraft-pin.json",
+  "notes": "GUI launched headless with --no-audio; no listening performed."
+}

@@ -491,6 +491,8 @@ fn terminate(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-#[cfg(test)]
+// Bench fakes are shell scripts and the tests use POSIX signals (issue #257).
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "render_tests.rs"]
 mod tests;

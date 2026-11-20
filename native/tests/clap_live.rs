@@ -395,7 +395,12 @@ fn crashes_restart_with_restored_state_until_the_budget_disables_the_instrument(
     let c = status.counters;
     assert_eq!((c.exits, c.restarts), (3, 2), "{status:?}");
     let fault = status.fault.unwrap_or_default();
-    assert!(fault.contains("signal Some(11)"), "{fault}");
+    if cfg!(unix) {
+        assert!(fault.contains("signal Some(11)"), "{fault}");
+    } else {
+        // The child dies with STATUS_ACCESS_VIOLATION; there is no signal.
+        assert!(fault.contains("code Some(-1073741819)"), "{fault}");
+    }
     // Disabled: the callback keeps running and adds nothing.
     buffer.fill(0.25);
     voice.render_add(&mut buffer, 2);

@@ -245,9 +245,9 @@ fn encoded_kit_snapshot_is_authoritative_and_session_media_adopts_into_real_stor
         .adopt(&ProjectMedia::new(project.0.clone()))
         .unwrap();
     let mut document = Document::default();
-    for index in 0..16 {
+    for (index, entry) in document.pads.iter_mut().enumerate() {
         let runtime = state.assets.pad(pad(index));
-        document.pads[index].sample = runtime.assignment.clone();
+        entry.sample = runtime.assignment.clone();
     }
     for index in [0, 4, 8, 10, 12] {
         let asset = state

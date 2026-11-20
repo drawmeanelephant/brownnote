@@ -257,9 +257,7 @@ fn write_autosave(root: &Path, record: &AutosaveRecord) -> Result<(), Error> {
         .map_err(|_| Error::AutosaveRecord(io::ErrorKind::InvalidData))?;
     let temporary = root.join(format!(".{AUTOSAVE_FILE}.tmp"));
     fs::write(&temporary, &bytes).map_err(|error| Error::AutosaveRecord(error.kind()))?;
-    fs::File::open(&temporary)
-        .and_then(|file| file.sync_all())
-        .map_err(|error| Error::AutosaveRecord(error.kind()))?;
+    crate::fsync::sync_file(&temporary).map_err(|error| Error::AutosaveRecord(error.kind()))?;
     fs::rename(&temporary, root.join(AUTOSAVE_FILE))
         .map_err(|error| Error::AutosaveRecord(error.kind()))
 }

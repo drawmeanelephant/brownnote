@@ -3,7 +3,10 @@
 //! port buffers. The structs follow `ladspa.h` from the LADSPA SDK. This is
 //! the only LADSPA file that uses `unsafe`; the rules are taken from the #97
 //! probe (`native/docs/spikes/ladspa`).
+#[cfg(unix)]
 use libloading::os::unix::{Library as Dl, RTLD_LOCAL, RTLD_NOW};
+#[cfg(windows)]
+use libloading::os::windows::Library as Dl;
 use std::{
     ffi::{CStr, c_char, c_int, c_ulong, c_void},
     fmt,
@@ -144,8 +147,12 @@ impl Library {
         // SAFETY: loading runs the library's initialisers. Only allow-listed
         // plugins get this far, and a crash ends this helper process, not the
         // app.
+        #[cfg(unix)]
         let dl = unsafe { Dl::open(Some(path), RTLD_NOW | RTLD_LOCAL) }
             .map_err(|error| LadspaError::Dlopen(error.to_string()))?;
+        #[cfg(windows)]
+        let dl =
+            unsafe { Dl::new(path) }.map_err(|error| LadspaError::Dlopen(error.to_string()))?;
         // SAFETY: the LADSPA ABI fixes the signature of `ladspa_descriptor`.
         let entry = unsafe { dl.get::<DescriptorFn>(b"ladspa_descriptor\0") }
             .map(|symbol| *symbol)
