@@ -665,8 +665,12 @@ fn soundcraft_program() -> String {
     let sibling = std::env::current_exe()
         .ok()
         .and_then(|exe| {
-            exe.parent()
-                .map(|directory| directory.join("brownnote-soundcraft"))
+            exe.parent().map(|directory| {
+                directory.join(format!(
+                    "brownnote-soundcraft{}",
+                    std::env::consts::EXE_SUFFIX
+                ))
+            })
         })
         .filter(|path| path.is_file());
     match sibling {

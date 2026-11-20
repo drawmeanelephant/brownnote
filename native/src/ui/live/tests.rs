@@ -51,9 +51,12 @@ fn env() -> Option<(HelperCommand, PathBuf)> {
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("BROWNNOTE_CLAP_HELPER").and_then(|offline| {
-                std::path::Path::new(&offline)
-                    .parent()
-                    .map(|dir| dir.join("brownnote-clap-live"))
+                std::path::Path::new(&offline).parent().map(|dir| {
+                    dir.join(format!(
+                        "brownnote-clap-live{}",
+                        std::env::consts::EXE_SUFFIX
+                    ))
+                })
             })
         });
     let fixture = std::env::var_os("BROWNNOTE_CLAP_FAULT_FIXTURE").map(PathBuf::from);
