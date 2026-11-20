@@ -1146,7 +1146,9 @@ mod tests {
         engine::{Command, QUEUE_CAPACITY, Sample, Slots},
         output::Output,
     };
-    use std::{cell::RefCell, rc::Rc, time::Duration};
+    #[cfg(target_os = "macos")]
+    use std::time::Duration;
+    use std::{cell::RefCell, rc::Rc};
 
     fn ch(value: u8) -> Channel {
         Channel::try_from(value).unwrap()

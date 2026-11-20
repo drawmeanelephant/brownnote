@@ -18,6 +18,20 @@ use std::{
 
 const RATE: u32 = 48_000;
 
+/// First runnable Python 3 interpreter; plain `python` on Windows.
+fn python() -> std::ffi::OsString {
+    for candidate in ["python3", "python", "py"] {
+        if Command::new(candidate)
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success())
+        {
+            return candidate.into();
+        }
+    }
+    "python3".into()
+}
+
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/offline_render/fake_helper.py")
 }
@@ -26,7 +40,7 @@ fn helpers_with(args: Vec<std::ffi::OsString>) -> Helpers {
     let mut all = vec![fixture().into_os_string()];
     all.extend(args);
     let command = HelperCommand {
-        program: "python3".into(),
+        program: python().into(),
         args: all,
     };
     Helpers::new()
@@ -511,7 +525,11 @@ fn plugin_faults_fail_the_render_without_partial_audio() {
     };
 
     match kind(&fault("fake.crash")) {
-        ErrorKind::Exited { status, .. } => assert!(status.contains("signal"), "{status}"),
+        // Unix surfaces a crash as a signal; Windows reports an exit code.
+        ErrorKind::Exited { status, .. } if cfg!(unix) => {
+            assert!(status.contains("signal"), "{status}")
+        }
+        ErrorKind::Exited { .. } if cfg!(windows) => {}
         other => panic!("{other:?}"),
     }
     assert_eq!(

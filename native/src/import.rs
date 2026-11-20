@@ -168,13 +168,14 @@ impl MediaPublisher for ProjectMedia {
                         "existing media failed integrity",
                     ));
                 }
-                existing.sync_all()?;
+                drop(existing);
+                crate::fsync::sync_file(&destination)?;
             }
             Err(e) => return Err(e),
         }
         drop(temporary);
-        File::open(media)?.sync_all()?;
-        File::open(root)?.sync_all()
+        crate::fsync::sync_dir(&media)?;
+        crate::fsync::sync_dir(&root)
     }
 }
 

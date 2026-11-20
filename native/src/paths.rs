@@ -188,14 +188,19 @@ impl Resolver {
             .ok_or_else(|| Self::error(resource, &self.executable, PathErrorKind::NotDirectory))
     }
 
-    /// Only Cargo's exact native/target/{debug,release}[/deps] layout is
-    /// recognized. There is no ancestor search or build-time source fallback.
+    /// Cargo's `native/target/{debug,release}` layouts are recognized: the
+    /// older `deps/` location and the `build/<pkg>/<hash>/out/` location
+    /// current toolchains use. There is no general ancestor search or
+    /// build-time source fallback.
     fn checkout(&self, root: &Path) -> Option<PathBuf> {
-        let profile = if root.file_name()? == "deps" {
-            root.parent()?
-        } else {
-            root
-        };
+        // Walk up past `deps`, or `out/<hash>/<pkg>/build`, to the profile dir.
+        let mut profile = root;
+        for _ in 0..6 {
+            if matches!(profile.file_name()?.to_str()?, "debug" | "release") {
+                break;
+            }
+            profile = profile.parent()?;
+        }
         if !matches!(profile.file_name()?.to_str()?, "debug" | "release") {
             return None;
         }
@@ -397,4 +402,73 @@ fn writable(resource: Resource, path: &Path) -> Result<(), PathError> {
     let removed = fs::remove_file(probe);
     result.map_err(|e| io("write probe", e))?;
     removed.map_err(|e| io("remove write probe", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            Self(std::env::temp_dir().join(format!(
+                "brownnote-paths-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Relaxed)
+            )))
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn resolver() -> Resolver {
+        Resolver::new(
+            PathBuf::from("probe"),
+            PathBuf::from("probe"),
+            Environment::default(),
+        )
+    }
+
+    /// `native/target/<profile>/deps` — the layout older toolchains use.
+    #[test]
+    fn checkout_recognizes_the_deps_layout() {
+        let fixture = Fixture::new();
+        let deps = fixture.0.join("native/target/debug/deps");
+        fs::create_dir_all(&deps).unwrap();
+        fs::write(fixture.0.join("native/Cargo.toml"), "[package]").unwrap();
+        assert_eq!(
+            resolver().checkout(&deps).as_deref(),
+            Some(fixture.0.as_path())
+        );
+    }
+
+    /// `native/target/<profile>/build/<pkg>/<hash>/out` — the layout current
+    /// toolchains use for binaries.
+    #[test]
+    fn checkout_recognizes_the_build_out_layout() {
+        let fixture = Fixture::new();
+        let out = fixture
+            .0
+            .join("native/target/release/build/brownnote-native/0123456789abcdef/out");
+        fs::create_dir_all(&out).unwrap();
+        fs::write(fixture.0.join("native/Cargo.toml"), "[package]").unwrap();
+        assert_eq!(
+            resolver().checkout(&out).as_deref(),
+            Some(fixture.0.as_path())
+        );
+    }
+
+    #[test]
+    fn checkout_rejects_non_target_layouts() {
+        let fixture = Fixture::new();
+        let other = fixture.0.join("elsewhere/release");
+        fs::create_dir_all(&other).unwrap();
+        assert!(resolver().checkout(&other).is_none());
+    }
 }

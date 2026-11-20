@@ -62,7 +62,7 @@ impl BundleWriter for SystemWriter {
         file.sync_all()
     }
     fn sync_dir(&mut self, path: &Path) -> io::Result<()> {
-        fs::File::open(path)?.sync_all()
+        crate::fsync::sync_dir(path)
     }
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
         fs::read(path)

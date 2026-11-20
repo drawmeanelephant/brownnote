@@ -100,7 +100,7 @@ pub fn save(root: &Path, selection: &OutputSelection) -> Result<(), String> {
         file.write_all(&bytes)?;
         file.sync_all()?;
         fs::rename(temporary, root.join(FILE))?;
-        File::open(root)?.sync_all()
+        brownnote_native::fsync::sync_dir(root)
     };
     write().map_err(|_| "Output choice is active in memory but could not be saved".into())
 }

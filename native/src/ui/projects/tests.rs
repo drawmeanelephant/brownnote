@@ -550,6 +550,9 @@ fn project_controls_reject_pending_work_and_relative_paths_without_io() {
 }
 
 #[test]
+// Saves into a directory named with a trailing space, which Windows
+// filesystems cannot create (issue #257).
+#[cfg(unix)]
 fn project_controls_runtime_buttons_path_entry_and_shortcuts_use_real_callers() {
     let root = Root::new();
     let project = root.0.join("from controls ");
