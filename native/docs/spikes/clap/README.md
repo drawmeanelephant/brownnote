@@ -184,11 +184,14 @@ pins are in [`pin.json`](pin.json).
 | Role | Plugin | Pin | License |
 | --- | --- | --- | --- |
 | Instrument | Poly Mod Synth 0.1.0 (`com.moist-plugins-gmbh.poly-mod-synth`), a polyphonic saw synth with note IDs, velocity, attack/release and note-end events | Built from [nih-plug](https://github.com/robbert-vdh/nih-plug) `de421011f41a6d10fc8c7a6084e4f4dee0143683` with `cargo build --locked --release -p poly_mod_synth`. The binary hash depends on the toolchain and is recorded per run. | ISC source. nih-plug's default features also export VST3, so the built binary includes GPLv3 code. |
-| Effect | Airwindows Consolidated 1.2026.313 (`com.airwindows.consolidated`), default processor Galactic | Release dmg from the rolling `DAWPlugin` tag at [airwin2rack](https://github.com/baconpaul/airwin2rack) `316a0485b28516347e325645a39c13c623c02962`; dmg SHA-256 `048454ad…3d6c`, executable SHA-256 `92152f95…ad4d`, Developer ID team `547U7G7MZC`. Expanded with `pkgutil`, not installed. | MIT source; the upstream README notes that the JUCE/VST3 DAW build may include GPL3 assets. |
+| Effect | Airwindows Consolidated (`com.airwindows.consolidated`), default processor Galactic | Release dmg from the rolling `DAWPlugin` tag at [airwin2rack](https://github.com/baconpaul/airwin2rack). See `pin.json` for the current version, revision, and hashes. Expanded with `pkgutil`, not installed. | MIT source; the upstream README notes that the JUCE/VST3 DAW build may include GPL3 assets. |
 
 The `DAWPlugin` tag is rolling. If the pinned dmg disappears or its hash
 changes, `prepare.py` stops; re-pin explicitly rather than accepting a new
 binary.
+The committed research measurements predate pin updates. See
+[`evidence/measurements.json`](evidence/measurements.json) for the executable
+hashes from that run.
 
 The tested platform is macOS on Apple silicon (arm64), Rust 1.99.1.
 

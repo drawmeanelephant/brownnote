@@ -291,23 +291,39 @@ fn note(spec: &Spec, what: &str) {
     }
 }
 
+#[cfg(unix)]
 unsafe extern "C" {
     fn raise(signal: c_int) -> c_int;
     fn signal(signal: c_int, handler: usize) -> usize;
 }
 
+#[cfg(windows)]
+unsafe extern "system" {
+    fn GetCurrentProcess() -> *mut c_void;
+    fn TerminateProcess(process: *mut c_void, code: u32) -> i32;
+}
+
+#[cfg(unix)]
 const SIGSEGV: c_int = 11;
+#[cfg(unix)]
 const SIG_DFL: usize = 0;
 
 /// Ends the process the way a segfaulting plugin would, without undefined
-/// behaviour. Rust's own SIGSEGV handler is replaced first, because it
-/// ignores a signal that was raised rather than caused by a fault.
+/// behaviour. On Unix, Rust's own SIGSEGV handler is replaced first,
+/// because it ignores a signal that was raised rather than caused by a
+/// fault. On Windows the exit code is STATUS_ACCESS_VIOLATION, the status
+/// a real fault leaves.
 fn crash() -> ! {
     // SAFETY: resetting a signal disposition and raising a signal are
-    // defined operations.
+    // defined operations, as is terminating our own process.
+    #[cfg(unix)]
     unsafe {
         signal(SIGSEGV, SIG_DFL);
         raise(SIGSEGV);
+    }
+    #[cfg(windows)]
+    unsafe {
+        TerminateProcess(GetCurrentProcess(), 0xC000_0005);
     }
     std::process::abort()
 }

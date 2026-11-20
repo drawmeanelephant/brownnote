@@ -70,28 +70,42 @@ fn parse_id(id: &str) -> Result<(u64, &str), LadspaError> {
 }
 
 /// The directories searched for a bare library name: `LADSPA_PATH`
-/// (colon separated) or, when it is unset, the user and system LADSPA
-/// folders macOS hosts such as Audacity use.
+/// (platform-separated) or, when it is unset, the user and system LADSPA
+/// folders hosts such as Audacity use on this platform.
 fn search_dirs() -> Vec<PathBuf> {
     match std::env::var_os("LADSPA_PATH") {
         Some(value) => std::env::split_paths(&value)
             .filter(|dir| !dir.as_os_str().is_empty())
             .collect(),
-        None => {
-            let mut dirs = Vec::new();
-            if let Some(home) = std::env::var_os("HOME") {
-                dirs.push(Path::new(&home).join("Library/Audio/Plug-Ins/LADSPA"));
-            }
-            dirs.push(PathBuf::from("/Library/Audio/Plug-Ins/LADSPA"));
-            dirs
-        }
+        None => default_search_dirs(),
     }
 }
 
-/// A location containing `/` is a path. A bare file name such as `caps.so`
-/// is looked up in [`search_dirs`].
+#[cfg(unix)]
+fn default_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(Path::new(&home).join("Library/Audio/Plug-Ins/LADSPA"));
+    }
+    dirs.push(PathBuf::from("/Library/Audio/Plug-Ins/LADSPA"));
+    dirs
+}
+
+#[cfg(windows)]
+fn default_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(programs) = std::env::var_os("ProgramFiles") {
+        // The conventional shared LADSPA folder on Windows.
+        dirs.push(Path::new(&programs).join("Common Files\\LADSPA"));
+        dirs.push(Path::new(&programs).join("LADSPA"));
+    }
+    dirs
+}
+
+/// A location containing a path separator is a path. A bare file name such
+/// as `caps.so` is looked up in [`search_dirs`].
 fn resolve(location: &str) -> Result<PathBuf, LadspaError> {
-    if location.contains('/') {
+    if location.contains(['/', '\\']) {
         let path = PathBuf::from(location);
         return if path.is_file() {
             Ok(path)

@@ -126,6 +126,20 @@ fn render(helpers: &Helpers, request: &Request) -> Result<Rendered, offline::Ren
     offline::render(request, helpers, &limits(), &Cancel::new())
 }
 
+/// Whether a rendered `ExitStatus` reports the child death a plugin crash
+/// produces on this platform: SIGSEGV on Unix, the access-violation code
+/// (in whatever spelling the platform uses) on Windows.
+fn crashed(status: &str) -> bool {
+    if cfg!(unix) {
+        status.contains("signal: 11")
+    } else {
+        status.contains("0xc0000005")
+            || status.contains("0xC0000005")
+            || status.contains("-1073741819")
+            || status.contains("3221226501")
+    }
+}
+
 fn sha256_file(path: &Path) -> Hash256 {
     Hash256::of(&fs::read(path).unwrap())
 }
@@ -262,7 +276,7 @@ fn fixture_faults_fail_without_taking_the_app_down() {
     let error = render(&helpers, &fault("org.brownnote.fault.crash")).unwrap_err();
     assert_eq!(error.stage, Some(0));
     match error.kind {
-        ErrorKind::Exited { status, .. } => assert!(status.contains("signal: 11"), "{status}"),
+        ErrorKind::Exited { status, .. } => assert!(crashed(&status), "{status}"),
         other => panic!("{other:?}"),
     }
 
@@ -313,11 +327,7 @@ fn fixture_faults_fail_without_taking_the_app_down() {
     render(&helpers, &request(sine(480), vec![base], 256)).unwrap();
 }
 
-// Airwindows Consolidated 1.2026.313, pinned by #96 (native/docs/spikes/clap/pin.json).
 const EFFECT_ID: &str = "com.airwindows.consolidated";
-const EFFECT_VERSION: &str = "1.2026.313";
-const EFFECT_EXECUTABLE_SHA256: &str =
-    "92152f95a7053ecd65c4e5f356e719c6b82a7dfe4083bc12848f5c755077ad4d";
 /// SHA-256 of the interleaved little-endian f32 samples of the #96 probe's
 /// in-process render `evidence/effect/burst-512.wav`: this input, block 512,
 /// offline mode, default state, 192000 frames.
@@ -355,8 +365,16 @@ fn pinned_effect_matches_the_probe_reference_and_measures_its_tail() {
         &Cancel::new(),
     )
     .unwrap();
-    assert_eq!(info.plugin.version, EFFECT_VERSION);
-    assert_eq!(info.plugin.artifact.to_string(), EFFECT_EXECUTABLE_SHA256);
+    let pin: serde_json::Value =
+        serde_json::from_str(include_str!("../docs/spikes/clap/pin.json")).unwrap();
+    assert_eq!(
+        info.plugin.version,
+        pin["effect"]["version"].as_str().unwrap()
+    );
+    assert_eq!(
+        info.plugin.artifact.to_string(),
+        pin["effect"]["executable_sha256"].as_str().unwrap()
+    );
     assert_eq!(info.latency_frames, 0);
     assert_eq!(info.tail_frames, Some(DECLARED_TAIL));
     assert!(!info.params.is_empty());
