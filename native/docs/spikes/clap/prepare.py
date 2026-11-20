@@ -13,6 +13,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent
@@ -52,9 +54,19 @@ def prepare_effect():
     WORK.mkdir(exist_ok=True)
     dmg = WORK / "airwindows.dmg"
     if not dmg.exists() or sha256(dmg) != pin["dmg_sha256"]:
+        # Upstream re-publishes the rolling DAWPlugin tag; a fetch can race the
+        # replacement or hit a transient CDN error, so retry before failing.
         print(f"Downloading {pin['dmg_url']}", file=sys.stderr, flush=True)
-        with urllib.request.urlopen(pin["dmg_url"]) as r:
-            dmg.write_bytes(r.read())
+        for attempt in range(4):
+            try:
+                with urllib.request.urlopen(pin["dmg_url"]) as r:
+                    dmg.write_bytes(r.read())
+                break
+            except urllib.error.URLError as error:
+                if attempt == 3:
+                    raise
+                print(f"download failed ({error}); retrying", file=sys.stderr, flush=True)
+                time.sleep(5 * (attempt + 1))
     if sha256(dmg) != pin["dmg_sha256"]:
         raise SystemExit("Airwindows dmg hash mismatch; the rolling release moved. Re-pin explicitly.")
     with tempfile.TemporaryDirectory(dir=WORK) as tmp:
