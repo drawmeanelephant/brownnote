@@ -59,9 +59,10 @@ pub type ProbeFn = Arc<
 pub fn default_helpers() -> Helpers {
     let program = |variable: &str| {
         std::env::var_os(variable).map(PathBuf::from).or_else(|| {
-            let sibling = std::env::current_exe()
-                .ok()?
-                .with_file_name("brownnote-plugin-host");
+            let sibling = std::env::current_exe().ok()?.with_file_name(format!(
+                "brownnote-plugin-host{}",
+                std::env::consts::EXE_SUFFIX
+            ));
             sibling.is_file().then_some(sibling)
         })
     };
