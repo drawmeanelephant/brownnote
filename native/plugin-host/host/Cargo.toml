@@ -9,7 +9,7 @@ publish.workspace = true
 [dependencies]
 # CLAP 1.2.2 headers and the loader, as pinned by the #96 probe.
 clap-sys = "=0.5.0"
-libloading = "=0.9.0"
+libloading = "=0.9.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "=0.11.1"
